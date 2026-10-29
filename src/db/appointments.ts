@@ -43,6 +43,13 @@ export interface StaffActor {
   staffId: bigint;
 }
 
+/** Quién mueve la cita: el personal, el cliente con su enlace de gestión, o el sistema (retenciones). */
+export type AgendaActor = StaffActor | { kind: "client" } | { kind: "system" };
+
+function actorFields(actor: AgendaActor): { actorKind: "staff" | "client" | "system"; actorUserId: string | null } {
+  return "kind" in actor ? { actorKind: actor.kind, actorUserId: null } : { actorKind: "staff", actorUserId: actor.userId };
+}
+
 function pgCode(err: unknown): { code?: string; constraint?: string } {
   for (let e: unknown = err; e && typeof e === "object"; e = (e as { cause?: unknown }).cause) {
     const { code, constraint, constraint_name } = e as { code?: string; constraint?: string; constraint_name?: string };
@@ -91,8 +98,13 @@ interface StaffWithBlocks {
   blocks: ScheduleBlock[];
 }
 
-/** Personal activo con su horario semanal. */
-async function activeStaff(db: Db, locationId: bigint, staffIds?: readonly bigint[]): Promise<StaffWithBlocks[]> {
+/** Personal activo con su horario semanal. `onlineOnly`: solo quienes se ofrecen en la reserva pública. */
+async function activeStaff(
+  db: Db,
+  locationId: bigint,
+  staffIds?: readonly bigint[],
+  onlineOnly = false,
+): Promise<StaffWithBlocks[]> {
   const rows = await db
     .select({
       staffId: staffMembers.id,
@@ -112,6 +124,7 @@ async function activeStaff(db: Db, locationId: bigint, staffIds?: readonly bigin
         eq(staffMembers.locationId, locationId),
         eq(staffMembers.active, true),
         staffIds ? inArray(staffMembers.id, [...staffIds]) : undefined,
+        onlineOnly ? eq(staffMembers.bookableOnline, true) : undefined,
       ),
     )
     .orderBy(asc(staffMembers.displayName), asc(staffMembers.id), asc(staffSchedules.weekday), asc(staffSchedules.startMin));
@@ -171,19 +184,26 @@ async function activeService(db: Db, locationId: bigint, serviceId: bigint) {
   return svc;
 }
 
-/** Cancela las reservas en línea que no se verificaron a tiempo y libera su horario. */
-async function expireHolds(db: Db, locationId: bigint, now: Date): Promise<void> {
+/**
+ * Cancela las reservas en línea que no se verificaron a tiempo y libera su horario.
+ * Sin sede: todas (el worker lo corre cada minuto).
+ */
+export async function expireHolds(db: Db, locationId: bigint | null, now: Date): Promise<number> {
   const expired = await db
     .update(appointments)
     .set({ status: "cancelled", cancelReason: "expired" })
     .where(
-      and(eq(appointments.locationId, locationId), eq(appointments.status, "pending"), lt(appointments.expiresAt, now)),
+      and(
+        locationId === null ? undefined : eq(appointments.locationId, locationId),
+        eq(appointments.status, "pending"),
+        lt(appointments.expiresAt, now),
+      ),
     )
-    .returning({ id: appointments.id });
+    .returning({ id: appointments.id, locationId: appointments.locationId });
   if (expired.length > 0) {
     await db.insert(appointmentEvents).values(
       expired.map((a) => ({
-        locationId,
+        locationId: a.locationId,
         appointmentId: a.id,
         kind: "status" as const,
         fromStatus: "pending",
@@ -193,6 +213,7 @@ async function expireHolds(db: Db, locationId: bigint, now: Date): Promise<void>
       })),
     );
   }
+  return expired.length;
 }
 
 // ─── Disponibilidad ──────────────────────────────────────────────────────────
@@ -215,7 +236,8 @@ export async function availability(
   const now = input.now ?? new Date();
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
-  const staff = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined)).filter(
+  // Lo público solo ofrece a quienes atienden en línea; recepción ve a todo el equipo.
+  const staff = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined, !input.internal)).filter(
     (s) => s.blocks.length > 0,
   );
   const from = localMinuteToInstant(input.fromDate, 0, rules.timeZone);
@@ -273,11 +295,20 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
     if (existing) return { ...existing, created: false };
 
     await expireHolds(tx, input.locationId, now);
+    if (input.source === "online" && input.clientId !== null) {
+      // Un cliente tiene una sola retención: la nueva reemplaza la anterior (la base lo exige).
+      await cancelPendingHolds(tx, input.locationId, input.clientId);
+    }
     const rules = await locationRules(tx, input.locationId);
     const svc = await activeService(tx, input.locationId, input.serviceId);
     const occupied = occupiedRange(input.start, svc.durationMin, svc.bufferMin);
 
-    const candidates = await activeStaff(tx, input.locationId, input.staffId === "any" ? undefined : [input.staffId]);
+    const candidates = await activeStaff(
+      tx,
+      input.locationId,
+      input.staffId === "any" ? undefined : [input.staffId],
+      input.source === "online",
+    );
     if (input.staffId !== "any" && candidates.length === 0) throw new BookingError("Ese barbero no está activo");
     const busy = await busyIntervals(tx, { locationId: input.locationId, from: occupied.start, to: occupied.end, now });
 
@@ -346,6 +377,27 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
     }
     throw new SlotTakenError();
   });
+}
+
+async function cancelPendingHolds(db: Db, locationId: bigint, clientId: bigint): Promise<void> {
+  const replaced = await db
+    .update(appointments)
+    .set({ status: "cancelled", cancelReason: "duplicate" })
+    .where(and(eq(appointments.locationId, locationId), eq(appointments.clientId, clientId), eq(appointments.status, "pending")))
+    .returning({ id: appointments.id });
+  if (replaced.length > 0) {
+    await db.insert(appointmentEvents).values(
+      replaced.map((a) => ({
+        locationId,
+        appointmentId: a.id,
+        kind: "status" as const,
+        fromStatus: "pending",
+        toStatus: "cancelled",
+        actorKind: "system" as const,
+        reason: "Reemplazada por una reserva nueva del mismo cliente",
+      })),
+    );
+  }
 }
 
 async function findByIdempotencyKey(db: Db, locationId: bigint, key: string) {
@@ -451,7 +503,7 @@ export async function changeStatus(
     locationId: bigint;
     appointmentId: bigint;
     to: AppointmentStatus;
-    actor: StaffActor;
+    actor: AgendaActor;
     cancelReason?: CancelReason;
     note?: string;
     now?: Date;
@@ -462,10 +514,11 @@ export async function changeStatus(
     const tx = txRaw as unknown as Db;
     const appt = await lockAppointment(tx, input.locationId, input.appointmentId);
     const rules = await locationRules(tx, input.locationId);
+    const actor = input.actor;
     assertTransition({
       from: appt.status,
       to: input.to,
-      actor: { kind: "staff", role: input.actor.role, ownAppointment: appt.staffId === input.actor.staffId },
+      actor: "kind" in actor ? actor : { kind: "staff", role: actor.role, ownAppointment: appt.staffId === actor.staffId },
       now,
       appointmentStart: appt.during.start,
       timeZone: rules.timeZone,
@@ -473,6 +526,7 @@ export async function changeStatus(
     });
 
     const patch: Partial<typeof appointments.$inferInsert> = { status: input.to };
+    if (appt.status === "pending") patch.expiresAt = null; // confirmada o cancelada: ya no es una retención
     if (input.to === "cancelled") {
       const reason = input.cancelReason ?? "staff";
       patch.cancelReason = reason;
@@ -492,8 +546,7 @@ export async function changeStatus(
       kind: "status",
       fromStatus: appt.status,
       toStatus: input.to,
-      actorKind: "staff",
-      actorUserId: input.actor.userId,
+      ...actorFields(actor),
       reason: input.note?.trim() || null,
     });
   });
@@ -506,12 +559,13 @@ export async function rescheduleAppointment(
     appointmentId: bigint;
     start: Date;
     staffId: bigint;
-    actor: StaffActor;
+    actor: AgendaActor;
     allowOutsideHours?: boolean;
     now?: Date;
   },
 ): Promise<void> {
   const now = input.now ?? new Date();
+  if ("kind" in input.actor && input.allowOutsideHours) throw new BookingError("Solo el personal agenda fuera del turno");
   try {
     await db.transaction(async (txRaw) => {
       const tx = txRaw as unknown as Db;
@@ -520,7 +574,8 @@ export async function rescheduleAppointment(
         throw new BookingError("Solo se reprograma una cita que todavía no empieza");
       }
       const rules = await locationRules(tx, input.locationId);
-      const [staff] = await activeStaff(tx, input.locationId, [input.staffId]);
+      await expireHolds(tx, input.locationId, now);
+      const [staff] = await activeStaff(tx, input.locationId, [input.staffId], "kind" in input.actor);
       if (!staff) throw new BookingError("Ese barbero no está activo");
       if (!input.allowOutsideHours && !fitsSchedule(input.start, appt.durationMin, staff.blocks, rules.timeZone)) {
         throw new BookingError(`Ese horario está fuera del turno de ${staff.displayName}`);
@@ -542,8 +597,7 @@ export async function rescheduleAppointment(
         kind: "rescheduled",
         prevStaffId: appt.staffId,
         prevDuring: appt.during,
-        actorKind: "staff",
-        actorUserId: input.actor.userId,
+        ...actorFields(input.actor),
       });
     });
   } catch (err) {

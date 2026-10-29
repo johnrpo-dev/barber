@@ -232,13 +232,19 @@ describe("estados", () => {
 describe("garantías en la base de datos", () => {
   async function rawInsert(status: AppointmentStatus, start: Date, staff = andres) {
     const end = new Date(start.getTime() + 30 * MINUTE_MS);
+    // Un cliente solo puede tener una retención pendiente: cada pendiente cruda lleva el suyo.
+    const owner =
+      status === "pending"
+        ? (await client.query<{ id: bigint }>(`insert into clients (location_id, name) values ($1, 'Pendiente') returning id`, [locationId]))
+            .rows[0]!.id
+        : juan;
     const { rows } = await client.query<{ id: bigint }>(
       `insert into appointments (location_id, public_id, staff_id, service_id, client_id, service_name, duration_min, buffer_min,
          price, status, source, during, expires_at, created_by)
        values ($1, $2, $3, $4, $5, 'Corte', 30, 0, 2500000, $6::text, 'staff', tstzrange($7::timestamptz, $8::timestamptz, '[)'),
          case when $6::text = 'pending' then now() + interval '10 min' end, 'u')
        returning id`,
-      [locationId, `P${++key}`, staff, corte, juan, status, start.toISOString(), end.toISOString()],
+      [locationId, `P${++key}`, staff, corte, owner, status, start.toISOString(), end.toISOString()],
     );
     return rows[0]!.id;
   }
