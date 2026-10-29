@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { isRole, type Role } from "@/domain/staff/roles";
 import { assertValidWeeklySchedule, type ScheduleBlock, type Weekday } from "@/domain/staff/schedule";
-import { account, staffMembers, staffSchedules, user } from "./schema";
+import { account, locations, staffMembers, staffSchedules, user } from "./schema";
 import type { Db } from "./types";
 
 // Personal de la sede y sus horarios. Los roles se guardan por sede (staff_members),
@@ -102,6 +102,91 @@ export async function listStaff(db: Db, locationId: bigint) {
     .from(staffMembers)
     .where(eq(staffMembers.locationId, locationId))
     .orderBy(asc(staffMembers.displayName));
+}
+
+export interface StaffMemberDetail {
+  staffId: bigint;
+  displayName: string;
+  role: Role;
+  active: boolean;
+  /** Tiene usuario (correo y contraseña) para entrar a la app. */
+  hasAppAccess: boolean;
+}
+
+/** Una persona de la sede, o null si no existe en esa sede. */
+export async function staffMember(
+  db: Db,
+  input: { locationId: bigint; staffId: bigint },
+): Promise<StaffMemberDetail | null> {
+  const [row] = await db
+    .select({
+      staffId: staffMembers.id,
+      displayName: staffMembers.displayName,
+      role: staffMembers.role,
+      active: staffMembers.active,
+      userId: staffMembers.userId,
+    })
+    .from(staffMembers)
+    .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)));
+  if (!row || !isRole(row.role)) return null;
+  return {
+    staffId: row.staffId,
+    displayName: row.displayName,
+    role: row.role,
+    active: row.active,
+    hasAppAccess: row.userId !== null,
+  };
+}
+
+/**
+ * Corre `change` serializado por sede (bloquea la fila de la sede) y, antes de confirmar,
+ * exige que quede al menos un dueño activo: nadie puede dejar la sede sin quien la administre.
+ */
+async function withOwnerGuard(db: Db, locationId: bigint, change: (tx: Db) => Promise<void>): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.select({ id: locations.id }).from(locations).where(eq(locations.id, locationId)).for("no key update");
+    await change(tx as unknown as Db);
+    const [{ n } = { n: 0 }] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(staffMembers)
+      .where(and(eq(staffMembers.locationId, locationId), eq(staffMembers.role, "owner"), eq(staffMembers.active, true)));
+    if (Number(n) === 0) throw new StaffError("La sede debe tener al menos un dueño activo");
+  });
+}
+
+/** Cambia nombre y rol. El rol vale para esta sede; el usuario (si tiene) no se toca. */
+export async function updateStaffMember(
+  db: Db,
+  input: { locationId: bigint; staffId: bigint; displayName: string; role: Role },
+): Promise<void> {
+  const displayName = input.displayName.trim();
+  if (displayName.length < 2 || displayName.length > 80) {
+    throw new StaffError("El nombre debe tener entre 2 y 80 caracteres");
+  }
+  if (!isRole(input.role)) throw new StaffError("Rol inválido");
+  await withOwnerGuard(db, input.locationId, async (tx) => {
+    const updated = await tx
+      .update(staffMembers)
+      .set({ displayName, role: input.role })
+      .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)))
+      .returning({ id: staffMembers.id });
+    if (updated.length === 0) throw new StaffError("La persona no existe en esta sede");
+  });
+}
+
+/** Activa o retira a una persona sin borrarla: su historial (citas, ventas) la sigue nombrando. Sin membresía activa, pierde el acceso. */
+export async function setStaffActive(
+  db: Db,
+  input: { locationId: bigint; staffId: bigint; active: boolean },
+): Promise<void> {
+  await withOwnerGuard(db, input.locationId, async (tx) => {
+    const updated = await tx
+      .update(staffMembers)
+      .set({ active: input.active })
+      .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)))
+      .returning({ id: staffMembers.id });
+    if (updated.length === 0) throw new StaffError("La persona no existe en esta sede");
+  });
 }
 
 /** Reemplaza el horario semanal completo de una persona. */

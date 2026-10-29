@@ -8,12 +8,58 @@
   --color-cuero: #8a4b2a;
   --color-botella: #2f4a3a;
   --color-laton: #b8893b;
+  /* Superficie de tarjetas y hojas: un tono más claro que el hueso. */
+  --color-papel: #fbf8f3;
+  /* Errores y acciones destructivas (5,9:1 sobre hueso). */
+  --color-alerta: #8f2a1d;
 
   --font-display: var(--font-fraunces), Georgia, serif;
   --font-sans: var(--font-public-sans), system-ui, sans-serif;
+
+  --ease-villa: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --animate-sheet-in: sheet-in 240ms var(--ease-villa);
+  --animate-sheet-out: sheet-in 180ms var(--ease-villa) reverse;
+  --animate-fade-in: fade-in 180ms var(--ease-villa);
+  --animate-fade-out: fade-in 150ms var(--ease-villa) reverse;
+  --animate-pop-in: pop-in 180ms var(--ease-villa);
+  --animate-drawer-in: drawer-in 240ms var(--ease-villa);
+  --animate-drawer-out: drawer-in 180ms var(--ease-villa) reverse;
+
+  @keyframes sheet-in {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+  @keyframes drawer-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: scale(1); }
+  }
+}
+
+/* Con movimiento reducido, todo se vuelve un fundido corto. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+body {
+  background: var(--color-hueso);
 }
 
 html {
+  /* Que el foco no quede tapado por la barra inferior ni por los botones fijos. */
+  scroll-padding-block-end: 9rem;
   background: var(--color-hueso);
   color: var(--color-tinta);
 }

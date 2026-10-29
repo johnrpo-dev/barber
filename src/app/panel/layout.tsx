@@ -1,0 +1,31 @@
+import { eq } from "drizzle-orm";
+import { db } from "@/db/client";
+import { locations } from "@/db/schema";
+import { can, ROLE_LABELS } from "@/domain/staff/roles";
+import { requireStaff } from "@/lib/session";
+import { signOut } from "./actions";
+import { MobileTopBar, type NavItem, PanelNav } from "./_components/panel-nav";
+import { ToastProvider } from "./_components/ui";
+
+export default async function PanelLayout({ children }: { children: React.ReactNode }) {
+  const staff = await requireStaff();
+  const [location] = await db().select({ name: locations.name }).from(locations).where(eq(locations.id, staff.locationId));
+
+  const items: NavItem[] = [];
+  if (staff.role === "barber") items.push({ href: "/panel/mi-dia", label: "Mi día", icon: "mi-dia" });
+  if (can(staff.role, "appointments.manage.all") || can(staff.role, "appointments.manage.own")) {
+    items.push({ href: "/panel/agenda", label: "Agenda", icon: "agenda" });
+  }
+  if (can(staff.role, "services.manage")) items.push({ href: "/panel/servicios", label: "Servicios", icon: "servicios" });
+  if (can(staff.role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal" });
+
+  return (
+    <ToastProvider>
+      <PanelNav items={items} userName={staff.displayName} roleLabel={ROLE_LABELS[staff.role]} signOut={signOut} />
+      <div className="min-h-dvh pb-20 lg:pb-0 lg:pl-[72px] xl:pl-[232px]">
+        <MobileTopBar locationName={location?.name ?? ""} signOut={signOut} />
+        {children}
+      </div>
+    </ToastProvider>
+  );
+}

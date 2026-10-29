@@ -208,6 +208,8 @@ export async function availability(
     staffId?: bigint;
     now?: Date;
     internal: boolean;
+    /** Al reprogramar, la propia cita no cuenta como ocupada. */
+    excludeAppointmentId?: bigint;
   },
 ): Promise<Slot[]> {
   const now = input.now ?? new Date();
@@ -229,7 +231,7 @@ export async function availability(
     minAdvanceMin: input.internal ? 0 : rules.minAdvanceMin,
     maxAdvanceDays: input.internal ? 366 : rules.maxAdvanceDays,
     staff,
-    busy: await busyIntervals(db, { locationId: input.locationId, from, to, now }),
+    busy: await busyIntervals(db, { locationId: input.locationId, from, to, now, excludeAppointmentId: input.excludeAppointmentId }),
   });
 }
 
@@ -380,6 +382,7 @@ export async function walkIn(
     serviceId: bigint;
     staffId: bigint | "any";
     clientId: bigint | null;
+    notes?: string;
     idempotencyKey: string;
     createdBy: string;
     allowOutsideHours?: boolean;
@@ -387,6 +390,9 @@ export async function walkIn(
   },
 ): Promise<CreatedAppointment> {
   const now = input.now ?? new Date();
+  // Reintento (respuesta perdida, doble toque): la silla ya la ocupa este mismo walk-in.
+  const existing = await findByIdempotencyKey(db, input.locationId, input.idempotencyKey);
+  if (existing) return { ...existing, created: false };
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
   const staff = await activeStaff(db, input.locationId, input.staffId === "any" ? undefined : [input.staffId]);
@@ -552,6 +558,8 @@ export interface AgendaAppointment {
   id: bigint;
   publicId: string;
   staffId: bigint;
+  staffName: string;
+  serviceId: bigint;
   clientId: bigint | null;
   clientName: string | null;
   clientPhone: string | null;
@@ -602,6 +610,8 @@ export async function dayAgenda(db: Db, input: { locationId: bigint; date: strin
       id: appointments.id,
       publicId: appointments.publicId,
       staffId: appointments.staffId,
+      staffName: staffMembers.displayName,
+      serviceId: appointments.serviceId,
       clientId: appointments.clientId,
       clientName: clients.name,
       clientPhone: clients.phoneE164,
@@ -614,6 +624,7 @@ export async function dayAgenda(db: Db, input: { locationId: bigint; date: strin
       price: appointments.price,
     })
     .from(appointments)
+    .innerJoin(staffMembers, and(eq(staffMembers.locationId, appointments.locationId), eq(staffMembers.id, appointments.staffId)))
     .leftJoin(clients, and(eq(clients.locationId, appointments.locationId), eq(clients.id, appointments.clientId)))
     .where(
       and(
@@ -630,9 +641,13 @@ export async function dayAgenda(db: Db, input: { locationId: bigint; date: strin
     .where(and(eq(timeOff.locationId, input.locationId), isNull(timeOff.cancelledAt), sql`${timeOff.during} && ${range(from, to)}`));
 
   const withAppointments = new Set(rows.map((r) => r.staffId));
-  const columns = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined))
+  const columns: AgendaColumn[] = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined))
     .filter((s) => s.blocks.length > 0 || withAppointments.has(s.staffId))
     .map((s) => ({ staffId: s.staffId, displayName: s.displayName, blocks: s.blocks.filter((b) => b.weekday === weekday) }));
+  // Personal ya retirado que aún tiene citas ese día: su columna se muestra (sin turno) para no perderlas.
+  for (const r of rows) {
+    if (!columns.some((c) => c.staffId === r.staffId)) columns.push({ staffId: r.staffId, displayName: r.staffName, blocks: [] });
+  }
 
   return {
     date: input.date,
@@ -642,6 +657,8 @@ export async function dayAgenda(db: Db, input: { locationId: bigint; date: strin
       id: r.id,
       publicId: r.publicId,
       staffId: r.staffId,
+      staffName: r.staffName,
+      serviceId: r.serviceId,
       clientId: r.clientId,
       clientName: r.clientName,
       clientPhone: r.clientPhone,
@@ -670,7 +687,7 @@ export interface AppointmentEventView {
 
 export async function appointmentHistory(
   db: Db,
-  input: { locationId: bigint; appointmentId: bigint },
+  input: { locationId: bigint; appointmentId: bigint; /** Solo si la cita es de este barbero. */ staffId?: bigint },
 ): Promise<AppointmentEventView[]> {
   return db
     .select({
@@ -683,7 +700,17 @@ export async function appointmentHistory(
       at: appointmentEvents.createdAt,
     })
     .from(appointmentEvents)
+    .innerJoin(
+      appointments,
+      and(eq(appointments.locationId, appointmentEvents.locationId), eq(appointments.id, appointmentEvents.appointmentId)),
+    )
     .leftJoin(user, eq(user.id, appointmentEvents.actorUserId))
-    .where(and(eq(appointmentEvents.locationId, input.locationId), eq(appointmentEvents.appointmentId, input.appointmentId)))
+    .where(
+      and(
+        eq(appointmentEvents.locationId, input.locationId),
+        eq(appointmentEvents.appointmentId, input.appointmentId),
+        input.staffId ? eq(appointments.staffId, input.staffId) : undefined,
+      ),
+    )
     .orderBy(asc(appointmentEvents.id));
 }

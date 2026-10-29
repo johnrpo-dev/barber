@@ -9,8 +9,11 @@ import {
   addStaffMember,
   createStaffUser,
   membershipsForUser,
+  setStaffActive,
   setWeeklySchedule,
   StaffError,
+  staffMember,
+  updateStaffMember,
   weeklySchedule,
 } from "./staff";
 import { createTestDb, dbError } from "./testing";
@@ -132,5 +135,78 @@ describe("horario semanal", () => {
     expect(
       await dbError(setWeeklySchedule(db, { locationId, staffId, blocks: [{ weekday: 1, startMin: 540, endMin: 600 }] })),
     ).toMatch(/staff_schedules_staff_fk/);
+  });
+});
+
+describe("gestión del personal", () => {
+  it("lee a una persona solo dentro de su sede", async () => {
+    const staffId = await addStaffMember(db, { locationId, displayName: "Andrés", role: "barber" });
+    expect(await staffMember(db, { locationId, staffId })).toEqual({
+      staffId,
+      displayName: "Andrés",
+      role: "barber",
+      active: true,
+      hasAppAccess: false,
+    });
+    const other = await createLocation(db, { name: "Otra sede" });
+    expect(await staffMember(db, { locationId: other, staffId })).toBeNull();
+  });
+
+  it("cambia nombre y rol; la membresía refleja el nuevo rol", async () => {
+    await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" });
+    const { userId, staffId } = await createStaffUser(db, {
+      locationId,
+      name: "Camila",
+      email: "camila@villa.co",
+      password: PASSWORD,
+      role: "barber",
+    });
+    await updateStaffMember(db, { locationId, staffId, displayName: "  Camila R. ", role: "reception" });
+    expect(await membershipsForUser(db, userId)).toEqual([
+      { staffId, locationId, role: "reception", displayName: "Camila R." },
+    ]);
+    expect((await staffMember(db, { locationId, staffId }))?.hasAppAccess).toBe(true);
+    await expect(updateStaffMember(db, { locationId, staffId, displayName: "C", role: "barber" })).rejects.toThrow(StaffError);
+  });
+
+  it("retirar a alguien le quita el acceso; reactivarlo se lo devuelve", async () => {
+    await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" });
+    const { userId, staffId } = await createStaffUser(db, {
+      locationId,
+      name: "Barbero Uno",
+      email: "uno@villa.co",
+      password: PASSWORD,
+      role: "barber",
+    });
+    await setStaffActive(db, { locationId, staffId, active: false });
+    expect(await membershipsForUser(db, userId)).toEqual([]);
+    await setStaffActive(db, { locationId, staffId, active: true });
+    expect(await membershipsForUser(db, userId)).toHaveLength(1);
+  });
+
+  it("nunca deja la sede sin un dueño activo", async () => {
+    const owner = await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" });
+    await expect(setStaffActive(db, { locationId, staffId: owner, active: false })).rejects.toThrow(/al menos un dueño/);
+    await expect(updateStaffMember(db, { locationId, staffId: owner, displayName: "Dueño", role: "barber" })).rejects.toThrow(
+      /al menos un dueño/,
+    );
+    // El cambio fallido se revierte completo.
+    expect(await staffMember(db, { locationId, staffId: owner })).toMatchObject({ role: "owner", active: true });
+
+    const second = await addStaffMember(db, { locationId, displayName: "Socia", role: "owner" });
+    await setStaffActive(db, { locationId, staffId: owner, active: false });
+    await expect(setStaffActive(db, { locationId, staffId: second, active: false })).rejects.toThrow(StaffError);
+  });
+
+  it("no toca personal de otra sede", async () => {
+    await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" });
+    const other = await createLocation(db, { name: "Otra sede" });
+    await addStaffMember(db, { locationId: other, displayName: "Dueño ajeno", role: "owner" });
+    const ajeno = await addStaffMember(db, { locationId: other, displayName: "Ajeno", role: "barber" });
+    await expect(setStaffActive(db, { locationId, staffId: ajeno, active: false })).rejects.toThrow(/no existe en esta sede/);
+    await expect(updateStaffMember(db, { locationId, staffId: ajeno, displayName: "X Y", role: "owner" })).rejects.toThrow(
+      /no existe en esta sede/,
+    );
+    expect(await staffMember(db, { locationId: other, staffId: ajeno })).toMatchObject({ active: true, role: "barber" });
   });
 });
