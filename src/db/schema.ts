@@ -15,6 +15,7 @@ import {
   unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { tstzrange } from "./tstzrange";
 
 // Convenciones (ver docs/arquitectura.md):
 // - IDs internos bigint identity; hacia afuera solo ULID o tokens.
@@ -32,6 +33,13 @@ export const locations = pgTable("locations", {
   name: text("name").notNull(),
   timezone: text("timezone").notNull().default("America/Bogota"),
   currency: char("currency", { length: 3 }).notNull().default("COP"),
+  // Reglas de la agenda (una fila por sede; el dueño las ajusta).
+  slotStepMin: integer("slot_step_min").notNull().default(15),
+  minAdvanceMin: integer("min_advance_min").notNull().default(60),
+  maxAdvanceDays: integer("max_advance_days").notNull().default(14),
+  holdMin: integer("hold_min").notNull().default(10),
+  freeCancelHours: integer("free_cancel_hours").notNull().default(3),
+  noShowGraceMin: integer("no_show_grace_min").notNull().default(10),
   createdAt: createdAt(),
 });
 
@@ -250,6 +258,162 @@ export const staffSchedules = pgTable(
     check(
       "staff_schedules_range_check",
       sql`${t.startMin} >= 0 and ${t.endMin} <= 1440 and ${t.startMin} < ${t.endMin} and ${t.startMin} % 5 = 0 and ${t.endMin} % 5 = 0`,
+    ),
+  ],
+);
+
+// ─── Agenda ──────────────────────────────────────────────────────────────────
+// Garantías en la migración agenda_guards: sin doble reserva (EXCLUDE), transiciones de estado
+// válidas, citas terminadas/canceladas congeladas, nada se borra y el historial es solo-inserción.
+
+/** Datos mínimos (Ley 1581). Un walk-in anónimo no crea cliente. */
+export const clients = pgTable(
+  "clients",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    name: text("name").notNull(),
+    phoneE164: text("phone_e164"),
+    email: text("email"),
+    anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("clients_location_id_id_key").on(t.locationId, t.id),
+    uniqueIndex("clients_location_phone_key").on(t.locationId, t.phoneE164).where(sql`${t.phoneE164} is not null`),
+    index("clients_location_name_idx").on(t.locationId, sql`lower(${t.name})`),
+    check("clients_phone_check", sql`${t.phoneE164} is null or ${t.phoneE164} ~ '^\\+[1-9][0-9]{7,14}$'`),
+    check("clients_email_check", sql`${t.email} is null or ${t.email} = lower(${t.email})`),
+  ],
+);
+
+export const appointments = pgTable(
+  "appointments",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    /** ULID: lo único que sale hacia afuera (enlaces, comprobantes). */
+    publicId: text("public_id").notNull().unique(),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    serviceId: bigint("service_id", { mode: "bigint" }).notNull(),
+    clientId: bigint("client_id", { mode: "bigint" }),
+    // Copia del servicio al agendar: lo cotizado no cambia si después se edita el catálogo.
+    // La comisión NO se copia aquí: se congela al cobrar (sprint 4).
+    serviceName: text("service_name").notNull(),
+    durationMin: integer("duration_min").notNull(),
+    bufferMin: integer("buffer_min").notNull(),
+    price: bigint("price", { mode: "bigint" }).notNull(),
+    status: text("status", {
+      enum: ["pending", "confirmed", "arrived", "in_chair", "completed", "cancelled", "no_show"],
+    }).notNull(),
+    source: text("source", { enum: ["staff", "walk_in", "online"] }).notNull(),
+    /** Servicio + limpieza: [inicio, inicio + duración + limpieza). */
+    during: tstzrange("during").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    cancelReason: text("cancel_reason", { enum: ["client", "staff", "expired", "left", "duplicate"] }),
+    cancelNote: text("cancel_note"),
+    cancelledLate: boolean("cancelled_late").notNull().default(false),
+    notes: text("notes"),
+    idempotencyKey: text("idempotency_key"),
+    statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("appointments_location_id_id_key").on(t.locationId, t.id),
+    unique("appointments_idempotency_key").on(t.locationId, t.idempotencyKey),
+    foreignKey({
+      name: "appointments_staff_fk",
+      columns: [t.locationId, t.staffId],
+      foreignColumns: [staffMembers.locationId, staffMembers.id],
+    }),
+    foreignKey({
+      name: "appointments_service_fk",
+      columns: [t.locationId, t.serviceId],
+      foreignColumns: [services.locationId, services.id],
+    }),
+    foreignKey({
+      name: "appointments_client_fk",
+      columns: [t.locationId, t.clientId],
+      foreignColumns: [clients.locationId, clients.id],
+    }),
+    check(
+      "appointments_status_check",
+      sql`${t.status} in ('pending','confirmed','arrived','in_chair','completed','cancelled','no_show')`,
+    ),
+    check("appointments_source_check", sql`${t.source} in ('staff','walk_in','online')`),
+    check(
+      "appointments_cancel_reason_check",
+      sql`${t.cancelReason} is null or ${t.cancelReason} in ('client','staff','expired','left','duplicate')`,
+    ),
+    check("appointments_cancelled_has_reason", sql`(${t.status} = 'cancelled') = (${t.cancelReason} is not null)`),
+    check("appointments_pending_expires", sql`${t.status} <> 'pending' or ${t.expiresAt} is not null`),
+    check("appointments_client_required", sql`${t.clientId} is not null or ${t.source} = 'walk_in'`),
+    check("appointments_duration_check", sql`${t.durationMin} > 0 and ${t.bufferMin} >= 0`),
+    check("appointments_price_check", sql`${t.price} >= 0`),
+    check(
+      "appointments_during_check",
+      sql`not isempty(${t.during}) and lower_inc(${t.during}) and not upper_inc(${t.during}) and not lower_inf(${t.during}) and not upper_inf(${t.during})`,
+    ),
+  ],
+);
+
+/** Historial de cada cita: quién cambió qué y cuándo. Solo-inserción. */
+export const appointmentEvents = pgTable(
+  "appointment_events",
+  {
+    id: id(),
+    locationId: locationId(),
+    appointmentId: bigint("appointment_id", { mode: "bigint" }).notNull(),
+    kind: text("kind", { enum: ["created", "status", "rescheduled"] }).notNull(),
+    fromStatus: text("from_status"),
+    toStatus: text("to_status"),
+    prevStaffId: bigint("prev_staff_id", { mode: "bigint" }),
+    prevDuring: tstzrange("prev_during"),
+    actorKind: text("actor_kind", { enum: ["staff", "client", "system"] }).notNull(),
+    actorUserId: text("actor_user_id"),
+    reason: text("reason"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({
+      name: "appointment_events_appointment_fk",
+      columns: [t.locationId, t.appointmentId],
+      foreignColumns: [appointments.locationId, appointments.id],
+    }),
+    check("appointment_events_kind_check", sql`${t.kind} in ('created','status','rescheduled')`),
+    check("appointment_events_actor_check", sql`${t.actorKind} in ('staff','client','system')`),
+    check("appointment_events_staff_actor", sql`${t.actorKind} <> 'staff' or ${t.actorUserId} is not null`),
+    index("appointment_events_appointment_idx").on(t.appointmentId, t.id),
+  ],
+);
+
+/** Ausencias y bloqueos. staff_id null = cierre de toda la sede (p. ej. festivo). */
+export const timeOff = pgTable(
+  "time_off",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    staffId: bigint("staff_id", { mode: "bigint" }),
+    during: tstzrange("during").notNull(),
+    allDay: boolean("all_day").notNull().default(false),
+    kind: text("kind", { enum: ["absence", "block"] }).notNull(),
+    reason: text("reason"),
+    createdBy: text("created_by").notNull(),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({
+      name: "time_off_staff_fk",
+      columns: [t.locationId, t.staffId],
+      foreignColumns: [staffMembers.locationId, staffMembers.id],
+    }),
+    check("time_off_kind_check", sql`${t.kind} in ('absence','block')`),
+    check(
+      "time_off_during_check",
+      sql`not isempty(${t.during}) and lower_inc(${t.during}) and not upper_inc(${t.during}) and not lower_inf(${t.during}) and not upper_inf(${t.during})`,
     ),
   ],
 );

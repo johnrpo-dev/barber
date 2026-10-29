@@ -25,13 +25,21 @@ export const PERMISSIONS = [
   "appointments.manage.all",
   "appointments.manage.own",
   "clients.view.contact", // teléfono y correo completos
+  "time_off.manage.all", // ausencias y bloqueos de cualquiera, cierres de la sede
+  "time_off.manage.own", // el barbero bloquea su propio tiempo
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const GRANTS: Record<Role, ReadonlySet<Permission>> = {
   owner: new Set(PERMISSIONS),
-  reception: new Set<Permission>(["ledger.post", "day.close", "appointments.manage.all", "clients.view.contact"]),
-  barber: new Set<Permission>(["commissions.view.own", "appointments.manage.own"]),
+  reception: new Set<Permission>([
+    "ledger.post",
+    "day.close",
+    "appointments.manage.all",
+    "clients.view.contact",
+    "time_off.manage.all",
+  ]),
+  barber: new Set<Permission>(["commissions.view.own", "appointments.manage.own", "time_off.manage.own"]),
 };
 
 export function can(role: Role, permission: Permission): boolean {
