@@ -20,7 +20,10 @@ type SessionState = { status: "anonymous" } | { status: "no-access" } | { status
 
 /** Una sola consulta por petición, aunque varios componentes la pidan. */
 export const sessionState = cache(async (): Promise<SessionState> => {
-  const session = await (await auth()).api.getSession({ headers: await headers() });
+  // headers() primero: marca la página como dinámica antes de tocar la configuración,
+  // así `next build` no intenta prerenderizarla ni exige los secretos.
+  const requestHeaders = await headers();
+  const session = await (await auth()).api.getSession({ headers: requestHeaders });
   if (!session) return { status: "anonymous" };
   // Una sede por ahora; con varias, aquí se elegiría la sede activa.
   const [membership] = await membershipsForUser(db() as unknown as Db, session.user.id);
