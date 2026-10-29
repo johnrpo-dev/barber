@@ -50,6 +50,33 @@ export async function findOrCreateClient(
   return existing;
 }
 
+/**
+ * Ley 1581 (minimización): clientes que iniciaron una reserva en línea y nunca confirmaron el
+ * código. A los 7 días, si todas sus citas son retenciones vencidas o reemplazadas, se borran
+ * su nombre, celular y correo. Lo corre el mantenimiento diario.
+ */
+export async function anonymizeNeverVerifiedClients(db: Db, now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const rows = await db
+    .update(clients)
+    .set({ name: "Anónimo", phoneE164: null, email: null, anonymizedAt: now, updatedAt: now })
+    .where(
+      and(
+        sql`${clients.verifiedAt} is null`,
+        sql`${clients.anonymizedAt} is null`,
+        sql`${clients.createdAt} < ${cutoff}::timestamptz`,
+        sql`exists (select 1 from appointments a where a.location_id = ${clients.locationId} and a.client_id = ${clients.id} and a.source = 'online')`,
+        sql`not exists (
+          select 1 from appointments a
+          where a.location_id = ${clients.locationId} and a.client_id = ${clients.id}
+            and not (a.status = 'cancelled' and a.cancel_reason in ('expired', 'duplicate'))
+        )`,
+      ),
+    )
+    .returning({ id: clients.id });
+  return rows.length;
+}
+
 export async function getClient(db: Db, input: { locationId: bigint; clientId: bigint }): Promise<ClientSummary | undefined> {
   const [row] = await db
     .select(columns)

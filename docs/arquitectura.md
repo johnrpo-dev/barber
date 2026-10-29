@@ -169,7 +169,7 @@ Las reglas de esta tabla son configurables; lo que **no** cambia es que se redon
 - La PWA se instala en el celular. El dueño entra con MFA.
 - Los informes leen el libro contable. **Nunca se calculan sumando en el cliente:** la suma la hace Postgres.
 
-## Seguridad: estado y plan (auditoría del sprint 2)
+## Seguridad: estado y plan (auditorías de los sprints 2 y 3)
 
 Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura) más las pruebas automáticas de permisos. Las pruebas de ataque contra la app en marcha se hacen en un entorno propio, nunca contra terceros: la superficie pública en el sprint 3, y una prueba de penetración completa antes del lanzamiento en el sprint 5.
 
@@ -193,6 +193,33 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 - **Registros sin datos personales.** `src/lib/log.ts` corta los parámetros de la consulta (correos, celulares, hashes).
 - **CI.** `npm audit` de dependencias de producción (frena ante vulnerabilidades altas o críticas) y checkout sin credenciales persistentes.
 - **Contraseñas.** better-auth usa scrypt. Es aceptable según OWASP; la sección 9 del descubrimiento decía Argon2id o bcrypt.
+- **Reserva pública (sprint 3).** `src/app/(publico)/public-endpoints.test.ts` prueba cada acción pública; su propia guarda de completitud falla si aparece una nueva sin cubrir.
+  - **Código de verificación:**
+    - es un OTP de 6 dígitos guardado como HMAC con pimienta fuera de la base y comparado en tiempo constante;
+    - el intento se cuenta antes de comparar, en un solo UPDATE condicional, así que no se puede correr en paralelo;
+    - es de un solo uso, con 5 intentos, 3 envíos y 60 s entre reenvíos.
+  - **Canal del código:** en producción viaja solo por WhatsApp, el único canal que prueba que el número es del cliente.
+  - **Límites contra abuso:**
+    - por IP (IPv6 agrupada por /64), por teléfono y globales por sede;
+    - un tope de horarios apartados a la vez;
+    - Turnstile antes de escribir nada, que falla cerrado en producción.
+  - **Enlace de gestión:**
+    - es un HMAC de 256 bits y la base solo guarda su SHA-256;
+    - vence, se revoca al cancelar y responde el mismo 404 para todo token inválido, sin IDOR;
+    - la página no se guarda en caché, no se indexa y no envía referer.
+  - **Datos del cliente:** el correo y el nombre escritos en la página pública solo se guardan al verificar, y nunca pisan los de un cliente existente.
+  - **Triggers de 0007:**
+    - el consentimiento y la bandeja de avisos son solo-inserción;
+    - el estado del código es inmutable salvo +1 intento y un único consumo;
+    - un enlace revocado no revive.
+- **Ajustes de la sede.** Solo el dueño (`settings.manage`). Las acciones están en la matriz de autorización y el enlace del mapa solo acepta `https://`.
+
+**Requisitos de despliegue que la seguridad da por hechos** (auditoría del sprint 3):
+
+- `villa-web` escucha solo en `127.0.0.1` (`HOSTNAME=127.0.0.1` en la unidad systemd) y el firewall cierra el puerto 3000. Si alguien llega directo a Next, puede inventarse `X-Forwarded-For` y saltarse todos los límites por IP.
+- Si se pone Cloudflare delante de Caddy, hay que agregar sus rangos a `trusted_proxies` en Caddy y en `src/lib/client-ip.ts`. Si no, todos los clientes comparten los mismos contadores.
+- Las dos unidades (`villa-web` y `villa-worker`) llevan `Environment=NODE_ENV=production`. Fuera de `development` o `test`, la app falla cerrado si faltan secretos o canales.
+- El registro de acceso de Caddy no guarda las rutas `/cita/*`, porque el token de esa ruta permite cancelar y reprogramar.
 
 **Pendiente, con su sprint:**
 
@@ -205,7 +232,13 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 | Cambio obligatorio de la contraseña temporal; reinicio de contraseña; cerrar sesiones | Medio | Endurecimiento |
 | Vida máxima absoluta de la sesión; auditoría de lecturas de datos personales (Ley 1581) | Bajo | Sprint 5 |
 | CSP de scripts con nonce (primero en modo reporte) | Bajo | Sprint 5, con el despliegue |
-| OTP de reserva, límite por IP y teléfono, Turnstile, tokens de gestión con vencimiento, consentimiento | Alto en el portal público | Sprint 3 |
+| Agregar las tablas de la reserva pública (0006/0007) al test del rol `villa_app`; acotar con un trigger el `expires_at` de los enlaces de gestión, que hoy se podría alargar con un UPDATE | Bajo: los triggers valen lo que valga el rol de la base | Sprint 4, con la separación de roles |
+| Borrado de datos personales que hoy no se puede hacer: IP, navegador, nombre y correo escritos (`contact_name`, `contact_email`) en `booking_verifications`, y `params` en `notifications`, bloqueados por los triggers. Anonimizar al cliente no los borra. Hace falta una función de purga `SECURITY DEFINER` en el mantenimiento diario, y decir en la política de privacidad cuánto se guardan | Medio (Ley 1581): no se puede cumplir una solicitud de supresión | Sprint 5 |
+| Firmar la cookie `villa_hold` o emitir una nueva si no hay verificación viva para ese navegador | Bajo: hace falta plantar la cookie desde un subdominio | Sprint 5 |
+| CSP de scripts con nonce. Ahora es más urgente porque hay superficie pública; debe permitir `https://challenges.cloudflare.com` en `script-src` y `frame-src` | Medio en el portal | Sprint 5, con el despliegue |
+| Verificar `X-Hub-Signature-256` en tiempo constante cuando exista el webhook de WhatsApp (estados de entrega) | Medio cuando exista | Cuando se agregue el webhook |
+| Contar por IP más una cookie de dispositivo, porque el CGNAT de los operadores móviles hace que muchos clientes compartan IP | Bajo: un vecino abusivo bloquea a otros | Sprint 5, si se ve en producción |
+| Bloquear un número a propósito: 6 solicitudes con Turnstile resuelto lo dejan sin reservar en línea 24 h. Se acepta y queda la reserva por teléfono | Bajo | Aceptado |
 | Backups cifrados y restauración probada | Alto operativo | Despliegue (sprint 5) |
 
 ## Riesgos y cuándo esta decisión deja de servir

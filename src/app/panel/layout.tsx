@@ -23,6 +23,7 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   }
   if (can(staff.role, "services.manage")) items.push({ href: "/panel/servicios", label: "Servicios", icon: "servicios" });
   if (can(staff.role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal" });
+  if (can(staff.role, "settings.manage")) items.push({ href: "/panel/ajustes", label: "Ajustes", icon: "ajustes" });
 
   return (
     <ToastProvider>

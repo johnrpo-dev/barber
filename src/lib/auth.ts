@@ -11,6 +11,12 @@ import type { Db } from "@/db/types";
 
 export const MIN_PASSWORD_LENGTH = 12;
 
+/**
+ * Detrás de Caddy en el mismo servidor: la IP real del cliente es el primer salto (desde la
+ * derecha) que no es el proxy. La comparte src/lib/client-ip.ts para los límites de lo público.
+ */
+export const IP_ADDRESS_OPTIONS = { ipAddressHeaders: ["x-forwarded-for"], trustedProxies: ["127.0.0.1", "::1"] };
+
 export function createAuth(database: Db, opts: { secret: string; baseURL: string; plugins?: BetterAuthPlugin[] }) {
   return betterAuth({
     secret: opts.secret,
@@ -31,7 +37,7 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
       // Detrás de Caddy en el mismo servidor: la IP real del cliente es el primer salto que no es el
       // proxy. Sin esto, todas las peticiones caerían en el mismo cupo y un atacante podría agotar
       // el límite de intentos de ingreso para todos.
-      ipAddress: { ipAddressHeaders: ["x-forwarded-for"], trustedProxies: ["127.0.0.1", "::1"] },
+      ipAddress: { ipAddressHeaders: [...IP_ADDRESS_OPTIONS.ipAddressHeaders], trustedProxies: [...IP_ADDRESS_OPTIONS.trustedProxies] },
       // En producción la cookie de sesión siempre lleva Secure, aunque la URL se configure mal.
       useSecureCookies: process.env.NODE_ENV === "production",
     },

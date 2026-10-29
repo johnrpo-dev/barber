@@ -1,10 +1,11 @@
 import type { PGlite } from "@electric-sql/pglite";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAppointment } from "@/db/appointments";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
+import { staffMembers } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -47,6 +48,7 @@ const agenda = await import("./agenda/actions");
 const servicios = await import("./servicios/actions");
 const personal = await import("./personal/actions");
 const bloqueos = await import("./bloqueos/actions");
+const ajustes = await import("./ajustes/actions");
 
 const TZ = "America/Bogota";
 const PASSWORD = "clave-de-prueba-123"; // valor de prueba, solo existe en esta base en memoria
@@ -116,8 +118,10 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select count(*) from appointment_events where ${loc}::bigint is null or location_id = ${loc}) as events,
       (select coalesce(string_agg(id || ':' || name || ':' || active || ':' || price || ':' || commission_bps, ',' order by id), '')
          from services where ${loc}::bigint is null or location_id = ${loc}) as services,
-      (select coalesce(string_agg(id || ':' || display_name || ':' || role || ':' || active, ',' order by id), '')
+      (select coalesce(string_agg(id || ':' || display_name || ':' || role || ':' || active || ':' || bookable_online, ',' order by id), '')
          from staff_members where ${loc}::bigint is null or location_id = ${loc}) as staff,
+      (select coalesce(string_agg(row(l.*)::text, ',' order by id), '')
+         from locations l where ${loc}::bigint is null or id = ${loc}) as locations,
       (select coalesce(string_agg(staff_id || ':' || weekday || ':' || start_min || '-' || end_min, ',' order by staff_id, weekday, start_min), '')
          from staff_schedules where ${loc}::bigint is null or location_id = ${loc}) as schedules,
       (select coalesce(string_agg(id || ':' || (cancelled_at is null), ',' order by id), '')
@@ -428,6 +432,37 @@ const CASES: Case[] = [
       return () => bloqueos.cancelTimeOffAction({ timeOffId: String(id) });
     },
   },
+  {
+    name: "ajustes · reglas de la sede y reserva en línea",
+    action: "updateBookingSettingsAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const n = Number(uniq());
+      return () =>
+        ajustes.updateBookingSettingsAction({
+          publicBookingEnabled: false,
+          publicPhone: "300 123 4567",
+          address: `Calle ${n}`,
+          mapsUrl: "",
+          slotStepMin: 15,
+          minAdvanceMin: 60 + (n % 10) * 15,
+          maxAdvanceDays: 30,
+          holdMin: 10,
+          freeCancelHours: 4,
+          noShowGraceMin: 15,
+          maxActivePerClient: 2,
+        });
+    },
+  },
+  {
+    name: "ajustes · quién atiende en línea",
+    action: "setStaffBookableAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const [row] = await db.select({ bookable: staffMembers.bookableOnline }).from(staffMembers).where(eq(staffMembers.id, A.dummy));
+      return () => ajustes.setStaffBookableAction({ staffId: String(A.dummy), bookable: !row?.bookable });
+    },
+  },
 ];
 
 const ROLES: Role[] = ["owner", "reception", "barber"];
@@ -578,6 +613,10 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
       return () => bloqueos.cancelTimeOffAction({ timeOffId: String(id) });
     },
   },
+  {
+    name: "sacar a un barbero de la reserva en línea",
+    prepare: async () => () => ajustes.setStaffBookableAction({ staffId: String(A.users.barber.staffId), bookable: false }),
+  },
 ];
 
 describe("el dueño de otra sede no alcanza nada de esta", () => {
@@ -604,7 +643,7 @@ describe("guarda de completitud", () => {
   it("toda server action exportada del panel está en la matriz de permisos", () => {
     // Cada export de un archivo "use server" es un endpoint público: si alguien agrega uno
     // y no lo pone en CASES, este test lo obliga a decidir quién puede usarlo.
-    const exported = [agenda, servicios, personal, bloqueos].flatMap((m) =>
+    const exported = [agenda, servicios, personal, bloqueos, ajustes].flatMap((m) =>
       Object.entries(m)
         .filter(([, v]) => typeof v === "function")
         .map(([k]) => k),

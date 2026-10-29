@@ -27,6 +27,7 @@ export const PERMISSIONS = [
   "clients.view.contact", // teléfono y correo completos
   "time_off.manage.all", // ausencias y bloqueos de cualquiera, cierres de la sede
   "time_off.manage.own", // el barbero bloquea su propio tiempo
+  "settings.manage", // reglas de la sede y reserva en línea
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

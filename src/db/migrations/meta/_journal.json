@@ -57,6 +57,13 @@
       "when": 1793274892799,
       "tag": "0007_public_booking_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793291042308,
+      "tag": "0008_public_booking_hardening",
+      "breakpoints": true
     }
   ]
 }

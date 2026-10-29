@@ -5,8 +5,10 @@ import { InvalidServiceError } from "@/domain/catalog/service";
 import { InvalidClientError } from "@/domain/clients/client";
 import { InvalidScheduleError } from "@/domain/staff/schedule";
 import { SlotTakenError } from "@/db/appointments";
+import { RateLimitError } from "@/db/rate-limit";
 import { StaffError } from "@/db/staff";
 import { describeError } from "./log";
+import { PublicBookingUnavailableError } from "./public-readiness";
 
 // Resultado de toda server action: nunca se lanza al cliente un error técnico.
 // Los errores de negocio llevan su mensaje (en español); el resto se registra y se generaliza.
@@ -24,6 +26,8 @@ const BUSINESS_ERRORS = [
   InvalidClientError,
   InvalidScheduleError,
   StaffError,
+  RateLimitError,
+  PublicBookingUnavailableError,
 ];
 
 export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {

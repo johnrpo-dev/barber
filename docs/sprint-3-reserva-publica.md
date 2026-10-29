@@ -273,3 +273,79 @@ La web no usa pg-boss: escribe el outbox dentro de la transacción del dominio, 
 - Plantilla sin aprobar: esa notificación queda `suppressed` y se intenta por correo.
 - Desarrollo: `ConsoleNotifier` y `FakeVerifier`.
 - `public_booking_enabled = false` apaga la reserva pública.
+
+## 10. Contrato entre el backend y la interfaz
+
+Lo fija el coordinador para construir las dos mitades en paralelo. Cambiarlo exige avisar a la otra mitad.
+
+**Decisiones de alcance:**
+
+- Un solo flujo en `/reservar`: la verificación del código es un paso dentro de la misma página, no una ruta aparte.
+- Sin slugs. La sede pública es la primera con `public_booking_enabled = true`.
+- Los componentes del panel (`Btn`, `field`, `Sheet`, `ToastProvider` y `cx`, en `src/app/panel/_components/ui.tsx`) se importan desde ahí. La mudanza a `src/app/_ui/` queda para después.
+
+**`src/app/(publico)/data.ts`** (servidor, lo escribe el backend):
+
+```ts
+export interface PortalView {
+  enabled: boolean;                 // reserva pública activa y configuración lista (publicBookingReadiness)
+  location: { name: string; address: string | null; mapsUrl: string | null; publicPhone: string | null; whatsappUrl: string | null };
+  services: { id: string /* uuid */; name: string; durationMin: number; priceLabel: string /* "$35.000" */ }[];
+  staff: { id: string /* uuid */; name: string; initials: string }[];
+  hours: { weekday: 1|2|3|4|5|6|7; label: string /* "Lunes" */; ranges: string[] /* ["9:00 a. m. – 7:00 p. m."] */ }[];
+  today: string;                    // yyyy-MM-dd en la zona de la sede
+  maxAdvanceDays: number;
+  holdMin: number;
+  turnstileSiteKey: string | null;  // null en desarrollo (verificador falso)
+}
+export async function loadPortal(): Promise<PortalView | null>; // null: no hay sede pública
+
+export interface TicketView {
+  code: string;                     // "V-4K7Q": últimos 4 del ULID
+  status: AppointmentStatus; statusLabel: string;
+  serviceName: string; staffName: string; clientFirstName: string;
+  dateLabel: string;                // "jueves 30 de octubre"
+  timeLabel: string;                // "3:30 p. m."
+  durationMin: number; priceLabel: string;
+  address: string | null; mapsUrl: string | null;
+  startIso: string; endIso: string;
+  serviceId: string; staffId: string; // uuid, para reprogramar
+  cancel: { allowed: boolean; late: boolean; freeCancelHours: number };
+  reschedule: { allowed: boolean; reason: string | null }; // reason en español si no se puede
+  icsUrl: string;                   // /cita/[token]/calendario.ics
+}
+export async function loadTicket(token: string): Promise<TicketView | null>; // null = el mismo 404 para todo
+```
+
+**`src/app/(publico)/actions.ts`** (`"use server"`, lo escribe el backend). Todas devuelven `ActionResult` de `@/lib/action`; los mensajes de error van en español y salen tal cual a la interfaz.
+
+```ts
+type SlotView = { minute: number; label: string /* "3:30 p. m." */; period: "morning" | "afternoon" | "evening" };
+loadDaySummary(input: { serviceId: string; staffId: string | "any" }): ActionResult<{ days: { date: string; count: number }[] }>; // desde hoy, maxAdvanceDays días
+loadPublicSlots(input: { serviceId: string; staffId: string | "any"; date: string }): ActionResult<{ slots: SlotView[] }>;
+startBooking(input: {
+  serviceId: string; staffId: string | "any"; date: string; minute: number;
+  name: string; phone: string; email?: string;
+  consents: { dataProcessing: boolean; reminders: boolean; marketing: boolean };
+  turnstileToken: string; formId: string /* uuid del formulario: idempotencia */;
+}): ActionResult<{ channel: "whatsapp" | "email"; maskedDestination: string; holdExpiresAt: string; resendAvailableAt: string }>;
+// Además deja la cookie villa_hold (HttpOnly, Secure en producción, SameSite=Strict, Path=/reservar).
+resendCode(): ActionResult<{ resendAvailableAt: string; sendsLeft: number }>;
+verifyCode(input: { code: string }): ActionResult<{ manageUrl: string /* /cita/[token] */ }>;
+cancelByToken(input: { token: string; reason?: string }): ActionResult<undefined>;
+loadRescheduleSlots(input: { token: string; date: string }): ActionResult<{ slots: SlotView[] }>;
+loadRescheduleDays(input: { token: string }): ActionResult<{ days: { date: string; count: number }[] }>;
+rescheduleByToken(input: { token: string; date: string; minute: number }): ActionResult<{ dateLabel: string; timeLabel: string }>;
+```
+
+**Errores con forma conocida** (la interfaz los distingue por el texto exacto del prefijo):
+
+- `"Uy, alguien tomó ese horario"…`: el horario se tomó; la interfaz vuelve al paso de la hora.
+- `"Se acabó el tiempo"…`: la retención venció.
+- `"Ese código no coincide."`, `"El código venció"`, `"Demasiados intentos"`.
+- `"Vas muy rápido"`: el límite de velocidad.
+
+**Rutas:**
+
+- `/cita/[token]/calendario.ics` (route handler GET): lo escribe el backend.
+- `/`, `/reservar`, `/cita/[token]` y `/privacidad`: las escribe la interfaz.

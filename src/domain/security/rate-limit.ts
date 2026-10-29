@@ -3,8 +3,9 @@
 // aquí solo se decide la cubeta, la ventana y si el golpe número N todavía pasa.
 // El sujeto llega ya como HMAC de la IP o del teléfono: nunca en claro.
 
-export type RateAction = "booking_start" | "otp_send" | "otp_verify" | "manage_action";
-export type RateScope = "ip" | "contact";
+export type RateAction = "booking_start" | "otp_send" | "otp_verify" | "manage_action" | "browse";
+/** `location`: un tope global por sede (sin IP ni contacto) contra el bombeo de costos. */
+export type RateScope = "ip" | "contact" | "location";
 
 export interface RatePolicy {
   windowSec: number;
@@ -26,9 +27,16 @@ export const RATE_POLICIES: Record<RateAction, Partial<Record<RateScope, readonl
   otp_send: {
     ip: [{ windowSec: DAY, limit: 20 }],
     contact: [{ windowSec: DAY, limit: 6 }],
+    // Auditoría del sprint 3: aunque roten IPs y números, la sede no paga más de esto en códigos.
+    location: [
+      { windowSec: HOUR, limit: 60 },
+      { windowSec: DAY, limit: 300 },
+    ],
   },
   otp_verify: { ip: [{ windowSec: HOUR, limit: 30 }] },
   manage_action: { ip: [{ windowSec: HOUR, limit: 30 }] },
+  /** Lecturas de horarios (cada una calcula disponibilidad): días y horas, reservar y reprogramar. */
+  browse: { ip: [{ windowSec: HOUR, limit: 120 }] },
 };
 
 /** Las políticas de una acción para un alcance; vacío si ese alcance no se limita. */

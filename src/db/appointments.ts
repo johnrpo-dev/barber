@@ -23,6 +23,7 @@ import {
   timeOff,
   user,
 } from "./schema";
+import { extendManageLink, revokeManageLinks } from "./manage-links";
 import type { TimeRange } from "./tstzrange";
 import type { Db } from "./types";
 import { ulid } from "./ulid";
@@ -142,9 +143,11 @@ async function activeStaff(
 /** Lo que ocupa tiempo: citas activas (sin contar reservas vencidas) y ausencias vigentes. */
 async function busyIntervals(
   db: Db,
-  input: { locationId: bigint; from: Date; to: Date; now: Date; excludeAppointmentId?: bigint },
+  input: { locationId: bigint; from: Date; to: Date; now: Date; excludeAppointmentId?: bigint; onlyTimeOff?: boolean },
 ): Promise<BusyInterval[]> {
-  const appts = await db
+  const appts = input.onlyTimeOff
+    ? []
+    : await db
     .select({ staffId: appointments.staffId, during: appointments.during })
     .from(appointments)
     .where(
@@ -231,6 +234,8 @@ export async function availability(
     internal: boolean;
     /** Al reprogramar, la propia cita no cuenta como ocupada. */
     excludeAppointmentId?: bigint;
+    /** Ignora las citas (solo turnos y ausencias): sirve para distinguir "cerrado" de "lleno". */
+    ignoreAppointments?: boolean;
   },
 ): Promise<Slot[]> {
   const now = input.now ?? new Date();
@@ -253,7 +258,14 @@ export async function availability(
     minAdvanceMin: input.internal ? 0 : rules.minAdvanceMin,
     maxAdvanceDays: input.internal ? 366 : rules.maxAdvanceDays,
     staff,
-    busy: await busyIntervals(db, { locationId: input.locationId, from, to, now, excludeAppointmentId: input.excludeAppointmentId }),
+    busy: await busyIntervals(db, {
+      locationId: input.locationId,
+      from,
+      to,
+      now,
+      excludeAppointmentId: input.excludeAppointmentId,
+      onlyTimeOff: input.ignoreAppointments,
+    }),
   });
 }
 
@@ -549,6 +561,10 @@ export async function changeStatus(
       ...actorFields(actor),
       reason: input.note?.trim() || null,
     });
+    // Cancelada o no-show desde el panel: el enlace del cliente deja de servir.
+    if (!("kind" in actor) && (input.to === "cancelled" || input.to === "no_show")) {
+      await revokeManageLinks(tx, { locationId: input.locationId, appointmentId: appt.id, reason: "staff", now });
+    }
   });
 }
 
@@ -599,6 +615,8 @@ export async function rescheduleAppointment(
         prevDuring: appt.during,
         ...actorFields(input.actor),
       });
+      // Quien reprograme (personal o cliente): el enlace sigue al nuevo fin de la cita.
+      await extendManageLink(tx, { locationId: input.locationId, appointmentId: appt.id, appointmentEnd: during.end });
     });
   } catch (err) {
     if (isExclusionViolation(err)) throw new SlotTakenError();

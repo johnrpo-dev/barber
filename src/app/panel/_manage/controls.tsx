@@ -81,7 +81,7 @@ export function Chip({
   );
 }
 
-/** Minutos enteros con botones − / + de 44 px (la duración no es dinero: number está bien aquí). */
+/** Enteros (minutos, horas, días) con botones − / + de 44 px (no es dinero: number está bien aquí). */
 export function MinutesField({
   label,
   value,
@@ -89,6 +89,7 @@ export function MinutesField({
   minValue,
   maxValue,
   description,
+  step = 5,
 }: {
   label: string;
   value: number;
@@ -96,6 +97,7 @@ export function MinutesField({
   minValue: number;
   maxValue: number;
   description?: string;
+  step?: number;
 }) {
   return (
     <NumberField
@@ -103,7 +105,7 @@ export function MinutesField({
       onChange={(v) => onChange(Number.isNaN(v) ? minValue : v)}
       minValue={minValue}
       maxValue={maxValue}
-      step={5}
+      step={step}
       formatOptions={{ maximumFractionDigits: 0 }}
       className={field.root}
     >

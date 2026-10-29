@@ -98,6 +98,7 @@ export async function listStaff(db: Db, locationId: bigint) {
       role: staffMembers.role,
       active: staffMembers.active,
       userId: staffMembers.userId,
+      bookableOnline: staffMembers.bookableOnline,
     })
     .from(staffMembers)
     .where(eq(staffMembers.locationId, locationId))

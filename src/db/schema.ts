@@ -482,6 +482,12 @@ export const bookingVerifications = pgTable(
     consentTextVersion: text("consent_text_version").notNull(),
     consentIp: text("consent_ip"),
     consentUserAgent: text("consent_user_agent"),
+    /**
+     * Lo que escribió quien reserva. Solo pasa al cliente al verificar (y sin reemplazar lo que
+     * ya tenga): un extraño que ponga un celular ajeno no cambia el nombre ni el correo de nadie.
+     */
+    contactName: text("contact_name"),
+    contactEmail: text("contact_email"),
     createdAt: createdAt(),
   },
   (t) => [
@@ -504,6 +510,11 @@ export const bookingVerifications = pgTable(
     ),
     check("booking_verifications_ua_check", sql`${t.consentUserAgent} is null or length(${t.consentUserAgent}) <= 300`),
     check("booking_verifications_ip_check", sql`${t.consentIp} is null or length(${t.consentIp}) <= 45`),
+    check("booking_verifications_contact_name_check", sql`${t.contactName} is null or length(${t.contactName}) between 2 and 80`),
+    check(
+      "booking_verifications_contact_email_check",
+      sql`${t.contactEmail} is null or (${t.contactEmail} = lower(${t.contactEmail}) and length(${t.contactEmail}) <= 254)`,
+    ),
     uniqueIndex("booking_verifications_one_live")
       .on(t.appointmentId)
       .where(sql`${t.consumedAt} is null and ${t.supersededAt} is null`),
@@ -590,6 +601,8 @@ export const notifications = pgTable(
     channel: text("channel", { enum: ["whatsapp", "email"] }).notNull(),
     template: text("template", {
       enum: [
+        // El código: solo se registra que salió (params { code: "[redacted]" }), para la cuota diaria.
+        "otp",
         "booking_confirmed",
         "reminder_24h",
         "reminder_2h",
@@ -621,7 +634,7 @@ export const notifications = pgTable(
     check("notifications_channel_check", sql`${t.channel} in ('whatsapp','email')`),
     check(
       "notifications_template_check",
-      sql`${t.template} in ('booking_confirmed','reminder_24h','reminder_2h','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff')`,
+      sql`${t.template} in ('otp','booking_confirmed','reminder_24h','reminder_2h','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff')`,
     ),
     check("notifications_recipient_hash_check", hexCheck(t.recipientHash)),
     index("notifications_send_after_idx").on(t.sendAfter),
