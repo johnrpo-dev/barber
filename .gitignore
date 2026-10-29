@@ -1,0 +1,23 @@
+# dependencias
+node_modules/
+
+# next
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# entorno y secretos
+.env
+.env.*
+!.env.example
+
+# tests
+coverage/
+playwright-report/
+test-results/
+
+# sistema
+.DS_Store
+Thumbs.db
+*.log

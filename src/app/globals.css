@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+/* Dirección "Navaja y Cuero" (docs/00-descubrimiento.md §10).
+   Latón es solo decorativo: no alcanza contraste para texto. */
+@theme {
+  --color-hueso: #f4efe6;
+  --color-tinta: #1c1a17;
+  --color-cuero: #8a4b2a;
+  --color-botella: #2f4a3a;
+  --color-laton: #b8893b;
+
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-sans: var(--font-public-sans), system-ui, sans-serif;
+}
+
+html {
+  background: var(--color-hueso);
+  color: var(--color-tinta);
+}
+
+/* Montos siempre con cifras tabulares. */
+.monto {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-cuero);
+  outline-offset: 2px;
+}
