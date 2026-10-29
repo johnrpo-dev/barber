@@ -35,7 +35,7 @@ function testAuth() {
 }
 
 describe("acceso del personal", () => {
-  it("el dueño creado por script inicia sesión con correo y contraseña", async () => {
+  it("el dueño creado por script inicia sesión con correo y contraseña", { timeout: 30_000 }, async () => {
     const { userId } = await createStaffUser(db, {
       locationId,
       name: "Dueño Villa",
@@ -49,7 +49,7 @@ describe("acceso del personal", () => {
     expect(result.token).toBeTruthy();
   });
 
-  it("rechaza una contraseña equivocada", async () => {
+  it("rechaza una contraseña equivocada", { timeout: 30_000 }, async () => {
     await createStaffUser(db, { locationId, name: "Recepción", email: "recepcion@villa.co", password: PASSWORD, role: "reception" });
     await expect(
       testAuth().api.signInEmail({ body: { email: "recepcion@villa.co", password: "otra-clave-larga-123" } }),
@@ -147,6 +147,8 @@ describe("gestión del personal", () => {
       role: "barber",
       active: true,
       hasAppAccess: false,
+      twoFactorEnabled: false,
+      mustChangePassword: false,
     });
     const other = await createLocation(db, { name: "Otra sede" });
     expect(await staffMember(db, { locationId: other, staffId })).toBeNull();

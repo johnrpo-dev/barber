@@ -8,6 +8,7 @@ import type { Db } from "@/db/types";
 import { businessDate } from "@/domain/ledger/business-date";
 import { formatTime } from "@/domain/staff/schedule";
 import { idSchema } from "@/lib/action";
+import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { requirePermission } from "@/lib/session";
 import { toTimeOffView } from "../time-off-view";
 import { StaffDetail } from "./staff-detail";
@@ -40,8 +41,11 @@ export default async function StaffDetailPage({ params }: { params: Promise<{ st
           role: member.role,
           active: member.active,
           hasAppAccess: member.hasAppAccess,
+          twoFactorEnabled: member.twoFactorEnabled,
+          mustChangePassword: member.mustChangePassword,
           isMe: member.staffId === staff.staffId,
         }}
+        minPasswordLength={MIN_PASSWORD_LENGTH}
         schedule={blocks.map((b) => ({ weekday: b.weekday, start: formatTime(b.startMin), end: formatTime(b.endMin) }))}
         timeOff={upcoming.map((t) => toTimeOffView(t, timeZone))}
         today={businessDate(now, timeZone)}

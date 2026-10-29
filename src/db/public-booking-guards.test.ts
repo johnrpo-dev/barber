@@ -138,7 +138,12 @@ describe("solo-inserción y enlaces", () => {
       insert into appointment_links (location_id, appointment_id, token_hash, expires_at)
       values (${String(location)}::bigint, ${String(appointmentId)}::bigint, ${HEX("e")}, now() + interval '7 days')`);
     expect(await dbError(db.execute(sql`update appointment_links set token_hash = ${HEX("f")}`))).toMatch(/no cambia de cita ni de token/);
-    await db.execute(sql`update appointment_links set expires_at = now() + interval '9 days'`);
+    // El vencimiento sigue a la cita (al reprogramar), pero nunca más de 7 días tras su fin (0009).
+    const end = sql`(select upper(during) from appointments where id = ${String(appointmentId)}::bigint)`;
+    await db.execute(sql`update appointment_links set expires_at = ${end} + interval '7 days'`);
+    expect(await dbError(db.execute(sql`update appointment_links set expires_at = ${end} + interval '8 days'`))).toMatch(
+      /no puede vencer más de 7 días/,
+    );
     await db.execute(sql`update appointment_links set revoked_at = now(), revoked_reason = 'cancelled'`);
     expect(await dbError(db.execute(sql`update appointment_links set revoked_at = null, revoked_reason = null`))).toMatch(/ya fue revocado/);
     expect(await dbError(db.execute(sql`delete from appointment_links`))).toMatch(/no admite DELETE/);

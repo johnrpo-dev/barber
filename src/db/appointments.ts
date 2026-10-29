@@ -10,6 +10,7 @@ import {
 } from "@/domain/booking/status";
 import { businessDate } from "@/domain/ledger/business-date";
 import { type Money, money } from "@/domain/money";
+import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import type { Role } from "@/domain/staff/roles";
 import { formatTime, type ScheduleBlock, type Weekday } from "@/domain/staff/schedule";
 import {
@@ -286,6 +287,30 @@ export interface CreateAppointmentInput {
   /** Solo el personal, y confirmándolo: agendar fuera del turno. */
   allowOutsideHours?: boolean;
   now?: Date;
+  /**
+   * Huella de la petición original (ver appointmentRequestHash). Solo la pasa walkIn, cuyo
+   * inicio se calcula en el servidor y cambia entre reintentos.
+   */
+  requestHash?: string;
+}
+
+/**
+ * Lo que identifica una petición de agendar: la misma clave con otros datos es un conflicto
+ * (IdempotencyConflictError), nunca la cita de otra petición.
+ */
+export function appointmentRequestHash(input: CreateAppointmentInput): string {
+  return requestHash({
+    kind: "appointment",
+    locationId: input.locationId,
+    serviceId: input.serviceId,
+    staffId: input.staffId,
+    start: input.start,
+    clientId: input.clientId,
+    source: input.source,
+    notes: input.notes?.trim() || null,
+    allowOutsideHours: input.allowOutsideHours ?? false,
+    createdBy: input.createdBy,
+  });
 }
 
 export interface CreatedAppointment {
@@ -300,11 +325,12 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
   const now = input.now ?? new Date();
   if (input.source === "online" && input.allowOutsideHours) throw new BookingError("Las reservas en línea respetan el horario");
   if (input.source !== "walk_in" && input.clientId === null) throw new BookingError("Elige o crea el cliente");
+  const hash = input.requestHash ?? appointmentRequestHash(input);
 
   return db.transaction(async (txRaw) => {
     const tx = txRaw as unknown as Db;
     const existing = await findByIdempotencyKey(tx, input.locationId, input.idempotencyKey);
-    if (existing) return { ...existing, created: false };
+    if (existing) return replayOf(existing, hash);
 
     await expireHolds(tx, input.locationId, now);
     if (input.source === "online" && input.clientId !== null) {
@@ -363,6 +389,7 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
               expiresAt: status === "pending" ? new Date(now.getTime() + rules.holdMin * MINUTE_MS) : null,
               notes: input.notes?.trim() || null,
               idempotencyKey: input.idempotencyKey,
+              requestHash: hash,
               createdBy: input.createdBy,
             })
             .returning({ id: appointments.id });
@@ -382,7 +409,7 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
         if (isExclusionViolation(err)) continue; // alguien tomó ese horario un instante antes: probar el siguiente
         if (pgCode(err).constraint === "appointments_idempotency_key") {
           const again = await findByIdempotencyKey(tx, input.locationId, input.idempotencyKey);
-          if (again) return { ...again, created: false };
+          if (again) return replayOf(again, hash);
         }
         throw err;
       }
@@ -414,10 +441,25 @@ async function cancelPendingHolds(db: Db, locationId: bigint, clientId: bigint):
 
 async function findByIdempotencyKey(db: Db, locationId: bigint, key: string) {
   const [row] = await db
-    .select({ appointmentId: appointments.id, publicId: appointments.publicId, staffId: appointments.staffId, during: appointments.during })
+    .select({
+      appointmentId: appointments.id,
+      publicId: appointments.publicId,
+      staffId: appointments.staffId,
+      during: appointments.during,
+      requestHash: appointments.requestHash,
+    })
     .from(appointments)
     .where(and(eq(appointments.locationId, locationId), eq(appointments.idempotencyKey, key)));
-  return row ? { appointmentId: row.appointmentId, publicId: row.publicId, staffId: row.staffId, start: row.during.start } : undefined;
+  return row
+    ? { appointmentId: row.appointmentId, publicId: row.publicId, staffId: row.staffId, start: row.during.start, requestHash: row.requestHash }
+    : undefined;
+}
+
+/** Reintento con la misma clave: la cita original si es la misma petición; si no, conflicto. */
+function replayOf(existing: NonNullable<Awaited<ReturnType<typeof findByIdempotencyKey>>>, hash: string): CreatedAppointment {
+  assertSameRequest(existing, hash);
+  const { requestHash: _stored, ...appointment } = existing;
+  return { ...appointment, created: false };
 }
 
 /** Minutos ya agendados por barbero en un día local (para repartir "Cualquiera"). */
@@ -454,9 +496,21 @@ export async function walkIn(
   },
 ): Promise<CreatedAppointment> {
   const now = input.now ?? new Date();
+  // La hora la pone el servidor (ahora), así que no entra en la huella: un reintento un minuto
+  // después sigue siendo la misma petición.
+  const hash = requestHash({
+    kind: "walk_in",
+    locationId: input.locationId,
+    serviceId: input.serviceId,
+    staffId: input.staffId,
+    clientId: input.clientId,
+    notes: input.notes?.trim() || null,
+    allowOutsideHours: input.allowOutsideHours ?? false,
+    createdBy: input.createdBy,
+  });
   // Reintento (respuesta perdida, doble toque): la silla ya la ocupa este mismo walk-in.
   const existing = await findByIdempotencyKey(db, input.locationId, input.idempotencyKey);
-  if (existing) return { ...existing, created: false };
+  if (existing) return replayOf(existing, hash);
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
   const staff = await activeStaff(db, input.locationId, input.staffId === "any" ? undefined : [input.staffId]);
@@ -487,6 +541,7 @@ export async function walkIn(
     start: plan.start,
     source: "walk_in",
     now,
+    requestHash: hash,
   });
 }
 

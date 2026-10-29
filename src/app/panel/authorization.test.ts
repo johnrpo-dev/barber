@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { PGlite } from "@electric-sql/pglite";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -5,7 +6,7 @@ import { createAppointment } from "@/db/appointments";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
-import { staffMembers } from "@/db/schema";
+import { session, staffMembers, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -22,7 +23,9 @@ import type { Role } from "@/domain/staff/roles";
 
 const state = vi.hoisted(() => ({
   db: undefined as unknown,
-  session: null as null | { user: { id: string; name: string; email: string } },
+  session: null as null | { user: { id: string; name: string; email: string }; session: { id: string } },
+  /** El único código TOTP que acepta el verifyTOTP simulado (el real se prueba en src/lib/auth.test.ts). */
+  totpCode: "246810",
 }));
 
 vi.mock("next/navigation", () => ({
@@ -41,7 +44,15 @@ vi.mock("react", async (importOriginal) => ({
 vi.mock("@/db/client", () => ({ db: () => state.db }));
 vi.mock("@/lib/auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/auth")>()),
-  auth: async () => ({ api: { getSession: async () => state.session } }),
+  auth: async () => ({
+    api: {
+      getSession: async () => state.session,
+      verifyTOTP: async ({ body }: { body: { code: string } }) => {
+        if (body.code !== state.totpCode) throw new Error("INVALID_CODE");
+        return {};
+      },
+    },
+  }),
 }));
 
 const agenda = await import("./agenda/actions");
@@ -49,11 +60,13 @@ const servicios = await import("./servicios/actions");
 const personal = await import("./personal/actions");
 const bloqueos = await import("./bloqueos/actions");
 const ajustes = await import("./ajustes/actions");
+const cuenta = await import("../cuenta/actions");
 
 const TZ = "America/Bogota";
 const PASSWORD = "clave-de-prueba-123"; // valor de prueba, solo existe en esta base en memoria
+const TEMP_PASSWORD = "clave-temporal-456";
 
-type Person = { id: string; staffId: bigint };
+type Person = { id: string; staffId: bigint; sessionId: string };
 let db: Db;
 let client: PGlite;
 const A = {} as {
@@ -98,8 +111,40 @@ async function timeOffFor(staffId: bigint, offsetDays: number): Promise<bigint> 
   return id;
 }
 
-function signInAs(person: Person | null) {
-  state.session = person ? { user: { id: person.id, name: "Prueba", email: "prueba@villa.test" } } : null;
+/** Una sesión real en la tabla (requireStaff lee de ahí la hora del ingreso y de la reautenticación). */
+async function openSession(userId: string): Promise<string> {
+  const id = randomUUID();
+  await db.insert(session).values({ id, token: randomUUID(), userId, expiresAt: new Date(Date.now() + 3_600_000) });
+  return id;
+}
+
+/** Alguien con acceso y su sesión abierta (contraseña PASSWORD). */
+async function personWithSession(role: Role, locationId: bigint, opts: { mustChangePassword?: boolean } = {}): Promise<Person> {
+  const k = uniq();
+  const { userId, staffId } = await createStaffUser(db, {
+    locationId,
+    name: `Persona ${role} ${k}`,
+    email: `${role}-${locationId}-${k}@villa.test`,
+    password: PASSWORD,
+    role,
+    mustChangePassword: opts.mustChangePassword,
+  });
+  if (role === "owner") await db.update(user).set({ twoFactorEnabled: true }).where(eq(user.id, userId));
+  return { id: userId, staffId, sessionId: await openSession(userId) };
+}
+
+/**
+ * Simula la cookie de esa persona. Por defecto acaba de confirmar su identidad (las acciones
+ * críticas pasan); `stale` deja la sesión vieja para probar que se exige reautenticación.
+ */
+async function signInAs(person: Person | null, opts: { stale?: boolean } = {}) {
+  state.session = person ? { user: { id: person.id, name: "Prueba", email: "prueba@villa.test" }, session: { id: person.sessionId } } : null;
+  if (!person) return;
+  const old = new Date(Date.now() - 60 * 60_000);
+  await db
+    .update(session)
+    .set(opts.stale ? { createdAt: old, reauthenticatedAt: null } : { reauthenticatedAt: new Date() })
+    .where(eq(session.id, person.sessionId));
 }
 
 /** El staffId de quien tiene la sesión (para acciones sobre lo propio); sin sesión, uno cualquiera. */
@@ -127,7 +172,10 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select coalesce(string_agg(id || ':' || (cancelled_at is null), ',' order by id), '')
          from time_off where ${loc}::bigint is null or location_id = ${loc}) as time_off,
       (select count(*) from clients where ${loc}::bigint is null or location_id = ${loc}) as clients,
-      (select count(*) from "user") as users
+      (select count(*) from "user") as users,
+      (select coalesce(string_agg(id || ':' || must_change_password, ',' order by id), '') from "user") as user_flags,
+      (select coalesce(string_agg(user_id || ':' || password, ',' order by user_id), '') from account) as passwords,
+      (select coalesce(string_agg(id, ',' order by id), '') from session) as sessions
   `);
   return JSON.stringify(rows);
 }
@@ -137,16 +185,8 @@ beforeAll(async () => {
   state.db = db;
   base = addDays(businessDate(new Date(), TZ), 3);
   const allDay = ([1, 2, 3, 4, 5, 6, 7] as const).map((weekday) => ({ weekday, startMin: 0, endMin: 24 * 60 }));
-  const person = async (role: Role, locationId: bigint): Promise<Person> => {
-    const { userId, staffId } = await createStaffUser(db, {
-      locationId,
-      name: `Persona ${role}`,
-      email: `${role}-${locationId}@villa.test`,
-      password: PASSWORD,
-      role,
-    });
-    return { id: userId, staffId };
-  };
+  // Los dueños ya tienen el TOTP inscrito (si no, requireStaff los manda a inscribirlo).
+  const person = (role: Role, locationId: bigint) => personWithSession(role, locationId);
 
   A.location = await createLocation(db, { name: "Villa" });
   A.users = { owner: await person("owner", A.location), reception: await person("reception", A.location), barber: await person("barber", A.location) };
@@ -463,6 +503,41 @@ const CASES: Case[] = [
       return () => ajustes.setStaffBookableAction({ staffId: String(A.dummy), bookable: !row?.bookable });
     },
   },
+  {
+    name: "personal · poner una contraseña temporal",
+    action: "resetStaffPasswordAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const target = await personWithSession("barber", A.location);
+      return () => personal.resetStaffPasswordAction({ staffId: String(target.staffId), password: TEMP_PASSWORD });
+    },
+  },
+  {
+    name: "personal · cerrar las sesiones de alguien",
+    action: "revokeStaffSessionsAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const target = await personWithSession("barber", A.location);
+      return () => personal.revokeStaffSessionsAction({ staffId: String(target.staffId) });
+    },
+  },
+  {
+    name: "cuenta · cambiar la contraseña propia",
+    action: "changeOwnPasswordAction",
+    allowed: ["owner", "reception", "barber"],
+    prepare: async () => async () => {
+      // Ida y vuelta: la contraseña de la persona queda como estaba para los demás casos.
+      const there = await cuenta.changeOwnPasswordAction({ currentPassword: PASSWORD, newPassword: TEMP_PASSWORD });
+      if (!there.ok) return there;
+      return cuenta.changeOwnPasswordAction({ currentPassword: TEMP_PASSWORD, newPassword: PASSWORD });
+    },
+  },
+  {
+    name: "cuenta · confirmar identidad",
+    action: "reauthenticateAction",
+    allowed: ["owner", "reception", "barber"],
+    prepare: async () => () => cuenta.reauthenticateAction({ method: "password", password: PASSWORD }),
+  },
 ];
 
 const ROLES: Role[] = ["owner", "reception", "barber"];
@@ -470,7 +545,7 @@ const ROLES: Role[] = ["owner", "reception", "barber"];
 describe.each(CASES)("$name", (c) => {
   it.each(ROLES)("como %s", async (role) => {
     const attempt = await c.prepare();
-    signInAs(A.users[role]);
+    await signInAs(A.users[role]);
     if (c.allowed.includes(role)) {
       const result = await attempt();
       if (c.lenient) expect(result.ok || !/permiso/i.test(result.error ?? ""), JSON.stringify(result)).toBe(true);
@@ -484,7 +559,7 @@ describe.each(CASES)("$name", (c) => {
 
   it("sin sesión: va a /ingresar sin tocar nada", async () => {
     const attempt = await c.prepare();
-    signInAs(null);
+    await signInAs(null);
     const before = await fingerprint();
     await expect(attempt()).rejects.toMatchObject({ url: "/ingresar" });
     expect(await fingerprint()).toBe(before);
@@ -493,7 +568,7 @@ describe.each(CASES)("$name", (c) => {
 
 describe("cuenta válida sin acceso a ninguna sede", () => {
   it("se manda a /ingresar?sin-acceso=1", async () => {
-    signInAs({ id: "usuario-sin-sede", staffId: 0n });
+    await signInAs({ id: "usuario-sin-sede", staffId: 0n, sessionId: "sesion-sin-sede" });
     await expect(agenda.findClients("Juan")).rejects.toMatchObject({ url: "/ingresar?sin-acceso=1" });
   });
 });
@@ -503,7 +578,7 @@ describe("cuenta válida sin acceso a ninguna sede", () => {
 describe("barbero frente a la cita de otro barbero", () => {
   it("no puede cambiarle el estado ni ver su historial", async () => {
     const id = await appointmentFor(A.otherBarber);
-    signInAs(A.users.barber);
+    await signInAs(A.users.barber);
     const before = await fingerprint();
     expect(await agenda.setStatus({ appointmentId: String(id), to: "in_chair" })).toMatchObject({ ok: false });
     expect(await agenda.loadHistory(String(id))).toEqual({ ok: true, data: [] });
@@ -617,12 +692,20 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     name: "sacar a un barbero de la reserva en línea",
     prepare: async () => () => ajustes.setStaffBookableAction({ staffId: String(A.users.barber.staffId), bookable: false }),
   },
+  {
+    name: "ponerle una contraseña temporal a alguien",
+    prepare: async () => () => personal.resetStaffPasswordAction({ staffId: String(A.users.barber.staffId), password: TEMP_PASSWORD }),
+  },
+  {
+    name: "cerrarle las sesiones a alguien",
+    prepare: async () => () => personal.revokeStaffSessionsAction({ staffId: String(A.users.reception.staffId) }),
+  },
 ];
 
 describe("el dueño de otra sede no alcanza nada de esta", () => {
   it.each(CROSS_LOCATION)("no puede $name", async ({ prepare }) => {
     const attempt = await prepare();
-    signInAs(B.owner);
+    await signInAs(B.owner);
     const before = await fingerprint(A.location);
     const result = await attempt();
     expect(result.ok, JSON.stringify(result)).toBe(false);
@@ -631,9 +714,115 @@ describe("el dueño de otra sede no alcanza nada de esta", () => {
 
   it("no encuentra clientes de esta sede ni ve el historial de sus citas", async () => {
     const id = await appointmentFor(A.users.barber.staffId);
-    signInAs(B.owner);
+    await signInAs(B.owner);
     expect(await agenda.findClients("Juan")).toEqual({ ok: true, data: [] });
     expect(await agenda.loadHistory(String(id))).toEqual({ ok: true, data: [] });
+  });
+});
+
+// ─── Reautenticación para las acciones críticas ──────────────────────────────
+
+describe("acciones críticas con una sesión vieja", () => {
+  it("crear un dueño pide confirmar identidad y no toca nada; tras confirmar, pasa", async () => {
+    const k = uniq();
+    const createOwner = () =>
+      personal.createStaffAction({ withAccess: true, name: `Socia ${k}`, role: "owner", email: `socia${k}@villa.test`, password: PASSWORD });
+    await signInAs(A.users.owner, { stale: true });
+    const before = await fingerprint();
+    expect(await createOwner()).toMatchObject({ ok: false, code: "reauth_required" });
+    expect(await fingerprint()).toBe(before);
+
+    expect(await cuenta.reauthenticateAction({ method: "password", password: "no-es-la-clave" })).toMatchObject({
+      ok: false,
+      error: "La contraseña no es correcta.",
+    });
+    expect(await createOwner()).toMatchObject({ ok: false, code: "reauth_required" });
+
+    expect(await cuenta.reauthenticateAction({ method: "password", password: PASSWORD })).toEqual({ ok: true, data: undefined });
+    expect(await createOwner()).toMatchObject({ ok: true });
+  });
+
+  it("ascender a dueño, cambiar un rol y poner contraseñas también la piden; el código de la app sirve", async () => {
+    const target = await personWithSession("barber", A.location);
+    await signInAs(A.users.owner, { stale: true });
+    const before = await fingerprint();
+    for (const attempt of [
+      () => personal.updateStaffProfileAction({ staffId: String(target.staffId), displayName: "Ascendido", role: "owner", active: true }),
+      () => personal.updateStaffProfileAction({ staffId: String(target.staffId), displayName: "Recepción", role: "reception", active: true }),
+      () => personal.resetStaffPasswordAction({ staffId: String(target.staffId), password: TEMP_PASSWORD }),
+    ]) {
+      expect(await attempt()).toMatchObject({ ok: false, code: "reauth_required" });
+    }
+    expect(await fingerprint()).toBe(before);
+
+    expect(await cuenta.reauthenticateAction({ method: "totp", code: "000000" })).toMatchObject({ ok: false, error: "El código no es correcto." });
+    expect(await cuenta.reauthenticateAction({ method: "totp", code: state.totpCode })).toMatchObject({ ok: true });
+    expect(
+      await personal.updateStaffProfileAction({ staffId: String(target.staffId), displayName: "Recepción", role: "reception", active: true }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("cambiar solo el nombre no la pide", async () => {
+    await signInAs(A.users.owner, { stale: true });
+    expect(
+      await personal.updateStaffProfileAction({ staffId: String(A.dummy), displayName: `Persona ${uniq()}`, role: "barber", active: true }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("sin TOTP inscrito no se puede confirmar con código", async () => {
+    await signInAs(A.users.barber);
+    expect(await cuenta.reauthenticateAction({ method: "totp", code: state.totpCode })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/Usa tu contraseña/),
+    });
+  });
+});
+
+// ─── Contraseña temporal y verificación en dos pasos obligatoria ─────────────
+
+describe("cuenta sin terminar de configurar", () => {
+  it("un dueño sin TOTP no entra a nada del panel: va a inscribirlo", async () => {
+    const owner = await personWithSession("owner", A.location);
+    await db.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, owner.id));
+    await signInAs(owner);
+    const before = await fingerprint();
+    await expect(agenda.findClients("Juan")).rejects.toMatchObject({ url: "/cuenta/verificacion" });
+    await expect(personal.createStaffAction({ withAccess: false, name: "Nadie", role: "barber" })).rejects.toMatchObject({
+      url: "/cuenta/verificacion",
+    });
+    await expect(cuenta.reauthenticateAction({ method: "password", password: PASSWORD })).rejects.toMatchObject({ url: "/cuenta/verificacion" });
+    expect(await fingerprint()).toBe(before);
+  });
+
+  it("con contraseña temporal solo puede cambiarla; después entra normal", async () => {
+    const barber = await personWithSession("barber", A.location, { mustChangePassword: true });
+    await signInAs(barber);
+    await expect(agenda.loadHistory("1")).rejects.toMatchObject({ url: "/cuenta/clave" });
+    await expect(cuenta.reauthenticateAction({ method: "password", password: PASSWORD })).rejects.toMatchObject({ url: "/cuenta/clave" });
+
+    expect(await cuenta.changeOwnPasswordAction({ currentPassword: "no-es-la-clave", newPassword: TEMP_PASSWORD })).toMatchObject({
+      ok: false,
+      error: "La contraseña actual no es correcta.",
+    });
+    expect(await cuenta.changeOwnPasswordAction({ currentPassword: PASSWORD, newPassword: TEMP_PASSWORD })).toMatchObject({ ok: true });
+    expect(await agenda.loadHistory("1")).toMatchObject({ ok: true });
+  });
+
+  it("el dueño reinicia la contraseña de alguien: queda temporal y sin sesiones", async () => {
+    const barber = await personWithSession("barber", A.location);
+    await signInAs(A.users.owner);
+    expect(await personal.resetStaffPasswordAction({ staffId: String(barber.staffId), password: TEMP_PASSWORD })).toMatchObject({ ok: true });
+    expect(await db.select().from(session).where(eq(session.userId, barber.id))).toEqual([]);
+    const [u] = await db.select({ must: user.mustChangePassword }).from(user).where(eq(user.id, barber.id));
+    expect(u?.must).toBe(true);
+  });
+
+  it("nadie se reinicia la contraseña ni se cierra la sesión a sí mismo desde el panel", async () => {
+    await signInAs(A.users.owner);
+    expect(await personal.resetStaffPasswordAction({ staffId: String(A.users.owner.staffId), password: TEMP_PASSWORD })).toMatchObject({
+      ok: false,
+    });
+    expect(await personal.revokeStaffSessionsAction({ staffId: String(A.users.owner.staffId) })).toMatchObject({ ok: false });
   });
 });
 
@@ -643,7 +832,7 @@ describe("guarda de completitud", () => {
   it("toda server action exportada del panel está en la matriz de permisos", () => {
     // Cada export de un archivo "use server" es un endpoint público: si alguien agrega uno
     // y no lo pone en CASES, este test lo obliga a decidir quién puede usarlo.
-    const exported = [agenda, servicios, personal, bloqueos, ajustes].flatMap((m) =>
+    const exported = [agenda, servicios, personal, bloqueos, ajustes, cuenta].flatMap((m) =>
       Object.entries(m)
         .filter(([, v]) => typeof v === "function")
         .map(([k]) => k),

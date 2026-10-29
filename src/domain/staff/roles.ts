@@ -50,3 +50,18 @@ export function can(role: Role, permission: Permission): boolean {
 export function isRole(value: string): value is Role {
   return (ROLES as readonly string[]).includes(value);
 }
+
+/** Verificación en dos pasos (TOTP) obligatoria: el dueño tiene acceso total a las cuentas. */
+export const MFA_REQUIRED: Record<Role, boolean> = { owner: true, reception: false, barber: false };
+
+export type AccountSetup = "password" | "two-factor";
+
+/**
+ * Lo que falta antes de usar el panel, en orden: primero cambiar la contraseña temporal, después
+ * (si el rol la exige) inscribir la verificación en dos pasos. null si no falta nada.
+ */
+export function requiredAccountSetup(input: { role: Role; mustChangePassword: boolean; twoFactorEnabled: boolean }): AccountSetup | null {
+  if (input.mustChangePassword) return "password";
+  if (MFA_REQUIRED[input.role] && !input.twoFactorEnabled) return "two-factor";
+  return null;
+}

@@ -2,6 +2,7 @@ import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
 import { ACCOUNTS, type AccountCode, CHART_OF_ACCOUNTS } from "@/domain/ledger/accounts";
 import { assertValidEntry, type JournalEntryDraft, type LedgerLine, reversalOf } from "@/domain/ledger/entry";
 import { type Currency, money } from "@/domain/money";
+import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { accounts, dayCloseEvents, journalEntries, journalLines, locations } from "./schema";
 import { sumAsBigint } from "./sql";
 import type { Db } from "./types";
@@ -59,6 +60,25 @@ async function insertEntry(
 ): Promise<PostedEntry> {
   const { locationId, entry, createdBy } = input;
   assertValidEntry(entry);
+  // Huella del asiento: la misma clave de idempotencia con otro contenido es un conflicto,
+  // nunca se devuelve en silencio un asiento que no corresponde a esta petición.
+  const hash = entry.idempotencyKey
+    ? requestHash({
+        locationId,
+        businessDate: entry.businessDate,
+        kind: entry.kind,
+        memo: entry.memo,
+        reversesEntryId: input.reversesEntryId ?? null,
+        createdBy,
+        lines: entry.lines.map((l) => ({
+          account: l.account,
+          side: l.side,
+          minor: l.amount.minor,
+          currency: l.amount.currency,
+          memo: l.memo ?? null,
+        })),
+      })
+    : null;
 
   return db.transaction(async (tx) => {
     const ids = await accountIdsByCode(tx as unknown as Db, locationId, entry.lines.map((l) => l.account));
@@ -72,6 +92,7 @@ async function insertEntry(
         memo: entry.memo,
         currency: entry.lines[0]!.amount.currency,
         idempotencyKey: entry.idempotencyKey,
+        requestHash: hash,
         reversesEntryId: input.reversesEntryId,
         createdBy,
       })
@@ -81,9 +102,10 @@ async function insertEntry(
     const created = inserted[0];
     if (!created) {
       const [existing] = await tx
-        .select({ id: journalEntries.id })
+        .select({ id: journalEntries.id, requestHash: journalEntries.requestHash })
         .from(journalEntries)
         .where(and(eq(journalEntries.locationId, locationId), eq(journalEntries.idempotencyKey, entry.idempotencyKey!)));
+      assertSameRequest(existing!, hash!);
       return { entryId: existing!.id, created: false };
     }
 

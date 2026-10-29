@@ -3,8 +3,11 @@ import { BookingError } from "@/domain/booking/appointment";
 import { TransitionError } from "@/domain/booking/status";
 import { InvalidServiceError } from "@/domain/catalog/service";
 import { InvalidClientError } from "@/domain/clients/client";
+import { IdempotencyConflictError } from "@/domain/security/idempotency";
+import { ReauthRequiredError } from "@/domain/security/reauth";
 import { InvalidScheduleError } from "@/domain/staff/schedule";
 import { SlotTakenError } from "@/db/appointments";
+import { AccountLockedError } from "@/db/login-throttle";
 import { RateLimitError } from "@/db/rate-limit";
 import { StaffError } from "@/db/staff";
 import { describeError } from "./log";
@@ -16,9 +19,15 @@ import { PublicBookingUnavailableError } from "./public-readiness";
 // Los mensajes de validación por defecto de zod salen en español (los propios ya lo están).
 z.config(z.locales.es());
 
-export type ActionResult<T = undefined> = { ok: true; data: T } | { ok: false; error: string };
+/**
+ * `code: "reauth_required"`: la acción es crítica y la sesión no confirmó identidad hace poco;
+ * la interfaz pide la contraseña o el código y reintenta (ver ReauthDialog).
+ */
+export type ActionResult<T = undefined> = { ok: true; data: T } | { ok: false; error: string; code?: "reauth_required" };
 
 const BUSINESS_ERRORS = [
+  IdempotencyConflictError,
+  AccountLockedError,
   BookingError,
   SlotTakenError,
   TransitionError,
@@ -34,6 +43,7 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
   try {
     return { ok: true, data: await fn() };
   } catch (err) {
+    if (err instanceof ReauthRequiredError) return { ok: false, error: err.message, code: err.code };
     if (BUSINESS_ERRORS.some((E) => err instanceof E)) return { ok: false, error: (err as Error).message };
     if (err instanceof z.ZodError) return { ok: false, error: err.issues[0]?.message ?? "Datos inválidos" };
     // redirect()/notFound() de Next.js se propagan tal cual.

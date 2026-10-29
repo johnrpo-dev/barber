@@ -4,7 +4,7 @@ import { hashPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { isRole, type Role } from "@/domain/staff/roles";
 import { assertValidWeeklySchedule, type ScheduleBlock, type Weekday } from "@/domain/staff/schedule";
-import { account, locations, staffMembers, staffSchedules, user } from "./schema";
+import { account, locations, session, staffMembers, staffSchedules, user } from "./schema";
 import type { Db } from "./types";
 
 // Personal de la sede y sus horarios. Los roles se guardan por sede (staff_members),
@@ -26,10 +26,13 @@ export interface StaffMembership {
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-/** Crea una persona con acceso a la app: usuario, credencial (contraseña con hash) y membresía. */
+/**
+ * Crea una persona con acceso a la app: usuario, credencial (contraseña con hash) y membresía.
+ * `mustChangePassword`: la contraseña la eligió otra persona (temporal) y debe cambiarla al ingresar.
+ */
 export async function createStaffUser(
   db: Db,
-  input: { locationId: bigint; name: string; email: string; password: string; role: Role },
+  input: { locationId: bigint; name: string; email: string; password: string; role: Role; mustChangePassword?: boolean },
 ): Promise<{ userId: string; staffId: bigint }> {
   const name = input.name.trim();
   const email = input.email.trim().toLowerCase();
@@ -42,7 +45,7 @@ export async function createStaffUser(
 
   return db.transaction(async (tx) => {
     const userId = randomUUID();
-    await tx.insert(user).values({ id: userId, name, email, emailVerified: true });
+    await tx.insert(user).values({ id: userId, name, email, emailVerified: true, mustChangePassword: input.mustChangePassword ?? false });
     // Mismo formato que better-auth usa para cuentas de correo y contraseña.
     await tx.insert(account).values({
       id: randomUUID(),
@@ -112,6 +115,10 @@ export interface StaffMemberDetail {
   active: boolean;
   /** Tiene usuario (correo y contraseña) para entrar a la app. */
   hasAppAccess: boolean;
+  /** Verificación en dos pasos (TOTP) activa. */
+  twoFactorEnabled: boolean;
+  /** Aún no cambia la contraseña temporal que le dieron. */
+  mustChangePassword: boolean;
 }
 
 /** Una persona de la sede, o null si no existe en esa sede. */
@@ -126,8 +133,11 @@ export async function staffMember(
       role: staffMembers.role,
       active: staffMembers.active,
       userId: staffMembers.userId,
+      twoFactorEnabled: user.twoFactorEnabled,
+      mustChangePassword: user.mustChangePassword,
     })
     .from(staffMembers)
+    .leftJoin(user, eq(user.id, staffMembers.userId))
     .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)));
   if (!row || !isRole(row.role)) return null;
   return {
@@ -136,6 +146,8 @@ export async function staffMember(
     role: row.role,
     active: row.active,
     hasAppAccess: row.userId !== null,
+    twoFactorEnabled: row.twoFactorEnabled ?? false,
+    mustChangePassword: row.mustChangePassword ?? false,
   };
 }
 
@@ -175,7 +187,10 @@ export async function updateStaffMember(
   });
 }
 
-/** Activa o retira a una persona sin borrarla: su historial (citas, ventas) la sigue nombrando. Sin membresía activa, pierde el acceso. */
+/**
+ * Activa o retira a una persona sin borrarla: su historial (citas, ventas) la sigue nombrando.
+ * Sin membresía activa pierde el acceso; al retirarla también se cierran sus sesiones abiertas.
+ */
 export async function setStaffActive(
   db: Db,
   input: { locationId: bigint; staffId: bigint; active: boolean },
@@ -185,8 +200,10 @@ export async function setStaffActive(
       .update(staffMembers)
       .set({ active: input.active })
       .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)))
-      .returning({ id: staffMembers.id });
+      .returning({ id: staffMembers.id, userId: staffMembers.userId });
     if (updated.length === 0) throw new StaffError("La persona no existe en esta sede");
+    const userId = updated[0]!.userId;
+    if (!input.active && userId) await tx.delete(session).where(eq(session.userId, userId));
   });
 }
 

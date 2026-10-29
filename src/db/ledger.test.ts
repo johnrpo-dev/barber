@@ -6,6 +6,7 @@ import { ACCOUNTS } from "@/domain/ledger/accounts";
 import type { JournalEntryDraft } from "@/domain/ledger/entry";
 import { UnbalancedEntryError } from "@/domain/ledger/entry";
 import { allocate, fromUnits, money, PESO, percentOf } from "@/domain/money";
+import { IdempotencyConflictError } from "@/domain/security/idempotency";
 import { closeDay, createLocation, postEntry, reopenDay, reverseEntry, trialBalance } from "./ledger";
 import { accounts, journalEntries } from "./schema";
 import { createTestDb, dbError } from "./testing";
@@ -86,6 +87,52 @@ describe("libro mayor: registro de asientos", () => {
     const [row] = await db.select({ n: count() }).from(journalEntries);
     expect(row?.n).toBe(1);
   });
+
+  it("la misma clave con otro contenido es un conflicto: ni se registra ni devuelve el asiento anterior", async () => {
+    await postEntry(db, { locationId, entry: haircut({ idempotencyKey: "cobro-cita-456" }), createdBy: USER });
+    const otherPrice = haircut({
+      idempotencyKey: "cobro-cita-456",
+      lines: [
+        { account: ACCOUNTS.cash.code, side: "debit", amount: fromUnits(30_000n) },
+        { account: ACCOUNTS.serviceIncome.code, side: "credit", amount: fromUnits(30_000n) },
+      ],
+    });
+    await expect(postEntry(db, { locationId, entry: otherPrice, createdBy: USER })).rejects.toThrow(IdempotencyConflictError);
+    await expect(
+      postEntry(db, { locationId, entry: haircut({ idempotencyKey: "cobro-cita-456", memo: "Otro" }), createdBy: USER }),
+    ).rejects.toThrow(IdempotencyConflictError);
+    await expect(
+      postEntry(db, { locationId, entry: haircut({ idempotencyKey: "cobro-cita-456" }), createdBy: "otra_persona" }),
+    ).rejects.toThrow(IdempotencyConflictError);
+    const [row] = await db.select({ n: count() }).from(journalEntries);
+    expect(row?.n).toBe(1);
+  });
+
+  it("propiedad: con la misma clave, el mismo cobro se repite y uno distinto choca", async () => {
+    let k = 0;
+    const sale = (units: bigint, memo: string, key: string) =>
+      haircut({
+        idempotencyKey: key,
+        memo,
+        lines: [
+          { account: ACCOUNTS.cash.code, side: "debit", amount: fromUnits(units) },
+          { account: ACCOUNTS.serviceIncome.code, side: "credit", amount: fromUnits(units) },
+        ],
+      });
+    const draft = fc.record({ units: fc.bigInt({ min: 1n, max: 3n }), memo: fc.constantFrom("Corte", "Barba") });
+    await fc.assert(
+      fc.asyncProperty(draft, draft, async (a, b) => {
+        const key = `prop-${++k}`;
+        const first = await postEntry(db, { locationId, entry: sale(a.units, a.memo, key), createdBy: USER });
+        const retry = postEntry(db, { locationId, entry: sale(b.units, b.memo, key), createdBy: USER });
+        if (a.units === b.units && a.memo === b.memo) await expect(retry).resolves.toEqual({ entryId: first.entryId, created: false });
+        else await expect(retry).rejects.toThrow(IdempotencyConflictError);
+      }),
+      { numRuns: 30 },
+    );
+    const [row] = await db.select({ n: count() }).from(journalEntries);
+    expect(row?.n).toBe(k);
+  }, 60_000);
 
   it("el dominio rechaza un asiento descuadrado antes de tocar la base", async () => {
     const entry = haircut({

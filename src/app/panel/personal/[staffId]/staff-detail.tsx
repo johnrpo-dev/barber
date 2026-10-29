@@ -1,15 +1,16 @@
 "use client";
 
-import { ArrowLeft, CalendarPlus, Smartphone, UserRound } from "lucide-react";
+import { ArrowLeft, CalendarPlus, Eye, EyeOff, KeyRound, LogOut, ShieldAlert, ShieldCheck, Smartphone, UserRound, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Tab, TabList, TabPanel, Tabs, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
+import { useReauth } from "../../_components/reauth";
 import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../../_manage/controls";
 import { addStaffTimeOffAction } from "../../bloqueos/actions";
-import { updateStaffProfileAction } from "../actions";
-import { initials, ROLE_OPTIONS } from "../staff-directory";
+import { resetStaffPasswordAction, revokeStaffSessionsAction, updateStaffProfileAction } from "../actions";
+import { generatePassword, initials, ROLE_OPTIONS } from "../staff-directory";
 import { TimeOffForm, TimeOffList } from "../time-off";
 import type { TimeOffView } from "../time-off-view";
 import { type ScheduleBlockInput, ScheduleEditor } from "./schedule-editor";
@@ -20,6 +21,10 @@ export interface MemberView {
   role: Role;
   active: boolean;
   hasAppAccess: boolean;
+  /** Verificación en dos pasos activa. */
+  twoFactorEnabled: boolean;
+  /** Tiene una contraseña temporal que aún no cambia. */
+  mustChangePassword: boolean;
   isMe: boolean;
 }
 
@@ -32,11 +37,13 @@ const tabClass = cx(
 
 export function StaffDetail({
   member,
+  minPasswordLength,
   schedule,
   timeOff,
   today,
 }: {
   member: MemberView;
+  minPasswordLength: number;
   schedule: ScheduleBlockInput[];
   timeOff: TimeOffView[];
   today: string;
@@ -78,6 +85,16 @@ export function StaffDetail({
                 </Chip>
               )}
               {!member.active ? <Chip tone="muted">Retirado</Chip> : null}
+              {member.hasAppAccess && member.twoFactorEnabled ? (
+                <Chip tone="success" icon={<ShieldCheck size={12} aria-hidden />}>
+                  Verificación en dos pasos
+                </Chip>
+              ) : null}
+              {member.hasAppAccess && member.mustChangePassword ? (
+                <Chip tone="neutral" icon={<KeyRound size={12} aria-hidden />}>
+                  Contraseña temporal
+                </Chip>
+              ) : null}
             </div>
           </div>
         </header>
@@ -117,8 +134,9 @@ export function StaffDetail({
           <TimeOffList items={timeOff} staffId={member.id} emptyText={`${firstName} no tiene ausencias próximas.`} />
         </TabPanel>
 
-        <TabPanel id="perfil" shouldForceMount className="outline-none data-[inert]:hidden">
+        <TabPanel id="perfil" shouldForceMount className="flex flex-col gap-5 outline-none data-[inert]:hidden">
           <ProfileForm member={member} />
+          {member.hasAppAccess && member.active && !member.isMe ? <AccessPanel member={member} minPasswordLength={minPasswordLength} /> : null}
         </TabPanel>
       </Tabs>
 
@@ -150,6 +168,8 @@ function ProfileForm({ member }: { member: MemberView }) {
   const [displayName, setDisplayName] = useState(member.displayName);
   const [role, setRole] = useState<Role>(member.role);
   const [active, setActive] = useState(member.active);
+  // Cambiar el rol pide confirmar identidad (lo exige el servidor; aquí se pide y se reintenta).
+  const reauth = useReauth();
 
   const dirty = displayName !== member.displayName || role !== member.role || active !== member.active;
 
@@ -161,7 +181,7 @@ function ProfileForm({ member }: { member: MemberView }) {
     });
     if (!ok) return;
     startTransition(async () => {
-      const res = await updateStaffProfileAction({ staffId: member.id, displayName, role, active });
+      const res = await reauth.run(() => updateStaffProfileAction({ staffId: member.id, displayName, role, active }));
       if (!res.ok) {
         setError(res.error);
         return;
@@ -171,6 +191,9 @@ function ProfileForm({ member }: { member: MemberView }) {
   }
 
   return (
+    <>
+    {/* Fuera del Form: los eventos de React cruzan los portales y un submit del diálogo llegaría aquí. */}
+    {reauth.dialog}
     <Form onSubmit={onSubmit} className={cx(card, "flex flex-col gap-5 p-5")} validationBehavior="aria">
       <TextField
         name="displayName"
@@ -236,5 +259,187 @@ function ProfileForm({ member }: { member: MemberView }) {
         </Btn>
       </div>
     </Form>
+    </>
+  );
+}
+
+// ─── Acceso a la app ─────────────────────────────────────────────────────────
+
+/** Contraseña temporal y cierre de sesiones (celular perdido, alguien que se va, sospecha). */
+function AccessPanel({ member, minPasswordLength }: { member: MemberView; minPasswordLength: number }) {
+  const toast = useToast();
+  const [resetting, setResetting] = useState(false);
+  const [closing, startClosing] = useTransition();
+  const firstName = member.displayName.split(/\s+/)[0] ?? member.displayName;
+
+  function closeSessions() {
+    startClosing(async () => {
+      const res = await revokeStaffSessionsAction({ staffId: member.id });
+      if (!res.ok) {
+        toast(res.error, "error");
+        return;
+      }
+      const n = res.data.closed;
+      toast(n === 0 ? `${firstName} no tenía sesiones abiertas.` : `Se cerraron ${n} ${n === 1 ? "sesión" : "sesiones"} de ${firstName}.`);
+    });
+  }
+
+  let securityText: string;
+  if (member.twoFactorEnabled) securityText = "Ingresa con su contraseña y el código de su app de verificación.";
+  else if (member.role === "owner") securityText = "Aún no activa la verificación en dos pasos: se le pedirá en su próximo ingreso.";
+  else securityText = "Ingresa solo con contraseña. Puede activar la verificación en dos pasos en “Mi cuenta”.";
+
+  return (
+    <section aria-labelledby="acceso-titulo" className={cx(card, "flex flex-col gap-4 p-5")}>
+      <div className="flex flex-col gap-1.5">
+        <h2 id="acceso-titulo" className="font-display text-xl">
+          Acceso a la app
+        </h2>
+        <p className="flex items-start gap-2 text-sm text-tinta/80">
+          {member.twoFactorEnabled ? (
+            <ShieldCheck size={16} aria-hidden className="mt-0.5 shrink-0 text-botella" />
+          ) : (
+            <ShieldAlert size={16} aria-hidden className="mt-0.5 shrink-0" />
+          )}
+          {securityText}
+        </p>
+        {member.mustChangePassword ? (
+          <p className="text-sm text-tinta/80">Tiene una contraseña temporal: la app le pide cambiarla al ingresar.</p>
+        ) : null}
+      </div>
+
+      <div className="flex flex-col gap-2 min-[400px]:flex-row">
+        <Btn variant="secondary" onPress={() => setResetting(true)}>
+          <KeyRound size={18} aria-hidden />
+          Poner contraseña temporal
+        </Btn>
+        <Btn variant="danger" onPress={closeSessions} isPending={closing}>
+          <LogOut size={18} aria-hidden />
+          {closing ? "Cerrando…" : "Cerrar sus sesiones"}
+        </Btn>
+      </div>
+      <p className="text-xs text-tinta/70">
+        “Cerrar sus sesiones” lo saca de todos sus dispositivos (por ejemplo, si perdió el celular). Puede volver a ingresar con
+        su contraseña.
+      </p>
+
+      <Sheet
+        isOpen={resetting}
+        onOpenChange={setResetting}
+        title="Contraseña temporal"
+        description={`${firstName} tendrá que cambiarla al ingresar. Se cierran todas sus sesiones.`}
+      >
+        {resetting ? (
+          <ResetPasswordForm
+            member={member}
+            minPasswordLength={minPasswordLength}
+            onDone={() => {
+              setResetting(false);
+              toast(`Listo. Entrégale la contraseña temporal a ${firstName} en persona.`);
+            }}
+            onCancel={() => setResetting(false)}
+          />
+        ) : null}
+      </Sheet>
+    </section>
+  );
+}
+
+function ResetPasswordForm({
+  member,
+  minPasswordLength,
+  onDone,
+  onCancel,
+}: {
+  member: MemberView;
+  minPasswordLength: number;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const invalid = useFieldErrors<"password">();
+  const [password, setPassword] = useState("");
+  const [show, setShow] = useState(false);
+  const reauth = useReauth();
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setError(null);
+    const ok = invalid.check(e.currentTarget, {
+      ...(password.length < minPasswordLength ? { password: `Debe tener al menos ${minPasswordLength} caracteres.` } : {}),
+    });
+    if (!ok) return;
+    startTransition(async () => {
+      const res = await reauth.run(() => resetStaffPasswordAction({ staffId: member.id, password }));
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      onDone();
+    });
+  }
+
+  return (
+    <>
+      {reauth.dialog}
+      <Form onSubmit={onSubmit} className="flex flex-col gap-5" validationBehavior="aria">
+        <TextField
+          name="password"
+          value={password}
+          onChange={(v) => {
+            setPassword(v);
+            invalid.clear("password");
+          }}
+          type={show ? "text" : "password"}
+          isRequired
+          isInvalid={!!invalid.errors.password}
+          autoFocus
+          className={field.root}
+        >
+          <Label className={field.label}>Contraseña temporal</Label>
+          <div className="flex gap-2">
+            <Input className={cx(field.input, "min-w-0 flex-1 font-mono")} autoComplete="new-password" spellCheck={false} />
+            <Btn
+              variant="secondary"
+              className="h-12 w-12 shrink-0 px-0"
+              aria-label={show ? "Ocultar contraseña" : "Mostrar contraseña"}
+              onPress={() => setShow((v) => !v)}
+            >
+              {show ? <EyeOff size={18} aria-hidden /> : <Eye size={18} aria-hidden />}
+            </Btn>
+          </div>
+          <Text slot="description" className={field.description}>
+            Mínimo {minPasswordLength} caracteres. Entrégasela en persona, nunca por chat.
+          </Text>
+          <FieldMessage>{invalid.errors.password}</FieldMessage>
+        </TextField>
+        <Btn
+          variant="ghost"
+          size="sm"
+          className="h-11 self-start"
+          onPress={() => {
+            setPassword(generatePassword());
+            setShow(true);
+            invalid.clear("password");
+          }}
+        >
+          <Wand2 size={16} aria-hidden />
+          Generar una segura
+        </Btn>
+
+        <FormError message={error} />
+
+        <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+          <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
+            Cancelar
+          </Btn>
+          <Btn type="submit" isPending={pending}>
+            {pending ? "Guardando…" : "Poner contraseña temporal"}
+          </Btn>
+        </div>
+      </Form>
+    </>
   );
 }

@@ -80,12 +80,15 @@ export const journalEntries = pgTable(
     memo: text("memo").notNull(),
     currency: char("currency", { length: 3 }).notNull(),
     idempotencyKey: text("idempotency_key"),
+    /** SHA-256 del contenido de la petición: la misma clave con otro contenido es un conflicto. */
+    requestHash: text("request_hash"),
     reversesEntryId: bigint("reverses_entry_id", { mode: "bigint" }),
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
   },
   (t) => [
     unique("journal_entries_location_id_id_key").on(t.locationId, t.id),
+    check("journal_entries_request_hash_check", sql`${t.requestHash} is null or ${t.requestHash} ~ '^[0-9a-f]{64}$'`),
     unique("journal_entries_idempotency_key").on(t.locationId, t.idempotencyKey),
     // Un asiento se reversa una sola vez.
     unique("journal_entries_reverses_entry_id_key").on(t.reversesEntryId),
@@ -150,6 +153,10 @@ export const user = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
+  /** Plugin twoFactor de better-auth: TOTP activo y verificado. Obligatorio para el dueño. */
+  twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
+  /** La contraseña la puso otra persona (temporal): debe cambiarla antes de usar el panel. */
+  mustChangePassword: boolean("must_change_password").notNull().default(false),
   ...authTimestamps(),
 });
 
@@ -164,9 +171,47 @@ export const session = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    /** Última vez que confirmó su identidad (contraseña o código) para una acción crítica. */
+    reauthenticatedAt: timestamp("reauthenticated_at", { withTimezone: true }),
     ...authTimestamps(),
   },
   (t) => [index("session_user_id_idx").on(t.userId)],
+);
+
+/** Plugin twoFactor de better-auth: secreto TOTP y códigos de respaldo, cifrados con BETTER_AUTH_SECRET. */
+export const twoFactor = pgTable(
+  "two_factor",
+  {
+    id: text("id").primaryKey(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    /** false mientras se inscribe: aún no ha escrito un código correcto. */
+    verified: boolean("verified").notNull().default(true),
+    failedVerificationCount: integer("failed_verification_count").notNull().default(0),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  },
+  (t) => [unique("two_factor_user_id_key").on(t.userId)],
+);
+
+/**
+ * Bloqueo por cuenta tras intentos fallidos (ingreso y reautenticación). Infraestructura, como
+ * rate_limit_counters: sin location_id. El sujeto es un HMAC del correo escrito o del usuario.
+ */
+export const loginThrottles = pgTable(
+  "login_throttles",
+  {
+    subject: text("subject").primaryKey(),
+    failures: integer("failures").notNull(),
+    lastFailureAt: timestamp("last_failure_at", { withTimezone: true }).notNull(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  },
+  (t) => [
+    check("login_throttles_subject_check", sql`${t.subject} ~ '^[0-9a-f]{64}$'`),
+    check("login_throttles_failures_check", sql`${t.failures} >= 1`),
+  ],
 );
 
 export const account = pgTable(
@@ -333,6 +378,8 @@ export const appointments = pgTable(
     cancelledLate: boolean("cancelled_late").notNull().default(false),
     notes: text("notes"),
     idempotencyKey: text("idempotency_key"),
+    /** SHA-256 del contenido de la petición: la misma clave con otro contenido es un conflicto. */
+    requestHash: text("request_hash"),
     statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
     createdBy: text("created_by").notNull(),
     createdAt: createdAt(),
@@ -340,6 +387,7 @@ export const appointments = pgTable(
   (t) => [
     unique("appointments_location_id_id_key").on(t.locationId, t.id),
     unique("appointments_idempotency_key").on(t.locationId, t.idempotencyKey),
+    check("appointments_request_hash_check", sql`${t.requestHash} is null or ${t.requestHash} ~ '^[0-9a-f]{64}$'`),
     foreignKey({
       name: "appointments_staff_fk",
       columns: [t.locationId, t.staffId],

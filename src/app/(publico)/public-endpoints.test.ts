@@ -786,7 +786,7 @@ describe("lecturas y enlaces malos", () => {
       idempotencyKey: `b-${randomUUID()}`,
       createdBy: "seed",
     });
-    const otherLocation = await issueManageLink(db, { locationId: B.location, appointmentId: apptB.appointmentId, publicId: apptB.publicId, appointmentEnd: new Date(Date.now() + 4 * 86_400_000), secret: DEV_ONLY_MANAGE_LINK_SECRET });
+    const otherLocation = await issueManageLink(db, { locationId: B.location, appointmentId: apptB.appointmentId, publicId: apptB.publicId, appointmentEnd: apptB.start, secret: DEV_ONLY_MANAGE_LINK_SECRET });
 
     const bad = [cancelled, expired, otherLocation, "A".repeat(43), "basura", "../../etc"];
     const bodies = new Set<string>();

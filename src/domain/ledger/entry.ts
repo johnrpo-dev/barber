@@ -16,6 +16,7 @@ export const ENTRY_KINDS = [
   "expense",
   "commission_payout",
   "tip_payout",
+  "cash_deposit",
   "cash_adjustment",
   "owner_contribution",
   "owner_withdrawal",

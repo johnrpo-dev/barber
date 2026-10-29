@@ -169,7 +169,7 @@ Las reglas de esta tabla son configurables; lo que **no** cambia es que se redon
 - La PWA se instala en el celular. El dueño entra con MFA.
 - Los informes leen el libro contable. **Nunca se calculan sumando en el cliente:** la suma la hace Postgres.
 
-## Seguridad: estado y plan (auditorías de los sprints 2 y 3)
+## Seguridad: estado y plan (auditorías de los sprints 2 y 3, endurecimiento del sprint 4)
 
 Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura) más las pruebas automáticas de permisos. Las pruebas de ataque contra la app en marcha se hacen en un entorno propio, nunca contra terceros: la superficie pública en el sprint 3, y una prueba de penetración completa antes del lanzamiento en el sprint 5.
 
@@ -213,6 +213,31 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
     - el estado del código es inmutable salvo +1 intento y un único consumo;
     - un enlace revocado no revive.
 - **Ajustes de la sede.** Solo el dueño (`settings.manage`). Las acciones están en la matriz de autorización y el enlace del mapa solo acepta `https://`.
+- **Endurecimiento antes del dinero (inicio del sprint 4).**
+  - **Verificación en dos pasos (TOTP).** Plugin `twoFactor` de better-auth: códigos de 6 dígitos cada 30 s, 10 códigos de respaldo guardados cifrados y mostrados una sola vez.
+    - Obligatoria para el dueño (`MFA_REQUIRED` en `src/domain/staff/roles.ts`): `requireStaff` lo manda a `/cuenta/verificacion` antes de cualquier pantalla o acción del panel. Opcional para recepción y barberos.
+    - El ingreso pide el código después de la contraseña, o un código de respaldo. 5 códigos malos bloquean la cuenta 15 minutos.
+    - Se prueba de punta a punta con better-auth real en `src/lib/auth.test.ts`.
+  - **Reautenticación** (`requireRecentAuth` en `src/lib/session.ts`). Contraseña o código de la app en los últimos 5 minutos, guardado en `session.reauthenticated_at`.
+    - La exigen crear o ascender un dueño, cambiar un rol y poner la contraseña de otra persona. Las acciones de dinero del sprint 4 la usan igual.
+    - El servidor responde `code: "reauth_required"`; `useReauth` (`src/app/panel/_components/reauth.tsx`) pide la confirmación y reintenta.
+  - **Bloqueo por cuenta en Postgres** (`login_throttles`). 5 fallos bloquean 1 minuto; cada fallo siguiente duplica la espera hasta 15 minutos, y el contador se olvida a las 24 h.
+    - Aplica al ingreso (hooks de better-auth, también por `/api/auth` directo), a la reautenticación y al cambio de contraseña.
+    - El sujeto es un HMAC del correo: sirve igual para correos que no existen, y el mensaje no dice si la cuenta existe.
+    - Un fallo nunca acorta un bloqueo vigente (test de propiedades).
+  - **Límite de intentos de better-auth en la base** (`rate_limit_counters`, cubetas `auth:*` con HMAC). Vale para todos los procesos y no guarda la IP en claro.
+  - **Contraseña temporal.** La que el dueño pone al crear a alguien, o al reiniciársela, obliga a cambiarla en el primer ingreso (`/cuenta/clave`).
+    - Cambiar la contraseña propia cierra las demás sesiones.
+    - Reiniciar la de otra persona, cerrar sus sesiones o retirarla las cierra todas en la misma transacción.
+  - **Idempotencia ligada al contenido.** La clave guarda un SHA-256 del contenido canónico de la petición (`src/domain/security/idempotency.ts`) en citas y asientos.
+    - La misma clave con el mismo contenido devuelve el resultado original; con otro contenido es un conflicto con mensaje en español.
+    - La huella de una cita no se edita (trigger). Hay test de propiedades del dominio y del libro en la base.
+  - **Roles de Postgres separados.** `villa_owner` es dueño del esquema y corre las migraciones (`MIGRATION_DATABASE_URL`); `villa_app` es la app y el worker.
+    - `villa_app` no tiene DDL ni TRUNCATE, no puede desactivar ni borrar triggers, no puede volverse `villa_owner` y no tiene UPDATE ni DELETE sobre el libro, los cierres, el historial de citas, los consentimientos ni la bandeja de avisos (0006/0007).
+    - Permisos en `app_apply_grants()` (migración 0009); script del VPS en `src/db/roles/setup-roles.sql`.
+    - `src/db/roles.test.ts` corre el trabajo diario como `villa_app` en PGlite y prueba cada negativa. Con `VILLA_TEST_DB_ROLE=app` se puede correr toda la suite con ese rol. Fallan solo los 6 tests que verifican mensajes de triggers con UPDATE o DELETE directos, porque ahí frena antes el permiso.
+    - **Regla:** toda migración que cree tablas termina con `SELECT app_apply_grants();`. Sin eso, la tabla nueva queda sin permisos para la app: falla cerrado.
+  - **Vencimiento de los enlaces de gestión.** Un trigger (0009) impide alargarlos más de 7 días después del fin de la cita.
 
 **Requisitos de despliegue que la seguridad da por hechos** (auditoría del sprint 3):
 
@@ -225,14 +250,13 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 
 | Ítem | Riesgo | Cuándo |
 |---|---|---|
-| MFA (TOTP) obligatorio para el dueño y reautenticación para crear o ascender dueños | Alto: una contraseña robada da acceso total | Endurecimiento, antes de las pantallas de cobro (inicio del sprint 4) |
-| Bloqueo por cuenta tras intentos fallidos; límite de intentos guardado en la base | Medio: fuerza bruta distribuida | Igual que el anterior |
-| Separar roles de Postgres (`villa_owner` migra; `villa_app` sin UPDATE, DELETE ni DDL sobre el libro) y un test que lo pruebe | Medio: hoy el rol de la app es dueño de las tablas y podría desactivar los triggers | **Antes de la primera acción contable (sprint 4)** |
-| Clave de idempotencia ligada al contenido de la petición (si cambia, es un conflicto) | Bajo hoy, alto en cobros | Sprint 4, con el cobro |
-| Cambio obligatorio de la contraseña temporal; reinicio de contraseña; cerrar sesiones | Medio | Endurecimiento |
+| **Aplicar la separación de roles en el VPS**: correr `src/db/roles/setup-roles.sql`, poner `DATABASE_URL` con `villa_app` y `MIGRATION_DATABASE_URL` con `villa_owner`, y migrar. Hasta entonces la app sigue siendo dueña de las tablas | Medio: los triggers valen lo que valga el rol de la base | **Antes de la primera acción contable en producción (sprint 4)** |
+| Inscripción del TOTP por confianza en el primer uso: quien tenga la contraseña del dueño antes de que él inscriba su celular podría inscribir el suyo. Mitigación: el dueño inscribe el TOTP apenas recibe la cuenta, y la de cada socio nuevo tiene contraseña temporal que debe cambiar primero | Medio, solo en la ventana de inscripción | Aceptado; revisar en la auditoría del sprint 4 |
+| Un código TOTP se acepta hasta unos 90 s (ventana de ±1 paso de 30 s) y better-auth no recuerda el último paso usado: alguien que lo vea por encima del hombro puede repetirlo en ese lapso | Bajo: necesita también la contraseña | Aceptado |
+| Sin código QR en la inscripción: hay enlace `otpauth://` (abre la app en el celular) y clave para escribir a mano. Agregar QR exige una dependencia nueva | Bajo (usabilidad) | Sprint 5, si el dueño lo pide |
+| Un código de respaldo o el cambio de celular (desactivar e inscribir de nuevo) solo piden la contraseña; el bloqueo de `/two-factor/*` es el del plugin (5 fallos, 15 min) más el límite de 3 cada 10 s | Bajo: exige una sesión que ya pasó el segundo factor | Aceptado |
 | Vida máxima absoluta de la sesión; auditoría de lecturas de datos personales (Ley 1581) | Bajo | Sprint 5 |
 | CSP de scripts con nonce (primero en modo reporte) | Bajo | Sprint 5, con el despliegue |
-| Agregar las tablas de la reserva pública (0006/0007) al test del rol `villa_app`; acotar con un trigger el `expires_at` de los enlaces de gestión, que hoy se podría alargar con un UPDATE | Bajo: los triggers valen lo que valga el rol de la base | Sprint 4, con la separación de roles |
 | Borrado de datos personales que hoy no se puede hacer: IP, navegador, nombre y correo escritos (`contact_name`, `contact_email`) en `booking_verifications`, y `params` en `notifications`, bloqueados por los triggers. Anonimizar al cliente no los borra. Hace falta una función de purga `SECURITY DEFINER` en el mantenimiento diario, y decir en la política de privacidad cuánto se guardan | Medio (Ley 1581): no se puede cumplir una solicitud de supresión | Sprint 5 |
 | Firmar la cookie `villa_hold` o emitir una nueva si no hay verificación viva para ese navegador | Bajo: hace falta plantar la cookie desde un subdominio | Sprint 5 |
 | CSP de scripts con nonce. Ahora es más urgente porque hay superficie pública; debe permitir `https://challenges.cloudflare.com` en `script-src` y `frame-src` | Medio en el portal | Sprint 5, con el despliegue |

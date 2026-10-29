@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, CalendarOff, LogOut, type LucideIcon, Scissors, Settings, Sun, Users } from "lucide-react";
+import { CalendarDays, CalendarOff, CircleUserRound, LogOut, type LucideIcon, Scissors, Settings, Sun, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cx } from "./ui";
@@ -81,16 +81,23 @@ export function PanelNav({
           })}
         </ul>
         <div className="flex flex-col items-center gap-2 border-t border-tinta/10 p-3 xl:flex-row xl:items-center">
-          <span
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-botella text-sm font-semibold text-hueso"
-            aria-hidden
+          <Link
+            href="/cuenta"
+            aria-label={`Mi cuenta: ${userName}, ${roleLabel}`}
+            title="Mi cuenta"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg outline-none hover:bg-tinta/5 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-cuero xl:p-1"
           >
-            {initials}
-          </span>
-          <div className="hidden min-w-0 flex-1 xl:block">
-            <p className="truncate text-sm font-semibold">{userName}</p>
-            <p className="text-xs text-tinta/70">{roleLabel}</p>
-          </div>
+            <span
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-botella text-sm font-semibold text-hueso"
+              aria-hidden
+            >
+              {initials}
+            </span>
+            <span className="hidden min-w-0 flex-1 xl:block" aria-hidden>
+              <span className="block truncate text-sm font-semibold">{userName}</span>
+              <span className="block text-xs text-tinta/70">Mi cuenta · {roleLabel}</span>
+            </span>
+          </Link>
           <form action={signOut}>
             <button
               type="submit"
@@ -144,11 +151,16 @@ export function MobileTopBar({ locationName, signOut }: { locationName: string; 
         <span className="font-display text-xl">Villa</span>
         <span className="text-[11px] font-semibold uppercase tracking-[0.2em] text-botella">{locationName}</span>
       </div>
-      <form action={signOut}>
-        <button type="submit" className="grid h-11 w-11 place-items-center rounded-lg text-tinta/70" aria-label="Salir">
-          <LogOut size={20} strokeWidth={1.75} aria-hidden />
-        </button>
-      </form>
+      <div className="flex items-center">
+        <Link href="/cuenta" className="grid h-11 w-11 place-items-center rounded-lg text-tinta/70" aria-label="Mi cuenta" title="Mi cuenta">
+          <CircleUserRound size={20} strokeWidth={1.75} aria-hidden />
+        </Link>
+        <form action={signOut}>
+          <button type="submit" className="grid h-11 w-11 place-items-center rounded-lg text-tinta/70" aria-label="Salir">
+            <LogOut size={20} strokeWidth={1.75} aria-hidden />
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

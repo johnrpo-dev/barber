@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db/client";
+import { resetStaffPassword, revokeStaffSessions } from "@/db/credentials";
 import {
   addStaffMember,
   createStaffUser,
@@ -17,10 +18,11 @@ import { ROLES } from "@/domain/staff/roles";
 import { parseTime, type Weekday } from "@/domain/staff/schedule";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
-import { requirePermission } from "@/lib/session";
+import { requirePermission, requireRecentAuth } from "@/lib/session";
 
 // Personal y horarios. Las ausencias, bloqueos y cierres están en ../bloqueos/actions.
 // Cada acción verifica su permiso en el servidor y toma la sede de la sesión, nunca del cliente.
+// Crear o ascender dueños, cambiar roles y poner contraseñas exigen reautenticación reciente.
 
 const conn = () => db() as unknown as Db;
 
@@ -59,6 +61,8 @@ export async function createStaffAction(raw: unknown): Promise<ActionResult<{ st
   return runAction(async () => {
     const staff = await requirePermission("staff.manage");
     const input = createStaffSchema.parse(raw);
+    // Un dueño nuevo tiene acceso total a las cuentas: confirmar identidad antes de crearlo.
+    if (input.role === "owner") requireRecentAuth(staff);
     if (!input.withAccess) {
       const staffId = await addStaffMember(conn(), { locationId: staff.locationId, displayName: input.name, role: input.role });
       revalidateStaff();
@@ -71,6 +75,8 @@ export async function createStaffAction(raw: unknown): Promise<ActionResult<{ st
         email: input.email,
         password: input.password,
         role: input.role,
+        // La eligió el dueño: debe cambiarla en su primer ingreso.
+        mustChangePassword: true,
       });
       revalidateStaff();
       return { staffId: staffId.toString() };
@@ -93,6 +99,10 @@ export async function updateStaffProfileAction(raw: unknown): Promise<ActionResu
       // Evita que el dueño se quite a sí mismo el acceso a esta pantalla por accidente.
       throw new StaffError("No puedes retirarte ni quitarte el rol de dueño a ti mismo");
     }
+    const current = await requireMember(staff.locationId, input.staffId);
+    // Cambiar un rol (sobre todo ascender a dueño) es crítico: confirmar identidad.
+    if (current.role !== input.role) requireRecentAuth(staff);
+    // Retirar a alguien también cierra sus sesiones (setStaffActive), en la misma transacción.
     await conn().transaction(async (tx) => {
       const t = tx as unknown as Db;
       await updateStaffMember(t, {
@@ -105,6 +115,46 @@ export async function updateStaffProfileAction(raw: unknown): Promise<ActionResu
     });
     revalidateStaff(input.staffId);
     return undefined;
+  });
+}
+
+// ─── Acceso a la app ─────────────────────────────────────────────────────────
+
+const resetPasswordSchema = z.object({
+  staffId: idSchema,
+  password: z
+    .string()
+    .min(MIN_PASSWORD_LENGTH, `La contraseña temporal debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres`)
+    .max(128, "La contraseña es muy larga"),
+});
+
+/**
+ * Contraseña temporal nueva para alguien del personal (la olvidó o se filtró). Debe cambiarla al
+ * ingresar y se cierran todas sus sesiones. Exige reautenticación reciente.
+ */
+export async function resetStaffPasswordAction(raw: unknown): Promise<ActionResult> {
+  return runAction(async () => {
+    const staff = await requirePermission("staff.manage");
+    const input = resetPasswordSchema.parse(raw);
+    if (input.staffId === staff.staffId) throw new StaffError("Para cambiar tu propia contraseña usa “Mi cuenta”");
+    await requireMember(staff.locationId, input.staffId);
+    requireRecentAuth(staff);
+    await resetStaffPassword(conn(), { locationId: staff.locationId, staffId: input.staffId, password: input.password });
+    revalidateStaff(input.staffId);
+    return undefined;
+  });
+}
+
+const revokeSchema = z.object({ staffId: idSchema });
+
+/** Cierra todas las sesiones de alguien del personal (p. ej. perdió el celular). */
+export async function revokeStaffSessionsAction(raw: unknown): Promise<ActionResult<{ closed: number }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("staff.manage");
+    const input = revokeSchema.parse(raw);
+    if (input.staffId === staff.staffId) throw new StaffError("Para cerrar tu propia sesión usa “Salir”");
+    const closed = await revokeStaffSessions(conn(), { locationId: staff.locationId, staffId: input.staffId });
+    return { closed };
   });
 }
 

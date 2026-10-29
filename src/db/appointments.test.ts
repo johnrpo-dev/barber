@@ -5,6 +5,7 @@ import { BookingError } from "@/domain/booking/appointment";
 import { addDays, localMinuteOf, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { ALLOWED_TRANSITIONS, APPOINTMENT_STATUSES, type AppointmentStatus, TransitionError } from "@/domain/booking/status";
 import { fromUnits } from "@/domain/money";
+import { IdempotencyConflictError } from "@/domain/security/idempotency";
 import {
   appointmentHistory,
   availability,
@@ -107,6 +108,27 @@ describe("crear citas", () => {
     expect((await dayAgenda(db, { locationId, date: DAY })).appointments).toHaveLength(1);
   });
 
+  it("la misma clave con otros datos es un conflicto, no la cita anterior", async () => {
+    await book("10:00", { idempotencyKey: "doble-toque", notes: "Con barba" });
+    await expect(book("11:00", { idempotencyKey: "doble-toque", notes: "Con barba" })).rejects.toThrow(IdempotencyConflictError);
+    await expect(book("10:00", { idempotencyKey: "doble-toque", serviceId: barba, notes: "Con barba" })).rejects.toThrow(
+      IdempotencyConflictError,
+    );
+    await expect(book("10:00", { idempotencyKey: "doble-toque", createdBy: "otra_persona", notes: "Con barba" })).rejects.toThrow(
+      IdempotencyConflictError,
+    );
+    // Los espacios de la nota no cuentan: se guarda recortada.
+    await expect(book("10:00", { idempotencyKey: "doble-toque", notes: "  Con barba " })).resolves.toMatchObject({ created: false });
+    expect((await dayAgenda(db, { locationId, date: DAY })).appointments).toHaveLength(1);
+  });
+
+  it("la huella guardada no se puede cambiar después", async () => {
+    const a = await book("10:00");
+    expect(await dbError(client.query(`update appointments set request_hash = $1 where id = $2`, ["f".repeat(64), String(a.appointmentId)]))).toMatch(
+      /huella de la petición .* no se edita/,
+    );
+  });
+
   it("la limpieza ocupa la silla: no se agenda encima de ella; justo después sí", async () => {
     await book("10:00");
     await expect(book("10:30")).rejects.toThrow(SlotTakenError);
@@ -171,6 +193,8 @@ describe("walk-in", () => {
     const again = await walkIn(db, { ...input, now: at("10:13") });
     expect(again).toMatchObject({ appointmentId: first.appointmentId, created: false });
     expect((await dayAgenda(db, { locationId, date: DAY })).appointments).toHaveLength(1);
+    // Otro servicio con la misma clave no es un reintento.
+    await expect(walkIn(db, { ...input, serviceId: corte, now: at("10:13") })).rejects.toThrow(IdempotencyConflictError);
   });
 });
 

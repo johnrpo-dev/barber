@@ -1,5 +1,6 @@
 // Proceso aparte del servidor web (systemd: villa-worker).
 // Usa el mismo PostgreSQL como cola: recordatorios de WhatsApp, expiración de citas pendientes.
+import { sql } from "drizzle-orm";
 import { PgBoss } from "pg-boss";
 import { db } from "@/db/client";
 import type { Db } from "@/db/types";
@@ -18,11 +19,22 @@ const JOBS: { name: string; cron: string; run: (database: Db) => Promise<unknown
   { name: "maintenance.daily", cron: "0 3 * * *", run: (database) => runMaintenance(database) },
 ];
 
+/**
+ * En el VPS el esquema "pgboss" lo crea src/db/roles/setup-roles.sql (dueño: villa_app) y
+ * villa_app no puede crear esquemas, así que pg-boss no debe intentar CREATE SCHEMA.
+ * En desarrollo, sin ese script, pg-boss lo crea como siempre.
+ */
+async function pgBossSchemaExists(database: Db): Promise<boolean> {
+  const result: unknown = await database.execute(sql`select to_regnamespace('pgboss') is not null as present`);
+  const rows = (Array.isArray(result) ? result : (result as { rows: unknown[] }).rows) as { present: boolean }[];
+  return rows[0]?.present === true;
+}
+
 async function main() {
-  const boss = new PgBoss(env().DATABASE_URL);
+  const database = db() as unknown as Db;
+  const boss = new PgBoss({ connectionString: env().DATABASE_URL, createSchema: !(await pgBossSchemaExists(database)) });
   boss.on("error", (err) => console.error("[worker] error de pg-boss", describeError(err)));
   await boss.start();
-  const database = db() as unknown as Db;
 
   for (const job of JOBS) {
     // "stately": a lo sumo uno en cola y uno corriendo; un barrido lento no se solapa con el siguiente.

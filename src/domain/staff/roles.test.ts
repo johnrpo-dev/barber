@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { can, PERMISSIONS } from "./roles";
+import { can, PERMISSIONS, requiredAccountSetup, ROLES } from "./roles";
+
+describe("lo que falta antes de usar el panel", () => {
+  it("el dueño sin verificación en dos pasos debe inscribirla; los demás roles no", () => {
+    expect(requiredAccountSetup({ role: "owner", mustChangePassword: false, twoFactorEnabled: false })).toBe("two-factor");
+    expect(requiredAccountSetup({ role: "owner", mustChangePassword: false, twoFactorEnabled: true })).toBeNull();
+    expect(requiredAccountSetup({ role: "reception", mustChangePassword: false, twoFactorEnabled: false })).toBeNull();
+    expect(requiredAccountSetup({ role: "barber", mustChangePassword: false, twoFactorEnabled: false })).toBeNull();
+  });
+
+  it("la contraseña temporal se cambia primero, en cualquier rol", () => {
+    for (const role of ROLES) {
+      for (const twoFactorEnabled of [false, true]) {
+        expect(requiredAccountSetup({ role, mustChangePassword: true, twoFactorEnabled })).toBe("password");
+      }
+    }
+  });
+});
 
 describe("permisos por rol", () => {
   it("el dueño puede todo", () => {

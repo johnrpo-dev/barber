@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
+import { useReauth } from "../_components/reauth";
 import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../_manage/controls";
 import { addClosureAction } from "../bloqueos/actions";
@@ -181,7 +182,7 @@ function StaffCard({ member }: { member: StaffRow }) {
 // ─── Agregar persona ─────────────────────────────────────────────────────────
 
 /** Contraseña temporal legible (sin 0/O ni 1/l), generada en el navegador con crypto. */
-function generatePassword(length = 16): string {
+export function generatePassword(length = 16): string {
   const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
   const bytes = crypto.getRandomValues(new Uint8Array(length));
   return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
@@ -193,6 +194,8 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const invalid = useFieldErrors<"name" | "email" | "password">();
+  // Crear un dueño pide confirmar identidad (el servidor lo exige; aquí solo se pide y se reintenta).
+  const reauth = useReauth();
 
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("barber");
@@ -214,7 +217,7 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
     if (!ok) return;
     const payload = withAccess ? { withAccess, name, role, email, password } : { withAccess, name, role };
     startTransition(async () => {
-      const res = await createStaffAction(payload);
+      const res = await reauth.run(() => createStaffAction(payload));
       if (!res.ok) {
         setError(res.error);
         return;
@@ -226,6 +229,9 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
   }
 
   return (
+    <>
+    {/* Fuera del Form: los eventos de React cruzan los portales y un submit del diálogo llegaría aquí. */}
+    {reauth.dialog}
     <Form onSubmit={onSubmit} className="flex flex-col gap-5" validationBehavior="aria">
       <TextField
         name="name"
@@ -321,7 +327,7 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
                 </Btn>
               </div>
               <Text slot="description" className={field.description}>
-                Mínimo {minPasswordLength} caracteres. Entrégasela en persona y pídele que la cambie después de su primer ingreso.
+                Mínimo {minPasswordLength} caracteres. Entrégasela en persona: en su primer ingreso la app le pide cambiarla.
               </Text>
               <FieldMessage>{invalid.errors.password}</FieldMessage>
             </TextField>
@@ -353,5 +359,6 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
         </Btn>
       </div>
     </Form>
+    </>
   );
 }
