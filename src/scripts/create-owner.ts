@@ -9,6 +9,7 @@ import { locations } from "@/db/schema";
 import { createStaffUser, StaffError } from "@/db/staff";
 import type { Db } from "@/db/types";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
+import { describeError } from "@/lib/log";
 
 // readline escribe lo que se teclea en `output`; silenciarlo oculta la contraseña.
 let muted = false;
@@ -61,6 +62,6 @@ async function main() {
 
 main().catch((err: unknown) => {
   if (err instanceof StaffError) console.error(err.message);
-  else console.error("No se pudo crear el dueño:", err);
+  else console.error("No se pudo crear el dueño:", describeError(err));
   process.exit(1);
 });

@@ -22,11 +22,16 @@ jobs:
       TZ: America/Bogota
     steps:
       - uses: actions/checkout@v5
+        with:
+          # El job no hace push: no dejar el token de GitHub en el checkout.
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Vulnerabilidades altas o críticas en dependencias de producción frenan el build.
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

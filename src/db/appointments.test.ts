@@ -19,7 +19,7 @@ import {
 import { createService } from "./catalog";
 import { findOrCreateClient } from "./clients";
 import { createLocation } from "./ledger";
-import { addStaffMember, setWeeklySchedule } from "./staff";
+import { addStaffMember, setStaffActive, setWeeklySchedule } from "./staff";
 import { createTestDb, dbError } from "./testing";
 import { addTimeOff } from "./time-off";
 import type { Db } from "./types";
@@ -161,6 +161,27 @@ describe("walk-in", () => {
     expect([w.staffId, hhmm(w.start)]).toEqual([brayan, "10:10"]);
     const appt = (await dayAgenda(db, { locationId, date: DAY })).appointments.find((a) => a.id === w.appointmentId)!;
     expect([appt.status, appt.source, appt.clientName]).toEqual(["arrived", "walk_in", null]);
+  });
+
+  it("un reintento con la misma clave devuelve el mismo walk-in, no un 'nadie libre' ni uno nuevo", async () => {
+    const now = at("10:12");
+    const input = { locationId, serviceId: barba, staffId: andres, clientId: null, createdBy: "u", now, idempotencyKey: "w-reintento" };
+    const first = await walkIn(db, input);
+    // La silla de Andrés ya la ocupa este mismo walk-in: sin la clave, el reintento diría "se libera a las…".
+    const again = await walkIn(db, { ...input, now: at("10:13") });
+    expect(again).toMatchObject({ appointmentId: first.appointmentId, created: false });
+    expect((await dayAgenda(db, { locationId, date: DAY })).appointments).toHaveLength(1);
+  });
+});
+
+describe("agenda del día", () => {
+  it("un barbero retirado que aún tiene citas sigue con su columna (sin turno) para no perderlas", async () => {
+    const a = await book("10:00");
+    await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" }); // la sede nunca queda sin dueño activo
+    await setStaffActive(db, { locationId, staffId: andres, active: false });
+    const day = await dayAgenda(db, { locationId, date: DAY });
+    expect(day.appointments.map((x) => x.id)).toContain(a.appointmentId);
+    expect(day.columns.find((c) => c.staffId === andres)).toMatchObject({ displayName: "Andrés", blocks: [] });
   });
 });
 

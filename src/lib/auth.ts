@@ -27,6 +27,14 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
       updateAge: 60 * 60,
     },
     rateLimit: { enabled: true, window: 60, max: 30 },
+    advanced: {
+      // Detrás de Caddy en el mismo servidor: la IP real del cliente es el primer salto que no es el
+      // proxy. Sin esto, todas las peticiones caerían en el mismo cupo y un atacante podría agotar
+      // el límite de intentos de ingreso para todos.
+      ipAddress: { ipAddressHeaders: ["x-forwarded-for"], trustedProxies: ["127.0.0.1", "::1"] },
+      // En producción la cookie de sesión siempre lleva Secure, aunque la URL se configure mal.
+      useSecureCookies: process.env.NODE_ENV === "production",
+    },
     plugins: opts.plugins ?? [],
   });
 }
@@ -35,7 +43,11 @@ export type Auth = ReturnType<typeof createAuth>;
 
 const authEnvSchema = z.object({
   BETTER_AUTH_SECRET: z.string().min(32, "BETTER_AUTH_SECRET debe tener al menos 32 caracteres"),
-  BETTER_AUTH_URL: z.url(),
+  BETTER_AUTH_URL: z.url().refine(
+    // En producción solo HTTPS (si no, la cookie de sesión viajaría sin cifrar); localhost se permite para `npm start` local.
+    (url) => process.env.NODE_ENV !== "production" || url.startsWith("https://") || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/.test(url),
+    "En producción BETTER_AUTH_URL debe empezar por https://",
+  ),
 });
 
 let cached: Auth | undefined;

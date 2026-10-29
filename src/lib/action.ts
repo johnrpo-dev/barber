@@ -6,9 +6,13 @@ import { InvalidClientError } from "@/domain/clients/client";
 import { InvalidScheduleError } from "@/domain/staff/schedule";
 import { SlotTakenError } from "@/db/appointments";
 import { StaffError } from "@/db/staff";
+import { describeError } from "./log";
 
 // Resultado de toda server action: nunca se lanza al cliente un error técnico.
 // Los errores de negocio llevan su mensaje (en español); el resto se registra y se generaliza.
+
+// Los mensajes de validación por defecto de zod salen en español (los propios ya lo están).
+z.config(z.locales.es());
 
 export type ActionResult<T = undefined> = { ok: true; data: T } | { ok: false; error: string };
 
@@ -33,21 +37,6 @@ export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T
     console.error("[action]", describeError(err));
     return { ok: false, error: "No se pudo completar. Intenta de nuevo." };
   }
-}
-
-/** Lo mínimo para diagnosticar sin volcar los parámetros de la consulta (hashes, celulares). */
-function describeError(err: unknown): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (let e: unknown = err, depth = 0; e && typeof e === "object" && depth < 4; e = (e as { cause?: unknown }).cause, depth++) {
-    const { name, message, code, constraint_name, constraint } = e as Record<string, unknown>;
-    out[`level${depth}`] = {
-      name,
-      code,
-      constraint: constraint_name ?? constraint,
-      message: typeof message === "string" ? message.split(/\nparams:|params:/)[0]?.slice(0, 300) : undefined,
-    };
-  }
-  return out;
 }
 
 /** IDs internos viajan al panel como texto; aquí se validan y vuelven a bigint. */

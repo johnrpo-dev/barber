@@ -1,6 +1,7 @@
 // Crea la sede de Villa con su plan de cuentas. Se puede ejecutar varias veces: no duplica.
 // Uso: npm run db:seed
 import { eq } from "drizzle-orm";
+import { describeError } from "@/lib/log";
 import { db } from "./client";
 import { createLocation } from "./ledger";
 import { locations } from "./schema";
@@ -21,6 +22,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("No se pudo sembrar la base:", err);
+  console.error("No se pudo sembrar la base:", describeError(err));
   process.exit(1);
 });

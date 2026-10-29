@@ -141,6 +141,45 @@ Las reglas de esta tabla son configurables; lo que **no** cambia es que se redon
 - La PWA se instala en el celular. El dueño entra con MFA.
 - Los informes leen el libro contable. **Nunca se calculan sumando en el cliente:** la suma la hace Postgres.
 
+## Seguridad: estado y plan (auditoría del sprint 2)
+
+Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura) más las pruebas automáticas de permisos. Las pruebas de ataque contra la app en marcha se hacen en un entorno propio, nunca contra terceros: la superficie pública en el sprint 3, y una prueba de penetración completa antes del lanzamiento en el sprint 5.
+
+**Ya está y se prueba:**
+
+- **Permisos en el servidor.** `src/app/panel/authorization.test.ts` corre el `requirePermission` real, con cada rol contra cada server action. Comprueba que:
+  - un rol sin permiso no cambia nada en la base;
+  - sin sesión se redirige a `/ingresar`;
+  - un barbero no toca las citas de otro;
+  - el dueño de otra sede no alcanza nada de esta (IDOR).
+
+  Una guarda falla si se exporta una acción nueva sin ponerla en la matriz.
+- **Inyección y XSS.** Las consultas son parametrizadas: no hay `sql.raw` ni `unsafe`. React escapa el texto, no hay `dangerouslySetInnerHTML` y el único enlace con datos es un `tel:` ya validado.
+- **Registro y sesiones.**
+  - No existe registro público (`disableSignUp`).
+  - La membresía se relee en cada petición, así que quien se retira pierde el acceso al instante.
+  - Las cookies son HttpOnly y SameSite=Lax, con Secure forzado en producción.
+  - `BETTER_AUTH_URL` exige `https://` en producción.
+  - El límite de intentos usa la IP real detrás de Caddy (`trustedProxies`).
+- **Cabeceras** (`next.config.ts`): CSP con `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS en producción y sin `X-Powered-By`.
+- **Registros sin datos personales.** `src/lib/log.ts` corta los parámetros de la consulta (correos, celulares, hashes).
+- **CI.** `npm audit` de dependencias de producción (frena ante vulnerabilidades altas o críticas) y checkout sin credenciales persistentes.
+- **Contraseñas.** better-auth usa scrypt. Es aceptable según OWASP; la sección 9 del descubrimiento decía Argon2id o bcrypt.
+
+**Pendiente, con su sprint:**
+
+| Ítem | Riesgo | Cuándo |
+|---|---|---|
+| MFA (TOTP) obligatorio para el dueño y reautenticación para crear o ascender dueños | Alto: una contraseña robada da acceso total | Endurecimiento, antes de las pantallas de cobro (inicio del sprint 4) |
+| Bloqueo por cuenta tras intentos fallidos; límite de intentos guardado en la base | Medio: fuerza bruta distribuida | Igual que el anterior |
+| Separar roles de Postgres (`villa_owner` migra; `villa_app` sin UPDATE, DELETE ni DDL sobre el libro) y un test que lo pruebe | Medio: hoy el rol de la app es dueño de las tablas y podría desactivar los triggers | **Antes de la primera acción contable (sprint 4)** |
+| Clave de idempotencia ligada al contenido de la petición (si cambia, es un conflicto) | Bajo hoy, alto en cobros | Sprint 4, con el cobro |
+| Cambio obligatorio de la contraseña temporal; reinicio de contraseña; cerrar sesiones | Medio | Endurecimiento |
+| Vida máxima absoluta de la sesión; auditoría de lecturas de datos personales (Ley 1581) | Bajo | Sprint 5 |
+| CSP de scripts con nonce (primero en modo reporte) | Bajo | Sprint 5, con el despliegue |
+| OTP de reserva, límite por IP y teléfono, Turnstile, tokens de gestión con vencimiento, consentimiento | Alto en el portal público | Sprint 3 |
+| Backups cifrados y restauración probada | Alto operativo | Despliegue (sprint 5) |
+
 ## Riesgos y cuándo esta decisión deja de servir
 
 - **Aguanta** decenas de sedes y miles de citas al día en un solo VPS.
