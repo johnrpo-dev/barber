@@ -6,8 +6,9 @@ import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Tab, TabList, TabPanel, Tabs, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
 import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
-import { card, Chip, FormError, RadioDot, radioCard, Toggle } from "../../_manage/controls";
-import { addStaffTimeOffAction, updateStaffProfileAction } from "../actions";
+import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../../_manage/controls";
+import { addStaffTimeOffAction } from "../../bloqueos/actions";
+import { updateStaffProfileAction } from "../actions";
 import { initials, ROLE_OPTIONS } from "../staff-directory";
 import { TimeOffForm, TimeOffList } from "../time-off";
 import type { TimeOffView } from "../time-off-view";
@@ -145,6 +146,7 @@ function ProfileForm({ member }: { member: MemberView }) {
   const toast = useToast();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const invalid = useFieldErrors<"displayName">();
   const [displayName, setDisplayName] = useState(member.displayName);
   const [role, setRole] = useState<Role>(member.role);
   const [active, setActive] = useState(member.active);
@@ -154,7 +156,10 @@ function ProfileForm({ member }: { member: MemberView }) {
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    if (displayName.trim().length < 2) return setError("Escribe un nombre de al menos 2 caracteres.");
+    const ok = invalid.check(e.currentTarget, {
+      ...(displayName.trim().length < 2 ? { displayName: "Escribe un nombre de al menos 2 caracteres." } : {}),
+    });
+    if (!ok) return;
     startTransition(async () => {
       const res = await updateStaffProfileAction({ staffId: member.id, displayName, role, active });
       if (!res.ok) {
@@ -167,9 +172,21 @@ function ProfileForm({ member }: { member: MemberView }) {
 
   return (
     <Form onSubmit={onSubmit} className={cx(card, "flex flex-col gap-5 p-5")} validationBehavior="aria">
-      <TextField value={displayName} onChange={setDisplayName} isRequired maxLength={80} className={field.root}>
+      <TextField
+        name="displayName"
+        value={displayName}
+        onChange={(v) => {
+          setDisplayName(v);
+          invalid.clear("displayName");
+        }}
+        isRequired
+        isInvalid={!!invalid.errors.displayName}
+        maxLength={80}
+        className={field.root}
+      >
         <Label className={field.label}>Nombre</Label>
         <Input className={field.input} autoComplete="off" />
+        <FieldMessage>{invalid.errors.displayName}</FieldMessage>
       </TextField>
 
       <RadioGroup value={role} onChange={(v) => setRole(v as Role)} isDisabled={member.isMe} className={field.root}>

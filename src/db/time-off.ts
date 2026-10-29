@@ -55,11 +55,28 @@ export async function addTimeOff(db: Db, input: TimeOffInput): Promise<{ id: big
   return { id: row!.id, overlappingAppointments: Number(n) };
 }
 
-export async function cancelTimeOff(db: Db, input: { locationId: bigint; timeOffId: bigint }): Promise<void> {
+/** De quién es una ausencia vigente: su staffId, null si es un cierre de la sede, undefined si no existe. */
+export async function timeOffStaff(db: Db, input: { locationId: bigint; timeOffId: bigint }): Promise<bigint | null | undefined> {
+  const [row] = await db
+    .select({ staffId: timeOff.staffId })
+    .from(timeOff)
+    .where(and(eq(timeOff.locationId, input.locationId), eq(timeOff.id, input.timeOffId), isNull(timeOff.cancelledAt)));
+  return row ? row.staffId : undefined;
+}
+
+/** Anula una ausencia. Con staffId, solo si es de esa persona (el barbero anula lo suyo). */
+export async function cancelTimeOff(db: Db, input: { locationId: bigint; timeOffId: bigint; staffId?: bigint }): Promise<void> {
   const updated = await db
     .update(timeOff)
     .set({ cancelledAt: sql`now()` })
-    .where(and(eq(timeOff.locationId, input.locationId), eq(timeOff.id, input.timeOffId), isNull(timeOff.cancelledAt)))
+    .where(
+      and(
+        eq(timeOff.locationId, input.locationId),
+        eq(timeOff.id, input.timeOffId),
+        isNull(timeOff.cancelledAt),
+        input.staffId === undefined ? undefined : eq(timeOff.staffId, input.staffId),
+      ),
+    )
     .returning({ id: timeOff.id });
   if (updated.length === 0) throw new BookingError("La ausencia no existe o ya fue anulada");
 }

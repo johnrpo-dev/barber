@@ -40,6 +40,12 @@ Sistema de una barbería en Colombia: agenda de citas y contabilidad. **La prior
   - tokens de `src/app/globals.css`;
   - el latón (`laton`) nunca se usa para texto.
 
+## Cierre de cada sprint
+
+- Corre la auditoría del agente de seguridad (solo lectura) sobre todo lo nuevo.
+- Corrige los hallazgos; los que no se puedan corregir aún van a la tabla "Seguridad: estado y plan" de [docs/arquitectura.md](docs/arquitectura.md), con su sprint.
+- Toda server action nueva entra en `src/app/panel/authorization.test.ts`; la guarda de completitud falla si falta.
+
 ## Verificación antes de dar algo por terminado
 
 ```bash

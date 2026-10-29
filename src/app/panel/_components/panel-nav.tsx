@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, LogOut, type LucideIcon, Scissors, Sun, Users } from "lucide-react";
+import { CalendarDays, CalendarOff, LogOut, type LucideIcon, Scissors, Sun, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cx } from "./ui";
@@ -8,14 +8,20 @@ import { cx } from "./ui";
 // Navegación del panel: barra inferior en celular; riel lateral desde tablet horizontal;
 // barra lateral con texto en escritorio. Los ítems ya vienen filtrados por rol desde el servidor.
 
-export type NavIcon = "agenda" | "mi-dia" | "servicios" | "personal";
+export type NavIcon = "agenda" | "mi-dia" | "bloqueos" | "servicios" | "personal";
 export interface NavItem {
   href: string;
   label: string;
   icon: NavIcon;
 }
 
-const ICONS: Record<NavIcon, LucideIcon> = { agenda: CalendarDays, "mi-dia": Sun, servicios: Scissors, personal: Users };
+const ICONS: Record<NavIcon, LucideIcon> = {
+  agenda: CalendarDays,
+  "mi-dia": Sun,
+  bloqueos: CalendarOff,
+  servicios: Scissors,
+  personal: Users,
+};
 
 function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);

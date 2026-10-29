@@ -130,6 +130,34 @@ Las reglas de esta tabla son configurables; lo que **no** cambia es que se redon
   - idempotencia: `UNIQUE (location_id, idempotency_key)`.
 - **Pruebas:** los tests de integración corren la migración real sobre **PGlite**, un PostgreSQL embebido, así que no necesitan una base instalada.
 
+## ADR-002: modelo de la agenda (sprint 2)
+
+**Decisión:** cada cita guarda su ocupación como un `tstzrange` semiabierto `[inicio, fin)` en UTC, y Postgres impide los choques con un `EXCLUDE USING gist`. La disponibilidad se calcula en minutos locales del día de la sede.
+
+**Por qué un rango y no inicio + duración:**
+- `EXCLUDE (location_id WITH =, staff_id WITH =, during WITH &&)` hace imposible la doble reserva aunque dos recepcionistas agenden en el mismo milisegundo. Es la misma idea que en el libro contable: la regla vive en la base, no solo en la app.
+- El rango incluye la limpieza (`buffer_min`), así que la silla queda ocupada hasta que esté lista.
+- Solo bloquean las citas activas (`pending`, `confirmed`, `arrived`, `in_chair`, `completed`). Cancelar o marcar `no_show` libera el horario sin borrar nada.
+- `CHECK` sobre el rango: no vacío, cerrado al inicio, abierto al final y sin infinitos.
+
+**Por qué minutos locales para calcular disponibilidad:**
+- El horario semanal (`staff_schedules`) es "lunes de 9:00 a 19:00", no instantes. Se guarda en minutos del día (`int4range`, con su propio `EXCLUDE` para que dos turnos del mismo día no se pisen).
+- Cada día se calcula en minutos locales y se convierte a UTC una sola vez, con `localMinuteToInstant` y la zona de la sede. Colombia no tiene horario de verano, pero la conversión no lo supone.
+- El día que se muestra es el día local de la sede, nunca el del navegador.
+
+**Estados:** la máquina de estados vive en `src/domain/booking/status.ts` (`RULES`). Postgres replica solo los **pares** permitidos en un trigger: aunque la app tenga un error, una cita terminada o cancelada no cambia. Quién puede hacer cada paso (rol, barbero propio, cliente, sistema, después de la tolerancia, el mismo día) lo decide el dominio.
+
+**Lo que la base garantiza además** (migración `0005_agenda_guards.sql`):
+- Lo cotizado (servicio, duración y precio) no se edita después de agendar.
+- Mover de barbero u horario solo antes de empezar. Al terminar, el fin puede acortarse, nunca alargarse.
+- Nada se borra: citas, eventos y ausencias son solo-inserción o se anulan con marca de tiempo.
+- Cada cambio deja un `appointment_events` con quién, cuándo y el rango anterior.
+- Idempotencia por `(location_id, idempotency_key)`: reintentar un agendamiento o un walk-in devuelve la misma cita.
+
+**Retenciones en línea (sprint 3):** una cita `pending` con `expires_at` ocupa el horario mientras el cliente verifica su celular. Al vencer pasa a `cancelled` (actor `system`) y libera el rango.
+
+**Caduca cuando:** haya recursos compartidos además del barbero (sillas o cabinas contadas aparte), o servicios con varios barberos a la vez. Ahí la exclusión pasa a ser por recurso y no por `staff_id`.
+
 ## Informes para el dueño en el celular
 
 - La sección **Finanzas** se diseña primero para 360 px:

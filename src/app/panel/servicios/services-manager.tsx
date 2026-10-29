@@ -6,7 +6,7 @@ import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { percentToBps } from "@/domain/catalog/service";
 import { format, fromUnits, PESO, percentOf } from "@/domain/money";
 import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
-import { card, Chip, FormError, MinutesField, Toggle } from "../_manage/controls";
+import { card, Chip, FieldMessage, FormError, MinutesField, Toggle, useFieldErrors } from "../_manage/controls";
 import { createServiceAction, setServiceActiveAction, updateServiceAction } from "./actions";
 
 export interface ServiceRow {
@@ -209,6 +209,7 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
   const toast = useToast();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const invalid = useFieldErrors<"name" | "price" | "commission">();
 
   const [name, setName] = useState(service?.name ?? "");
   const [priceDigits, setPriceDigits] = useState(service ? (BigInt(service.priceMinor) / PESO).toString() : "");
@@ -236,9 +237,12 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    if (name.trim().length < 2) return setError("Escribe un nombre de al menos 2 caracteres.");
-    if (!priceDigits) return setError("Escribe el precio.");
-    if (bps === null) return setError("La comisión debe ser un porcentaje entre 0 y 100, por ejemplo 40 o 37,5.");
+    const ok = invalid.check(e.currentTarget, {
+      ...(name.trim().length < 2 ? { name: "Escribe un nombre de al menos 2 caracteres." } : {}),
+      ...(!priceDigits ? { price: "Escribe el precio." } : {}),
+      ...(bps === null ? { commission: "Debe ser un porcentaje entre 0 y 100, por ejemplo 40 o 37,5." } : {}),
+    });
+    if (!ok) return;
 
     const payload = { name, priceUnits: priceDigits, durationMin, bufferMin, commission, active };
     startTransition(async () => {
@@ -254,15 +258,33 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
 
   return (
     <Form onSubmit={onSubmit} className="flex flex-col gap-5" validationBehavior="aria">
-      <TextField value={name} onChange={setName} isRequired maxLength={80} autoFocus className={field.root}>
+      <TextField
+        name="name"
+        value={name}
+        onChange={(v) => {
+          setName(v);
+          invalid.clear("name");
+        }}
+        isRequired
+        isInvalid={!!invalid.errors.name}
+        maxLength={80}
+        autoFocus
+        className={field.root}
+      >
         <Label className={field.label}>Nombre</Label>
         <Input className={field.input} placeholder="Corte clásico" />
+        <FieldMessage>{invalid.errors.name}</FieldMessage>
       </TextField>
 
       <TextField
+        name="price"
         value={groupThousands(priceDigits)}
-        onChange={(v) => setPriceDigits(onlyDigits(v))}
+        onChange={(v) => {
+          setPriceDigits(onlyDigits(v));
+          invalid.clear("price");
+        }}
         isRequired
+        isInvalid={!!invalid.errors.price}
         inputMode="numeric"
         className={field.root}
       >
@@ -276,6 +298,7 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
         <Text slot="description" className={field.description}>
           En pesos, sin centavos.
         </Text>
+        <FieldMessage>{invalid.errors.price}</FieldMessage>
       </TextField>
 
       <div className="grid grid-cols-1 gap-4 min-[400px]:grid-cols-2">
@@ -290,7 +313,18 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
         />
       </div>
 
-      <TextField value={commission} onChange={setCommission} isRequired inputMode="decimal" className={field.root}>
+      <TextField
+        name="commission"
+        value={commission}
+        onChange={(v) => {
+          setCommission(v);
+          invalid.clear("commission");
+        }}
+        isRequired
+        isInvalid={!!invalid.errors.commission}
+        inputMode="decimal"
+        className={field.root}
+      >
         <Label className={field.label}>Comisión del barbero</Label>
         <div className="relative">
           <Input className={cx(field.input, "monto pr-9")} placeholder="40" autoComplete="off" />
@@ -301,6 +335,7 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
         <Text slot="description" className={field.description}>
           Porcentaje; acepta decimales con coma, por ejemplo 37,5.
         </Text>
+        <FieldMessage>{invalid.errors.commission}</FieldMessage>
       </TextField>
 
       <div aria-live="polite" className="rounded-xl border border-botella/20 bg-botella/5 px-4 py-3 text-sm">

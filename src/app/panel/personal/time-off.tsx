@@ -6,7 +6,7 @@ import { Form, Input, Label, Radio, RadioGroup, TextField } from "react-aria-com
 import type { ActionResult } from "@/lib/action";
 import { Btn, cx, field, useToast } from "../_components/ui";
 import { card, Chip, FormError, RadioDot, radioCard } from "../_manage/controls";
-import { cancelTimeOffAction } from "./actions";
+import { cancelTimeOffAction } from "../bloqueos/actions";
 import type { TimeOffView } from "./time-off-view";
 
 // Ausencias, bloqueos y cierres: lista con "Anular" y formulario para agregar.
@@ -140,8 +140,9 @@ function TimeInput({ label, value, onChange }: { label: string; value: string; o
 }
 
 /**
- * Formulario de ausencia/bloqueo (variant "staff") o de cierre de la sede (variant "closure":
- * solo días completos). Tras guardar avisa si quedaron citas dentro del rango.
+ * Formulario de ausencia/bloqueo (variant "staff"), de bloqueo propio del barbero (variant "own":
+ * sin ausencias) o de cierre de la sede (variant "closure": solo días completos).
+ * Tras guardar avisa si quedaron citas dentro del rango.
  */
 export function TimeOffForm({
   variant,
@@ -150,7 +151,7 @@ export function TimeOffForm({
   submit,
   onDone,
 }: {
-  variant: "staff" | "closure";
+  variant: "staff" | "own" | "closure";
   today: string;
   /** Quién queda afectado, para el aviso de citas: "Andrés" o "La sede". */
   subject: string;
@@ -166,7 +167,7 @@ export function TimeOffForm({
   const [error, setError] = useState<string | null>(null);
 
   const [allDay, setAllDay] = useState(true);
-  const [kind, setKind] = useState<"absence" | "block">("absence");
+  const [kind, setKind] = useState<"absence" | "block">(variant === "own" ? "block" : "absence");
   const [fromDate, setFromDate] = useState(today);
   const [toDate, setToDate] = useState(today);
   const [date, setDate] = useState(today);
@@ -203,51 +204,51 @@ export function TimeOffForm({
   return (
     <Form onSubmit={onSubmit} className="flex flex-col gap-5" validationBehavior="aria">
       {variant === "staff" ? (
-        <>
-          <RadioGroup
-            value={kind}
-            onChange={(v) => setKind(v === "block" ? "block" : "absence")}
-            orientation="horizontal"
-            className={field.root}
-          >
-            <Label className={field.label}>Tipo</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Radio value="absence" className={cx(radioCard, "group")}>
-                <RadioDot />
-                <span className="flex flex-col">
-                  Ausencia
-                  <span className="text-xs font-normal text-tinta/70">Vacaciones, incapacidad</span>
-                </span>
-              </Radio>
-              <Radio value="block" className={cx(radioCard, "group")}>
-                <RadioDot />
-                <span className="flex flex-col">
-                  Bloqueo
-                  <span className="text-xs font-normal text-tinta/70">Diligencia, almuerzo largo</span>
-                </span>
-              </Radio>
-            </div>
-          </RadioGroup>
+        <RadioGroup
+          value={kind}
+          onChange={(v) => setKind(v === "block" ? "block" : "absence")}
+          orientation="horizontal"
+          className={field.root}
+        >
+          <Label className={field.label}>Tipo</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <Radio value="absence" className={cx(radioCard, "group")}>
+              <RadioDot />
+              <span className="flex flex-col">
+                Ausencia
+                <span className="text-xs font-normal text-tinta/70">Vacaciones, incapacidad</span>
+              </span>
+            </Radio>
+            <Radio value="block" className={cx(radioCard, "group")}>
+              <RadioDot />
+              <span className="flex flex-col">
+                Bloqueo
+                <span className="text-xs font-normal text-tinta/70">Diligencia, almuerzo largo</span>
+              </span>
+            </Radio>
+          </div>
+        </RadioGroup>
+      ) : null}
 
-          <RadioGroup
-            value={allDay ? "all" : "hours"}
-            onChange={(v) => setAllDay(v === "all")}
-            orientation="horizontal"
-            className={field.root}
-          >
-            <Label className={field.label}>Duración</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Radio value="all" className={cx(radioCard, "group")}>
-                <RadioDot />
-                Días completos
-              </Radio>
-              <Radio value="hours" className={cx(radioCard, "group")}>
-                <RadioDot />
-                Unas horas
-              </Radio>
-            </div>
-          </RadioGroup>
-        </>
+      {variant !== "closure" ? (
+        <RadioGroup
+          value={allDay ? "all" : "hours"}
+          onChange={(v) => setAllDay(v === "all")}
+          orientation="horizontal"
+          className={field.root}
+        >
+          <Label className={field.label}>Duración</Label>
+          <div className="grid grid-cols-2 gap-2">
+            <Radio value="all" className={cx(radioCard, "group")}>
+              <RadioDot />
+              Días completos
+            </Radio>
+            <Radio value="hours" className={cx(radioCard, "group")}>
+              <RadioDot />
+              Unas horas
+            </Radio>
+          </div>
+        </RadioGroup>
       ) : null}
 
       {variant === "closure" || allDay ? (

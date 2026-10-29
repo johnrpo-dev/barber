@@ -1,8 +1,8 @@
 "use client";
 
 import { Minus, Plus } from "lucide-react";
-import type { ReactNode } from "react";
-import { Button, Group, Input, Label, NumberField, Switch, Text } from "react-aria-components";
+import { type ReactNode, useCallback, useState } from "react";
+import { Button, FieldError, Group, Input, Label, NumberField, Switch, Text } from "react-aria-components";
 import { cx, field } from "../_components/ui";
 
 // Controles de las pantallas de gestión del dueño (servicios y personal), con la piel de ui.tsx.
@@ -139,6 +139,28 @@ export function FormError({ message }: { message: string | null }) {
       {message}
     </p>
   );
+}
+
+/** Mensaje de error de un campo (dentro de su TextField, que debe llevar isInvalid). */
+export function FieldMessage({ children }: { children: ReactNode }) {
+  return <FieldError className={field.error}>{children}</FieldError>;
+}
+
+/**
+ * Errores por campo. `check` recibe los errores encontrados, los guarda y lleva el foco al primer
+ * campo inválido (por su atributo name); devuelve true si no hay ninguno.
+ */
+export function useFieldErrors<K extends string>() {
+  const [errors, setErrors] = useState<Partial<Record<K, string>>>({});
+  const check = useCallback((form: HTMLFormElement, found: Partial<Record<K, string>>) => {
+    setErrors(found);
+    const first = Object.keys(found)[0];
+    if (!first) return true;
+    form.querySelector<HTMLElement>(`[name="${first}"]`)?.focus();
+    return false;
+  }, []);
+  const clear = useCallback((key: K) => setErrors((e) => (e[key] ? { ...e, [key]: undefined } : e)), []);
+  return { errors, check, clear };
 }
 
 /** Opción de un grupo de radios con aspecto de tarjeta seleccionable. */

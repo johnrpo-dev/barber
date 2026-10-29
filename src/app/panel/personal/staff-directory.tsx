@@ -7,8 +7,9 @@ import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
 import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
-import { card, Chip, FormError, RadioDot, radioCard, Toggle } from "../_manage/controls";
-import { addClosureAction, createStaffAction } from "./actions";
+import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../_manage/controls";
+import { addClosureAction } from "../bloqueos/actions";
+import { createStaffAction } from "./actions";
 import { TimeOffForm, TimeOffList } from "./time-off";
 import type { TimeOffView } from "./time-off-view";
 
@@ -191,6 +192,7 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const invalid = useFieldErrors<"name" | "email" | "password">();
 
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("barber");
@@ -202,11 +204,14 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    if (name.trim().length < 2) return setError("Escribe un nombre de al menos 2 caracteres.");
-    if (withAccess && !email.trim()) return setError("Escribe el correo con el que va a ingresar.");
-    if (withAccess && password.length < minPasswordLength) {
-      return setError(`La contraseña temporal debe tener al menos ${minPasswordLength} caracteres.`);
-    }
+    const ok = invalid.check(e.currentTarget, {
+      ...(name.trim().length < 2 ? { name: "Escribe un nombre de al menos 2 caracteres." } : {}),
+      ...(withAccess && !email.trim() ? { email: "Escribe el correo con el que va a ingresar." } : {}),
+      ...(withAccess && password.length < minPasswordLength
+        ? { password: `La contraseña temporal debe tener al menos ${minPasswordLength} caracteres.` }
+        : {}),
+    });
+    if (!ok) return;
     const payload = withAccess ? { withAccess, name, role, email, password } : { withAccess, name, role };
     startTransition(async () => {
       const res = await createStaffAction(payload);
@@ -222,12 +227,25 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
 
   return (
     <Form onSubmit={onSubmit} className="flex flex-col gap-5" validationBehavior="aria">
-      <TextField value={name} onChange={setName} isRequired maxLength={80} autoFocus className={field.root}>
+      <TextField
+        name="name"
+        value={name}
+        onChange={(v) => {
+          setName(v);
+          invalid.clear("name");
+        }}
+        isRequired
+        isInvalid={!!invalid.errors.name}
+        maxLength={80}
+        autoFocus
+        className={field.root}
+      >
         <Label className={field.label}>Nombre</Label>
         <Input className={field.input} placeholder="Andrés Gómez" autoComplete="off" />
         <Text slot="description" className={field.description}>
           Así aparece en la agenda y en los recibos.
         </Text>
+        <FieldMessage>{invalid.errors.name}</FieldMessage>
       </TextField>
 
       <RadioGroup value={role} onChange={(v) => setRole(v as Role)} className={field.root}>
@@ -257,16 +275,33 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
 
         {withAccess ? (
           <>
-            <TextField value={email} onChange={setEmail} type="email" isRequired className={field.root}>
+            <TextField
+              name="email"
+              value={email}
+              onChange={(v) => {
+                setEmail(v);
+                invalid.clear("email");
+              }}
+              type="email"
+              isRequired
+              isInvalid={!!invalid.errors.email}
+              className={field.root}
+            >
               <Label className={field.label}>Correo</Label>
               <Input className={field.input} inputMode="email" autoComplete="off" placeholder="andres@correo.com" />
+              <FieldMessage>{invalid.errors.email}</FieldMessage>
             </TextField>
 
             <TextField
+              name="password"
               value={password}
-              onChange={setPassword}
+              onChange={(v) => {
+                setPassword(v);
+                invalid.clear("password");
+              }}
               type={showPassword ? "text" : "password"}
               isRequired
+              isInvalid={!!invalid.errors.password}
               minLength={minPasswordLength}
               className={field.root}
             >
@@ -288,6 +323,7 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
               <Text slot="description" className={field.description}>
                 Mínimo {minPasswordLength} caracteres. Entrégasela en persona y pídele que la cambie después de su primer ingreso.
               </Text>
+              <FieldMessage>{invalid.errors.password}</FieldMessage>
             </TextField>
             <Btn
               variant="ghost"
@@ -296,6 +332,7 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
               onPress={() => {
                 setPassword(generatePassword());
                 setShowPassword(true);
+                invalid.clear("password");
               }}
             >
               <Wand2 size={16} aria-hidden />

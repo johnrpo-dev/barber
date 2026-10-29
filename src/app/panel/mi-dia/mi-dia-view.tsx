@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronRight, Coffee, Lock, StickyNote } from "lucide-react";
+import { CalendarPlus, ChevronRight, Coffee, Lock, StickyNote } from "lucide-react";
+import Link from "next/link";
 import { useOptimistic, useState, useTransition } from "react";
 import { Button } from "react-aria-components";
 import { type AppointmentStatus, NEXT_STEP, NEXT_STEP_LABELS, STATUS_LABELS } from "@/domain/booking/status";
@@ -113,11 +114,20 @@ export function MiDiaView({ view, name }: { view: AgendaView; name: string }) {
         </section>
       ) : null}
 
-      {view.timeOff.length > 0 ? (
-        <section aria-labelledby="bloqueos" className="flex flex-col gap-2">
+      <section aria-labelledby="bloqueos" className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-3">
           <h2 id="bloqueos" className="text-xs font-semibold uppercase tracking-[0.16em] text-tinta/70">
             Bloqueos
           </h2>
+          <Link
+            href="/panel/bloqueos"
+            className="-mr-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-cuero hover:bg-cuero/5"
+          >
+            <CalendarPlus size={16} aria-hidden />
+            Bloquear tiempo
+          </Link>
+        </div>
+        {view.timeOff.length > 0 ? (
           <ul className="flex flex-col gap-2">
             {view.timeOff.map((t) => (
               <li key={t.id} className="flex items-center gap-3 rounded-xl border border-tinta/10 bg-papel p-3 text-sm">
@@ -129,8 +139,8 @@ export function MiDiaView({ view, name }: { view: AgendaView; name: string }) {
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
+        ) : null}
+      </section>
 
       {done.length > 0 ? (
         <details className="rounded-xl border border-tinta/10 bg-papel p-4">

@@ -46,6 +46,7 @@ vi.mock("@/lib/auth", async (importOriginal) => ({
 const agenda = await import("./agenda/actions");
 const servicios = await import("./servicios/actions");
 const personal = await import("./personal/actions");
+const bloqueos = await import("./bloqueos/actions");
 
 const TZ = "America/Bogota";
 const PASSWORD = "clave-de-prueba-123"; // valor de prueba, solo existe en esta base en memoria
@@ -97,6 +98,12 @@ async function timeOffFor(staffId: bigint, offsetDays: number): Promise<bigint> 
 
 function signInAs(person: Person | null) {
   state.session = person ? { user: { id: person.id, name: "Prueba", email: "prueba@villa.test" } } : null;
+}
+
+/** El staffId de quien tiene la sesión (para acciones sobre lo propio); sin sesión, uno cualquiera. */
+function myStaffId(): bigint {
+  const me = Object.values(A.users).find((p) => p.id === state.session?.user.id);
+  return me?.staffId ?? A.dummy;
 }
 
 /** Huella de todo lo que una acción podría tocar (opcionalmente solo de una sede). */
@@ -326,31 +333,99 @@ const CASES: Case[] = [
     },
   },
   {
-    name: "personal · ausencia de una persona",
+    name: "bloqueos · ausencia de otra persona",
     action: "addStaffTimeOffAction",
     allowed: ["owner", "reception"],
     prepare: async () => {
       const date = addDays(base, 100 + Number(uniq()));
       return () =>
-        personal.addStaffTimeOffAction({ staffId: String(A.dummy), kind: "absence", range: { allDay: true, fromDate: date, toDate: date } });
+        bloqueos.addStaffTimeOffAction({ staffId: String(A.dummy), kind: "absence", range: { allDay: true, fromDate: date, toDate: date } });
     },
   },
   {
-    name: "personal · cierre de la sede",
+    name: "bloqueos · bloquear el tiempo de otra persona",
+    action: "addStaffTimeOffAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const date = addDays(base, 100 + Number(uniq()));
+      return () =>
+        bloqueos.addStaffTimeOffAction({
+          staffId: String(A.otherBarber),
+          kind: "block",
+          range: { allDay: false, date, startTime: "12:00", endTime: "13:00" },
+        });
+    },
+  },
+  {
+    name: "bloqueos · bloquear el tiempo propio",
+    action: "addStaffTimeOffAction",
+    allowed: ["owner", "reception", "barber"],
+    prepare: async () => {
+      const date = addDays(base, 100 + Number(uniq()));
+      return () =>
+        bloqueos.addStaffTimeOffAction({
+          staffId: String(myStaffId()),
+          kind: "block",
+          range: { allDay: false, date, startTime: "12:00", endTime: "13:00" },
+        });
+    },
+  },
+  {
+    name: "bloqueos · registrarse una ausencia propia (vacaciones)",
+    action: "addStaffTimeOffAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const date = addDays(base, 100 + Number(uniq()));
+      return () =>
+        bloqueos.addStaffTimeOffAction({ staffId: String(myStaffId()), kind: "absence", range: { allDay: true, fromDate: date, toDate: date } });
+    },
+  },
+  {
+    name: "bloqueos · cierre de la sede",
     action: "addClosureAction",
     allowed: ["owner", "reception"],
     prepare: async () => {
       const date = addDays(base, 300 + Number(uniq()));
-      return () => personal.addClosureAction({ fromDate: date, toDate: date, reason: "Festivo" });
+      return () => bloqueos.addClosureAction({ fromDate: date, toDate: date, reason: "Festivo" });
     },
   },
   {
-    name: "personal · anular ausencia",
+    name: "bloqueos · anular la ausencia de otra persona",
     action: "cancelTimeOffAction",
     allowed: ["owner", "reception"],
     prepare: async () => {
       const id = await timeOffFor(A.dummy, 200 + Number(uniq()));
-      return () => personal.cancelTimeOffAction({ timeOffId: String(id) });
+      return () => bloqueos.cancelTimeOffAction({ timeOffId: String(id) });
+    },
+  },
+  {
+    name: "bloqueos · anular un bloqueo propio",
+    action: "cancelTimeOffAction",
+    allowed: ["owner", "reception", "barber"],
+    prepare: async () => {
+      // Uno por persona: la llamada anula el de quien tenga la sesión.
+      const k = 200 + Number(uniq());
+      const ids = new Map<bigint, bigint>();
+      for (const p of Object.values(A.users)) ids.set(p.staffId, await timeOffFor(p.staffId, k));
+      return () => bloqueos.cancelTimeOffAction({ timeOffId: String(ids.get(myStaffId()) ?? 0n) });
+    },
+  },
+  {
+    name: "bloqueos · anular un cierre de la sede",
+    action: "cancelTimeOffAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const date = addDays(base, 400 + Number(uniq()));
+      const { id } = await addTimeOff(db, {
+        locationId: A.location,
+        staffId: null,
+        kind: "absence",
+        createdBy: "seed",
+        allDay: true,
+        fromDate: date,
+        toDate: date,
+      });
+      return () => bloqueos.cancelTimeOffAction({ timeOffId: String(id) });
     },
   },
 ];
@@ -489,7 +564,7 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     prepare: async () => {
       const date = addDays(base, 50);
       return () =>
-        personal.addStaffTimeOffAction({
+        bloqueos.addStaffTimeOffAction({
           staffId: String(A.users.barber.staffId),
           kind: "absence",
           range: { allDay: true, fromDate: date, toDate: date },
@@ -500,7 +575,7 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     name: "anular una ausencia",
     prepare: async () => {
       const id = await timeOffFor(A.dummy, 250 + Number(uniq()));
-      return () => personal.cancelTimeOffAction({ timeOffId: String(id) });
+      return () => bloqueos.cancelTimeOffAction({ timeOffId: String(id) });
     },
   },
 ];
@@ -529,7 +604,7 @@ describe("guarda de completitud", () => {
   it("toda server action exportada del panel está en la matriz de permisos", () => {
     // Cada export de un archivo "use server" es un endpoint público: si alguien agrega uno
     // y no lo pone en CASES, este test lo obliga a decidir quién puede usarlo.
-    const exported = [agenda, servicios, personal].flatMap((m) =>
+    const exported = [agenda, servicios, personal, bloqueos].flatMap((m) =>
       Object.entries(m)
         .filter(([, v]) => typeof v === "function")
         .map(([k]) => k),

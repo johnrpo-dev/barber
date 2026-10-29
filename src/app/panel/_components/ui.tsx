@@ -1,7 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Button, type ButtonProps, Dialog, Heading, I18nProvider, Modal, ModalOverlay } from "react-aria-components";
 
 // Piezas compartidas del panel. Todo lo interactivo es de react-aria-components (teclado,
@@ -132,52 +132,79 @@ export function useToast() {
   return useContext(ToastContext);
 }
 
+/** Tiempo visible de un aviso de éxito; se detiene mientras el puntero o el foco están encima. */
+const TOAST_MS = 7000;
+
 /**
- * Avisos breves, anunciados al lector de pantalla. Los errores se quedan hasta cerrarlos.
+ * Avisos breves. Las dos regiones vivas están siempre montadas (los lectores de pantalla solo
+ * anuncian cambios en regiones que ya existían); los avisos visibles no son regiones vivas, para
+ * no anunciarse dos veces. Los errores se quedan hasta cerrarlos.
  * También fija el idioma de los componentes (calendarios, fechas) en español de Colombia.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [announced, setAnnounced] = useState<{ status: string; alert: string }>({ status: "", alert: "" });
   const next = useRef(0);
   const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
-  const show = useCallback(
-    (message: string, tone: Toast["tone"] = "success") => {
-      const id = ++next.current;
-      setToasts((t) => [...t.slice(-2), { id, message, tone }]);
-      if (tone === "success") setTimeout(() => dismiss(id), 5000);
-    },
-    [dismiss],
-  );
+  const show = useCallback((message: string, tone: Toast["tone"] = "success") => {
+    const id = ++next.current;
+    setToasts((t) => [...t.slice(-2), { id, message, tone }]);
+    // Un mensaje repetido debe volver a anunciarse: se marca con un espacio no separable alterno.
+    const text = id % 2 ? message : `${message}\u00a0`;
+    setAnnounced((a) => (tone === "error" ? { ...a, alert: text } : { ...a, status: text }));
+  }, []);
   const value = useMemo(() => show, [show]);
   return (
     <ToastContext.Provider value={value}>
       <I18nProvider locale="es-CO">{children}</I18nProvider>
-      <div
-        aria-live="polite"
-        className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-6"
-      >
+      <div role="status" className="sr-only">
+        {announced.status}
+      </div>
+      <div role="alert" className="sr-only">
+        {announced.alert}
+      </div>
+      <div className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-6">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            role={t.tone === "error" ? "alert" : "status"}
-            className={cx(
-              "pointer-events-auto flex w-full max-w-md animate-pop-in items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm font-medium shadow-lg",
-              t.tone === "error" ? "bg-alerta text-hueso" : "bg-tinta text-hueso",
-            )}
-          >
-            <span>{t.message}</span>
-            <button
-              type="button"
-              onClick={() => dismiss(t.id)}
-              className="-mr-1 grid h-8 w-8 shrink-0 place-items-center rounded-md hover:bg-hueso/10"
-              aria-label="Cerrar aviso"
-            >
-              <X size={16} aria-hidden />
-            </button>
-          </div>
+          <ToastItem key={t.id} toast={t} onDismiss={dismiss} />
         ))}
       </div>
     </ToastContext.Provider>
+  );
+}
+
+function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
+  const [paused, setPaused] = useState(false);
+  const remaining = useRef(TOAST_MS);
+  useEffect(() => {
+    if (toast.tone !== "success" || paused) return;
+    const started = Date.now();
+    const timer = setTimeout(() => onDismiss(toast.id), remaining.current);
+    return () => {
+      clearTimeout(timer);
+      remaining.current -= Date.now() - started;
+    };
+  }, [toast, paused, onDismiss]);
+  return (
+    <div
+      onPointerEnter={() => setPaused(true)}
+      onPointerLeave={() => setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+      className={cx(
+        "pointer-events-auto flex w-full max-w-md animate-pop-in items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm font-medium shadow-lg",
+        toast.tone === "error" ? "bg-alerta text-hueso" : "bg-tinta text-hueso",
+      )}
+    >
+      <span>{toast.message}</span>
+      <button
+        type="button"
+        onClick={() => onDismiss(toast.id)}
+        className="-mr-1 grid h-8 w-8 shrink-0 place-items-center rounded-md hover:bg-hueso/10"
+        aria-label="Cerrar aviso"
+      >
+        <X size={16} aria-hidden />
+      </button>
+    </div>
   );
 }
 

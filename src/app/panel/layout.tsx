@@ -1,9 +1,11 @@
 import { eq } from "drizzle-orm";
+import { Suspense } from "react";
 import { db } from "@/db/client";
 import { locations } from "@/db/schema";
 import { can, ROLE_LABELS } from "@/domain/staff/roles";
 import { requireStaff } from "@/lib/session";
 import { signOut } from "./actions";
+import { NoPermissionNotice } from "./_components/no-permission-notice";
 import { MobileTopBar, type NavItem, PanelNav } from "./_components/panel-nav";
 import { ToastProvider } from "./_components/ui";
 
@@ -16,6 +18,9 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   if (can(staff.role, "appointments.manage.all") || can(staff.role, "appointments.manage.own")) {
     items.push({ href: "/panel/agenda", label: "Agenda", icon: "agenda" });
   }
+  if (can(staff.role, "time_off.manage.all") || can(staff.role, "time_off.manage.own")) {
+    items.push({ href: "/panel/bloqueos", label: "Bloqueos", icon: "bloqueos" });
+  }
   if (can(staff.role, "services.manage")) items.push({ href: "/panel/servicios", label: "Servicios", icon: "servicios" });
   if (can(staff.role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal" });
 
@@ -26,6 +31,9 @@ export default async function PanelLayout({ children }: { children: React.ReactN
         <MobileTopBar locationName={location?.name ?? ""} signOut={signOut} />
         {children}
       </div>
+      <Suspense>
+        <NoPermissionNotice />
+      </Suspense>
     </ToastProvider>
   );
 }
