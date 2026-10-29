@@ -49,9 +49,21 @@ function divRoundHalfUp(numerator: bigint, denominator: bigint): bigint {
   return negative ? -q : q;
 }
 
-/** Porcentaje en puntos básicos: 4000 = 40 %. */
-export function percentOf(amount: Money, basisPoints: bigint): Money {
-  return money(divRoundHalfUp(amount.minor * basisPoints, 10_000n), amount.currency);
+/** Pasos de redondeo en unidades menores (ver ADR-001 en docs/arquitectura.md). */
+export const CENTAVO = 1n;
+export const PESO = 100n;
+
+/**
+ * Porcentaje en puntos básicos (4000 = 40 %), redondeado half-up una sola vez
+ * directamente al paso pedido: sin redondeo intermedio, sin doble redondeo.
+ */
+export function percentOf(amount: Money, basisPoints: bigint, step: bigint = CENTAVO): Money {
+  if (step <= 0n) throw new Error("El paso de redondeo debe ser positivo");
+  return money(divRoundHalfUp(amount.minor * basisPoints, 10_000n * step) * step, amount.currency);
+}
+
+export function isPositive(m: Money): boolean {
+  return m.minor > 0n;
 }
 
 /**

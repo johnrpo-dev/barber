@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { add, allocate, format, fromUnits, money, percentOf, subtract, sum } from "./money";
+import { add, allocate, format, fromUnits, money, PESO, percentOf, subtract, sum } from "./money";
 
 describe("money", () => {
   it("suma sin errores de punto flotante", () => {
@@ -15,6 +15,24 @@ describe("money", () => {
   it("redondea la mitad hacia fuera de cero", () => {
     expect(percentOf(money(5n), 1_000n).minor).toBe(1n); // 0,5 → 1
     expect(percentOf(money(-5n), 1_000n).minor).toBe(-1n);
+  });
+
+  it("la comisión al peso no sufre doble redondeo", () => {
+    // 1 % de $49,50 = 49,5 centavos. Redondeando primero al centavo (50) y luego al peso
+    // daría $1; lo correcto es $0 porque 49,5 centavos < 50 centavos.
+    expect(percentOf(money(4_950n), 100n, PESO).minor).toBe(0n);
+  });
+
+  it("percentOf al peso coincide con el redondeo exacto de la fracción", () => {
+    fc.assert(
+      fc.property(fc.bigInt({ min: 0n, max: 10n ** 12n }), fc.bigInt({ min: 0n, max: 10_000n }), (minor, bps) => {
+        const result = percentOf(money(minor), bps, PESO).minor;
+        expect(result % PESO).toBe(0n);
+        // |resultado − valor exacto| ≤ medio peso, medido en fracción entera: |2·r·10000 − 2·minor·bps| ≤ PESO·10000
+        const diff = 2n * result * 10_000n - 2n * minor * bps;
+        expect(diff <= PESO * 10_000n && diff >= -PESO * 10_000n).toBe(true);
+      }),
+    );
   });
 
   it("formatea en pesos colombianos", () => {

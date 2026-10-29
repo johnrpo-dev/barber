@@ -78,6 +78,58 @@ villa/
 - **Por qué `domain/` aparte:** el cálculo de dinero, disponibilidad y comisiones se prueba sin levantar ni Next.js ni Postgres.
 - **Por qué `app/` es delgado:** se puede cambiar la interfaz sin tocar una regla contable.
 
+## ADR-001: dinero exacto sin tipo `decimal` y política de redondeo
+
+**Decisión:** no se usa `decimal` ni `numeric` para montos. Se usan **enteros `bigint` en centavos**, en TypeScript y en PostgreSQL.
+
+**Por qué no hace falta `decimal`:**
+- Villa trabaja con una sola moneda (COP).
+- No maneja tasas de cambio, intereses ni cantidades fraccionarias.
+- Los porcentajes (comisiones, IVA, datáfono) se expresan en puntos básicos y se redondean **una sola vez**.
+
+Medido en esta máquina: con `number` y truncado, 463 combinaciones precio × porcentaje habituales en una barbería dan un peso de error (por ejemplo, 35 % de $10.500 da $3.674 en lugar de $3.675). Con enteros no falla ninguna.
+
+**Por qué centavos aunque el COP no los use en la práctica:**
+- El desglose de IVA incluido y el costo del datáfono producen centavos.
+- La factura electrónica DIAN maneja 2 decimales.
+- En pantalla se muestran pesos.
+
+**Por qué `bigint` y no `number` entero:** no es por precisión, porque `number` llegaría a unos 90 billones de pesos. Es una **barrera**: TypeScript no permite escribir `monto * 0.35` con `bigint`, así que todo cálculo pasa por `src/domain/money.ts`.
+
+**Reglas de redondeo:**
+
+| Concepto | Escala | Regla |
+|---|---|---|
+| Comisión del barbero | **peso** | Half-up por línea de servicio, al cobrar. Se congela. La liquidación del periodo **suma** las líneas congeladas y no vuelve a redondear. |
+| IVA (si Villa es responsable) | centavo | Base = total / 1,19 redondeado half-up. IVA = total − base, de modo que base + IVA = total siempre. |
+| Costo del datáfono | centavo | Half-up. |
+| Repartos (pago dividido, propina compartida) | centavo | `allocate()`: la suma de las partes es exactamente el total. |
+| Efectivo que no da en monedas de $50 | peso | La diferencia se registra en la cuenta **5310 Diferencias y redondeos de caja**, nunca se "pierde". |
+
+- **Un solo redondeo por cálculo.** `percentOf(monto, puntosBásicos, paso)` redondea directamente al paso pedido (centavo o peso), sin pasar por un redondeo intermedio que causaría doble redondeo.
+- **Sumas en SQL:** `SUM()` de una columna `bigint` devuelve `numeric`, que el driver entrega como texto. Toda suma se lee con `sumAsBigint()` (`src/db/sql.ts`) y nunca con `Number()`.
+- **Serialización:** `JSON.stringify` no acepta `bigint`. En las respuestas JSON los montos viajan como texto de centavos, por ejemplo `"2500000"`, y se reconstruyen con `BigInt()`.
+
+**Pendiente de confirmar con el dueño y el contador:**
+- si Villa es responsable de IVA;
+- quién absorbe el costo del datáfono;
+- si la comisión se calcula antes o después del descuento.
+
+Las reglas de esta tabla son configurables; lo que **no** cambia es que se redondea una sola vez y en un solo lugar.
+
+## Modelo contable (sprint 1)
+
+- **Partida doble:** `journal_entries` (asiento) y `journal_lines` (débito o crédito, exactamente uno mayor que cero).
+- **Plan de cuentas por sede:** `accounts`. Los códigos están inspirados en el PUC colombiano y **debe validarlos el contador**.
+- **Garantías en PostgreSQL**, en la migración `ledger_guards`:
+  - *constraint trigger* diferido: cada asiento tiene al menos 2 líneas y débitos = créditos al hacer COMMIT;
+  - asientos y líneas son solo-inserción: UPDATE, DELETE y TRUNCATE lanzan error;
+  - FK compuestas `(location_id, …)`: una línea no puede apuntar a una cuenta ni a un asiento de otra sede;
+  - un día cerrado (`day_close_events`) no acepta asientos; reabrirlo es un evento nuevo y auditable;
+  - una reversa por asiento (`reverses_entry_id UNIQUE`), y una reversa no se puede reversar;
+  - idempotencia: `UNIQUE (location_id, idempotency_key)`.
+- **Pruebas:** los tests de integración corren la migración real sobre **PGlite**, un PostgreSQL embebido, así que no necesitan una base instalada.
+
 ## Informes para el dueño en el celular
 
 - La sección **Finanzas** se diseña primero para 360 px:
