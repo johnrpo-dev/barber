@@ -14,5 +14,5 @@ export default async function AgendaPage({ searchParams }: { searchParams: Promi
   }
   const { fecha } = await searchParams;
   const view = await loadAgenda(staff, fecha);
-  return <AgendaBoard key={view.date} view={view} />;
+  return <AgendaBoard key={view.date} view={view} canCharge={can(staff.role, "ledger.post")} />;
 }

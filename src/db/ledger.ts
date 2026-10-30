@@ -1,9 +1,10 @@
-import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { ACCOUNTS, type AccountCode, CHART_OF_ACCOUNTS } from "@/domain/ledger/accounts";
 import { assertValidEntry, type JournalEntryDraft, type LedgerLine, reversalOf } from "@/domain/ledger/entry";
 import { type Currency, money } from "@/domain/money";
+import { DEFAULT_EXPENSE_CATEGORIES, DEFAULT_PAYMENT_METHODS } from "@/domain/sales/defaults";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
-import { accounts, dayCloseEvents, journalEntries, journalLines, locations } from "./schema";
+import { accounts, dayCloseEvents, expenseCategories, journalEntries, journalLines, locations, paymentMethods } from "./schema";
 import { sumAsBigint } from "./sql";
 import type { Db } from "./types";
 
@@ -26,6 +27,9 @@ export async function createLocation(
       .returning({ id: locations.id });
     if (!location) throw new Error("No se pudo crear la sede");
     await tx.insert(accounts).values(CHART_OF_ACCOUNTS.map((a) => ({ locationId: location.id, ...a })));
+    // Medios de pago y categorías de gasto iniciales (sprint 4): sugerencias que el dueño edita.
+    await tx.insert(paymentMethods).values(DEFAULT_PAYMENT_METHODS.map((m) => ({ locationId: location.id, ...m })));
+    await tx.insert(expenseCategories).values(DEFAULT_EXPENSE_CATEGORIES.map((c) => ({ locationId: location.id, ...c })));
     return location.id;
   });
 }
@@ -163,6 +167,25 @@ export async function reverseEntry(
     reversesEntryId: input.entryId,
     entry: reversalOf({ lines, memo: original.memo }, input.businessDate, input.reason),
   });
+}
+
+/** ¿Está cerrado el día contable? Misma regla que el trigger del libro (ledger_day_is_closed). */
+export async function isDayClosed(db: Db, locationId: bigint, businessDate: string): Promise<boolean> {
+  const [row] = await db
+    .select({ closed: sql<boolean>`ledger_day_is_closed(${locationId}::bigint, ${businessDate}::date)` })
+    .from(locations)
+    .where(eq(locations.id, locationId));
+  return row?.closed === true;
+}
+
+/** Saldo (débitos − créditos) de una cuenta de la sede, sumado en SQL. */
+export async function accountBalance(db: Db, locationId: bigint, code: AccountCode): Promise<bigint> {
+  const [row] = await db
+    .select({ debits: sumAsBigint(journalLines.debit), credits: sumAsBigint(journalLines.credit) })
+    .from(journalLines)
+    .innerJoin(accounts, and(eq(accounts.id, journalLines.accountId), eq(accounts.locationId, journalLines.locationId)))
+    .where(and(eq(journalLines.locationId, locationId), eq(accounts.code, code)));
+  return (row?.debits ?? 0n) - (row?.credits ?? 0n);
 }
 
 export async function closeDay(db: Db, input: { locationId: bigint; businessDate: string; createdBy: string }) {

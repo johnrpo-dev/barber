@@ -2,12 +2,21 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import {
+  checkoutRulesOf,
+  listExpenseCategories,
+  listPaymentMethods,
+  saveExpenseCategory,
+  savePaymentMethod,
+  updateCheckoutRules,
+} from "@/db/checkout-settings";
 import { db } from "@/db/client";
 import { setStaffBookableOnline, updateLocationSettings } from "@/db/locations";
 import type { Db } from "@/db/types";
 import { InvalidClientError, normalizePhone } from "@/domain/clients/client";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { requirePermission } from "@/lib/session";
+import { bpsSchema, unitsSchema } from "@/lib/action-schemas";
+import { requirePermission, requireRecentAuth } from "@/lib/session";
 
 // Ajustes de la sede (solo el dueño). La sede sale SIEMPRE de la sesión, nunca del cliente.
 
@@ -67,6 +76,106 @@ export async function setStaffBookableAction(raw: unknown): Promise<ActionResult
     const staff = await requirePermission("settings.manage");
     const input = bookableSchema.parse(raw);
     await setStaffBookableOnline(conn(), { locationId: staff.locationId, staffId: input.staffId, bookable: input.bookable });
+    revalidatePath("/panel/ajustes");
+    return undefined;
+  });
+}
+
+// ─── Cobro (sprint 4, docs/sprint-4-cobro-caja.md §9) ────────────────────────
+// Los puntos básicos llegan como texto de dígitos ("299") y se validan como bigint.
+
+export interface CheckoutSettingsView {
+  methods: { id: string; kind: "cash" | "card" | "transfer" | "wallet"; label: string; feeBps: string; active: boolean }[];
+  categories: { id: string; name: string; accountCode: string; active: boolean }[];
+  rules: {
+    commissionBase: "net" | "gross";
+    maxDiscountBps: string;
+    receptionCanDiscount: boolean;
+    tipsBearCardFees: boolean;
+    /** Límite de diferencia de caja para revisión, en pesos (texto de dígitos). */
+    cashReviewThresholdUnits: string;
+  };
+}
+
+export async function loadCheckoutSettings(): Promise<ActionResult<CheckoutSettingsView>> {
+  const staff = await requirePermission("settings.manage");
+  return runAction(async () => {
+    const [methods, categories, rules] = await Promise.all([
+      listPaymentMethods(conn(), { locationId: staff.locationId }),
+      listExpenseCategories(conn(), { locationId: staff.locationId }),
+      checkoutRulesOf(conn(), staff.locationId),
+    ]);
+    return {
+      methods: methods.map((m) => ({ id: m.id.toString(), kind: m.kind, label: m.label, feeBps: m.feeBps.toString(), active: m.active })),
+      categories: categories.map((c) => ({ id: c.id.toString(), name: c.name, accountCode: c.accountCode, active: c.active })),
+      rules: {
+        commissionBase: rules.commissionBase,
+        maxDiscountBps: rules.maxDiscountBps.toString(),
+        receptionCanDiscount: rules.receptionCanDiscount,
+        tipsBearCardFees: rules.tipsBearCardFees,
+        cashReviewThresholdUnits: (rules.cashReviewThreshold / 100n).toString(),
+      },
+    };
+  });
+}
+
+const methodSchema = z.object({
+  id: idSchema.optional(),
+  kind: z.enum(["cash", "card", "transfer", "wallet"], "Elige el tipo de medio de pago"),
+  label: z.string().max(40, "El nombre es muy largo"),
+  feeBps: bpsSchema("El costo del medio de pago", 9_999n),
+  active: z.boolean(),
+});
+
+export async function savePaymentMethodAction(raw: z.input<typeof methodSchema>): Promise<ActionResult<{ id: string }>> {
+  const staff = await requirePermission("settings.manage");
+  return runAction(async () => {
+    // Cambia cuánto se descuenta de cada cobro: confirmar identidad.
+    requireRecentAuth(staff);
+    const input = methodSchema.parse(raw);
+    const id = await savePaymentMethod(conn(), { ...input, locationId: staff.locationId });
+    revalidatePath("/panel/ajustes");
+    return { id: id.toString() };
+  });
+}
+
+const categorySchema = z.object({
+  id: idSchema.optional(),
+  name: z.string().max(60, "El nombre es muy largo"),
+  accountCode: z.string().max(10),
+  active: z.boolean(),
+});
+
+export async function saveExpenseCategoryAction(raw: z.input<typeof categorySchema>): Promise<ActionResult<{ id: string }>> {
+  const staff = await requirePermission("settings.manage");
+  return runAction(async () => {
+    // Decide a qué cuenta del libro van los gastos: confirmar identidad.
+    requireRecentAuth(staff);
+    const input = categorySchema.parse(raw);
+    const id = await saveExpenseCategory(conn(), { ...input, locationId: staff.locationId });
+    revalidatePath("/panel/ajustes");
+    revalidatePath("/panel/caja");
+    return { id: id.toString() };
+  });
+}
+
+const rulesSchema = z.object({
+  commissionBase: z.enum(["net", "gross"], "Elige la base de la comisión"),
+  maxDiscountBps: bpsSchema("El tope de descuento", 10_000n),
+  receptionCanDiscount: z.boolean(),
+  tipsBearCardFees: z.boolean(),
+  // Conteo a ciegas: desde qué diferencia (faltante o sobrante) un cierre de caja va a revisión.
+  cashReviewThresholdUnits: unitsSchema("El límite de diferencia de caja").optional(),
+});
+
+export async function updateCheckoutRulesAction(raw: z.input<typeof rulesSchema>): Promise<ActionResult> {
+  const staff = await requirePermission("settings.manage");
+  return runAction(async () => {
+    // Comisiones, descuentos y propinas: confirmar identidad.
+    requireRecentAuth(staff);
+    const input = rulesSchema.parse(raw);
+    const { cashReviewThresholdUnits, ...rules } = input;
+    await updateCheckoutRules(conn(), staff.locationId, { ...rules, cashReviewThreshold: cashReviewThresholdUnits });
     revalidatePath("/panel/ajustes");
     return undefined;
   });

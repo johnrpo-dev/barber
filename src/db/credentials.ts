@@ -2,7 +2,7 @@ import { and, eq, ne } from "drizzle-orm";
 import { hashPassword, verifyPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { account, session, staffMembers, user } from "./schema";
-import { StaffError } from "./staff";
+import { revokeTrustedDevices, StaffError } from "./staff";
 import type { Db } from "./types";
 
 // Contraseñas y sesiones del personal, directo en la base (mismo formato que better-auth:
@@ -69,7 +69,8 @@ function assertNewPassword(password: string) {
 
 /**
  * La persona cambia su propia contraseña (también la temporal del primer ingreso). Cierra sus
- * otras sesiones y quita la marca de contraseña temporal. Devuelve false si la actual no coincide.
+ * otras sesiones, revoca los "dispositivos de confianza" y quita la marca de contraseña temporal.
+ * Devuelve false si la actual no coincide.
  */
 export async function changeOwnPassword(
   db: Db,
@@ -86,6 +87,7 @@ export async function changeOwnPassword(
       .where(and(eq(account.userId, input.userId), eq(account.providerId, CREDENTIAL)));
     await tx.update(user).set({ mustChangePassword: false, updatedAt: new Date() }).where(eq(user.id, input.userId));
     await tx.delete(session).where(and(eq(session.userId, input.userId), ne(session.id, input.sessionId)));
+    await revokeTrustedDevices(tx as unknown as Db, input.userId);
   });
   return true;
 }
@@ -118,12 +120,19 @@ export async function resetStaffPassword(db: Db, input: { locationId: bigint; st
     if (updated.length === 0) throw new StaffError("Esta persona no tiene contraseña en la app");
     await tx.update(user).set({ mustChangePassword: true, updatedAt: new Date() }).where(eq(user.id, userId));
     await tx.delete(session).where(eq(session.userId, userId));
+    await revokeTrustedDevices(tx as unknown as Db, userId);
   });
 }
 
-/** Cierra todas las sesiones de una persona de la sede (p. ej. perdió el celular). Devuelve cuántas. */
+/**
+ * Cierra todas las sesiones de una persona de la sede (p. ej. perdió el celular) y olvida sus
+ * dispositivos de confianza. Devuelve cuántas sesiones cerró.
+ */
 export async function revokeStaffSessions(db: Db, input: { locationId: bigint; staffId: bigint }): Promise<number> {
   const userId = await memberUserId(db, input);
-  const rows = await db.delete(session).where(eq(session.userId, userId)).returning({ id: session.id });
-  return rows.length;
+  return db.transaction(async (tx) => {
+    const rows = await tx.delete(session).where(eq(session.userId, userId)).returning({ id: session.id });
+    await revokeTrustedDevices(tx as unknown as Db, userId);
+    return rows.length;
+  });
 }

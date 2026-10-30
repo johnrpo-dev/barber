@@ -5,6 +5,7 @@ import { type FormEvent, useMemo, useState, useTransition } from "react";
 import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { percentToBps } from "@/domain/catalog/service";
 import { format, fromUnits, PESO, percentOf } from "@/domain/money";
+import { useReauth } from "../_components/reauth";
 import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
 import { card, Chip, FieldMessage, FormError, MinutesField, Toggle, useFieldErrors } from "../_manage/controls";
 import { createServiceAction, setServiceActiveAction, updateServiceAction } from "./actions";
@@ -206,6 +207,8 @@ function ActiveToggle({ service }: { service: ServiceRow }) {
 // ─── Formulario ──────────────────────────────────────────────────────────────
 
 function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: () => void }) {
+  // Crear un servicio o cambiar su precio o su comisión pide confirmar identidad (lo decide el servidor).
+  const reauth = useReauth({ description: "El precio y la comisión de un servicio deciden cuánto se cobra y cuánto se le paga al barbero." });
   const toast = useToast();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +249,7 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
 
     const payload = { name, priceUnits: priceDigits, durationMin, bufferMin, commission, active };
     startTransition(async () => {
-      const res = service ? await updateServiceAction({ ...payload, serviceId: service.id }) : await createServiceAction(payload);
+      const res = await reauth.run(() => (service ? updateServiceAction({ ...payload, serviceId: service.id }) : createServiceAction(payload)));
       if (!res.ok) {
         setError(res.error);
         return;
@@ -368,6 +371,7 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
           {pending ? "Guardando…" : service ? "Guardar cambios" : "Crear servicio"}
         </Btn>
       </div>
+      {reauth.dialog}
     </Form>
   );
 }

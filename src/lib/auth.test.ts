@@ -7,6 +7,7 @@ import { loginThrottles, rateLimitCounters, twoFactor, user } from "@/db/schema"
 import { createStaffUser } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import type { Db } from "@/db/types";
+import { userThrottleSubject } from "@/db/login-throttle";
 import { createAuth } from "./auth";
 
 // better-auth real sobre PostgreSQL en memoria: bloqueo por cuenta, límite de intentos en la base
@@ -113,6 +114,145 @@ describe("bloqueo por cuenta en el ingreso", () => {
   });
 });
 
+const fromIp = (ip: string, extra: Headers = new Headers()) => {
+  const h = new Headers(extra);
+  h.set("x-forwarded-for", ip);
+  return h;
+};
+
+describe("bloqueo atómico, por (correo, IP) y global por correo", () => {
+  it("concurrencia: 20 contraseñas malas en paralelo verifican a lo sumo 5", { timeout: 90_000 }, async () => {
+    const { email } = await owner();
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => failure(auth().api.signInEmail({ body: { email, password: `paralela-${i}-larga` } }))),
+    );
+    const verified = results.filter((r) => r.status === 401).length;
+    expect(verified).toBeGreaterThan(0);
+    expect(verified).toBeLessThanOrEqual(5);
+    expect(results.filter((r) => r.status === 429)).toHaveLength(20 - verified);
+  });
+
+  it("el bloqueo duro es por (correo, IP): desde otra IP el dueño sigue pudiendo entrar", { timeout: 60_000 }, async () => {
+    const { email } = await owner();
+    for (let i = 0; i < 5; i++) await failure(auth().api.signInEmail({ body: { email, password: `equivocada-${i}-larga` }, headers: fromIp("203.0.113.10") }));
+    expect(await failure(auth().api.signInEmail({ body: { email, password: PASSWORD }, headers: fromIp("203.0.113.10") }))).toMatchObject({ status: 429 });
+    expect((await auth().api.signInEmail({ body: { email, password: PASSWORD }, headers: fromIp("198.51.100.20") })).token).toBeTruthy();
+  });
+
+  it("el límite global por correo frena un ataque repartido, pero no al navegador conocido", { timeout: 180_000 }, async () => {
+    const { email } = await owner();
+    // Ingreso completo (sin TOTP aún): este navegador queda conocido para ese correo.
+    const first = await auth().api.signInEmail({ body: { email, password: PASSWORD }, headers: fromIp("192.0.2.1"), returnHeaders: true });
+    expect(first.headers.getSetCookie().some((c) => /^better-auth\.known_device=.+; .*HttpOnly/i.test(c))).toBe(true);
+    const knownCookie = cookiesFrom(first.headers)
+      .get("cookie")!
+      .split("; ")
+      .filter((c) => c.startsWith("better-auth.known_device="))
+      .join("; ");
+
+    // 50 fallos desde 10 IP distintas (5 por IP, sin pasar el bloqueo duro de ninguna).
+    for (let ip = 0; ip < 10; ip++) {
+      for (let i = 0; i < 5; i++) {
+        expect((await failure(auth().api.signInEmail({ body: { email, password: `repartida-${ip}-${i}` }, headers: fromIp(`198.51.100.${100 + ip}`) }))).status).toBe(401);
+      }
+    }
+    // Una IP nueva, aun con la contraseña correcta, queda frenada por el límite global…
+    expect(await failure(auth().api.signInEmail({ body: { email, password: PASSWORD }, headers: fromIp("203.0.113.200") }))).toMatchObject({
+      status: 429,
+      code: "ACCOUNT_LOCKED",
+    });
+    // …pero el navegador conocido del dueño entra.
+    const ok = await auth().api.signInEmail({
+      body: { email, password: PASSWORD },
+      headers: fromIp("203.0.113.201", new Headers({ cookie: knownCookie })),
+    });
+    expect(ok.token).toBeTruthy();
+    // Una cookie inventada no sirve.
+    const forged = await failure(
+      auth().api.signInEmail({
+        body: { email, password: PASSWORD },
+        headers: fromIp("203.0.113.202", new Headers({ cookie: `better-auth.known_device=9999999999.${"A".repeat(22)}` })),
+      }),
+    );
+    expect(forged.status).toBe(429);
+  });
+});
+
+describe("endpoints de better-auth que la app no usa o que no deben servir de oráculo", () => {
+  it("rechaza actualizar el usuario, el correo, la contraseña o borrar la cuenta", { timeout: 60_000 }, async () => {
+    const { email } = await owner();
+    const signIn = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const cookies = cookiesFrom(signIn.headers);
+    const api = auth().api;
+    for (const attempt of [
+      api.updateUser({ body: { name: "Otro" }, headers: cookies }),
+      api.changeEmail({ body: { newEmail: "otro@villa.test" }, headers: cookies }),
+      api.changePassword({ body: { currentPassword: PASSWORD, newPassword: "otra-clave-muy-larga" }, headers: cookies }),
+      api.deleteUser({ body: { password: PASSWORD }, headers: cookies }),
+    ]) {
+      expect(await failure(attempt)).toMatchObject({ status: 403, code: "MANAGED_BY_VILLA" });
+    }
+    const [u] = await db.select({ name: user.name }).from(user).where(eq(user.email, email));
+    expect(u?.name).toMatch(/^Dueño/);
+  });
+
+  it("“confiar en este dispositivo” está apagado", { timeout: 90_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+    const step1 = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const res = await failure(auth().api.verifyTOTP({ body: { code: await currentCode(userId), trustDevice: true }, headers: cookiesFrom(step1.headers) }));
+    expect(res).toMatchObject({ status: 400, code: "TRUST_DEVICE_DISABLED" });
+  });
+
+  it("con sesión y TOTP activo, verificar códigos por HTTP se rechaza (no es un oráculo sin bloqueo)", { timeout: 90_000 }, async () => {
+    const { email, userId } = await owner();
+    const [backup] = await enroll(email, userId);
+    const step1 = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const done = await auth().api.verifyTOTP({ body: { code: await currentCode(userId) }, headers: cookiesFrom(step1.headers), returnHeaders: true });
+    const session = cookiesFrom(done.headers, cookiesFrom(step1.headers).get("cookie")!);
+    // Ingreso completo con TOTP: el navegador queda conocido.
+    expect(done.headers.getSetCookie().some((c) => c.startsWith("better-auth.known_device="))).toBe(true);
+    const instance = auth();
+    for (const [path, body] of [
+      ["verify-totp", { code: "000000" }],
+      ["verify-backup-code", { code: backup }],
+    ] as const) {
+      const res = await instance.handler(
+        new Request(`${BASE}/api/auth/two-factor/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: BASE, cookie: session.get("cookie")!, "x-forwarded-for": `203.0.113.${path.length}` },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { code?: string }).code).toBe("SECOND_FACTOR_NOT_HERE");
+    }
+    // El código de respaldo no se gastó.
+    const again = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    expect((await auth().api.verifyBackupCode({ body: { code: backup! }, headers: cookiesFrom(again.headers) })).token).toBeTruthy();
+  });
+
+  it("la contraseña en /two-factor/* cuenta para el bloqueo: al sexto intento ni la correcta pasa", { timeout: 120_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+    const step1 = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const done = await auth().api.verifyTOTP({ body: { code: await currentCode(userId) }, headers: cookiesFrom(step1.headers), returnHeaders: true });
+    const session = cookiesFrom(done.headers, cookiesFrom(step1.headers).get("cookie")!);
+    for (let i = 0; i < 5; i++) {
+      expect(await failure(auth().api.generateBackupCodes({ body: { password: `equivocada-${i}-larga` }, headers: session }))).toMatchObject({
+        status: 400,
+        code: "INVALID_PASSWORD",
+      });
+    }
+    expect(await failure(auth().api.disableTwoFactor({ body: { password: PASSWORD }, headers: session }))).toMatchObject({
+      status: 429,
+      code: "ACCOUNT_LOCKED",
+    });
+    const [u] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, userId));
+    expect(u?.on).toBe(true);
+  });
+});
+
 describe("límite de intentos por IP guardado en Postgres", () => {
   it("cuenta en rate_limit_counters (sin la IP en claro) y responde 429 al pasarse", { timeout: 60_000 }, async () => {
     const instance = auth();
@@ -173,5 +313,66 @@ describe("verificación en dos pasos (TOTP)", () => {
     expect(locked.status).toBe(429);
     const [row] = await db.select({ lockedUntil: twoFactor.lockedUntil }).from(twoFactor).where(eq(twoFactor.userId, userId));
     expect(row?.lockedUntil?.getTime()).toBeGreaterThan(Date.now() + 14 * 60_000);
+  });
+
+  it("20 códigos malos en paralelo repartidos en 4 retos verifican a lo sumo 5", { timeout: 120_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+    const challenges: Headers[] = [];
+    for (let i = 0; i < 4; i++) {
+      challenges.push(cookiesFrom((await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true })).headers));
+    }
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => failure(auth().api.verifyTOTP({ body: { code: String(100000 + i) }, headers: challenges[i % 4]! }))),
+    );
+    const verified = results.filter((r) => r.status === 401).length;
+    expect(verified).toBeGreaterThan(0);
+    expect(verified).toBeLessThanOrEqual(5);
+    expect(results.filter((r) => r.status === 429 && r.code === "ACCOUNT_LOCKED")).toHaveLength(20 - verified);
+    // Bloqueado: ni el código correcto en un reto nuevo pasa.
+    const fresh = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    expect(await failure(auth().api.verifyTOTP({ body: { code: await currentCode(userId) }, headers: cookiesFrom(fresh.headers) }))).toMatchObject({
+      status: 429,
+    });
+  });
+
+  it("un cuerpo mal formado en el segundo paso no cuenta; un acierto borra la cuenta", { timeout: 90_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+    const subject = userThrottleSubject("totp-login", userId);
+    const failuresOf = async () => (await db.select({ failures: loginThrottles.failures }).from(loginThrottles).where(eq(loginThrottles.subject, subject)))[0]?.failures ?? 0;
+    const step1 = cookiesFrom((await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true })).headers);
+    expect((await failure(auth().api.verifyTOTP({ body: {} as { code: string }, headers: step1 }))).status).toBe(400);
+    expect(await failuresOf()).toBe(0);
+    expect((await failure(auth().api.verifyTOTP({ body: { code: "000000" }, headers: step1 }))).status).toBe(401);
+    expect(await failuresOf()).toBe(1);
+    expect((await auth().api.verifyTOTP({ body: { code: await currentCode(userId) }, headers: step1 })).token).toBeTruthy();
+    expect(await failuresOf()).toBe(0);
+  });
+
+  it("con el TOTP activo, la contraseña sola no desactiva ni da códigos nuevos por HTTP; get-totp-uri está cerrado", { timeout: 90_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+    const step1 = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const done = await auth().api.verifyTOTP({ body: { code: await currentCode(userId) }, headers: cookiesFrom(step1.headers), returnHeaders: true });
+    const session = cookiesFrom(done.headers, cookiesFrom(step1.headers).get("cookie")!);
+    const instance = auth();
+    for (const [path, code] of [
+      ["disable", "CODE_REQUIRED"],
+      ["generate-backup-codes", "CODE_REQUIRED"],
+      ["get-totp-uri", "MANAGED_BY_VILLA"],
+    ] as const) {
+      const res = await instance.handler(
+        new Request(`${BASE}/api/auth/two-factor/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: BASE, cookie: session.get("cookie")!, "x-forwarded-for": `203.0.113.${100 + path.length}` },
+          body: JSON.stringify({ password: PASSWORD }),
+        }),
+      );
+      expect(res.status, path).toBe(403);
+      expect(((await res.json()) as { code?: string }).code, path).toBe(code);
+    }
+    const [u] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, userId));
+    expect(u?.on).toBe(true);
   });
 });

@@ -28,6 +28,10 @@ export const PERMISSIONS = [
   "time_off.manage.all", // ausencias y bloqueos de cualquiera, cierres de la sede
   "time_off.manage.own", // el barbero bloquea su propio tiempo
   "settings.manage", // reglas de la sede y reserva en línea
+  "sales.discount", // dar descuentos al cobrar (recepción solo si el dueño lo habilita: canDiscount)
+  "cash.manage", // abrir y cerrar caja, pagar propinas, consignar
+  "expenses.bank", // registrar gastos pagados desde el banco
+  "cash.review", // ver el esperado durante el turno y revisar cierres con diferencia (conteo a ciegas)
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -36,6 +40,7 @@ const GRANTS: Record<Role, ReadonlySet<Permission>> = {
   reception: new Set<Permission>([
     "ledger.post",
     "day.close",
+    "cash.manage",
     "appointments.manage.all",
     "clients.view.contact",
     "time_off.manage.all",
@@ -45,6 +50,15 @@ const GRANTS: Record<Role, ReadonlySet<Permission>> = {
 
 export function can(role: Role, permission: Permission): boolean {
   return GRANTS[role].has(permission);
+}
+
+/**
+ * Descuentos al cobrar: quien tiene sales.discount (el dueño) y recepción solo si la sede lo
+ * habilita (regla receptionCanDiscount, docs/sprint-4-cobro-caja.md §1 y §6). El servidor lee la
+ * regla de la base al cobrar.
+ */
+export function canDiscount(role: Role, rules: { receptionCanDiscount: boolean }): boolean {
+  return can(role, "sales.discount") || (role === "reception" && rules.receptionCanDiscount);
 }
 
 export function isRole(value: string): value is Role {

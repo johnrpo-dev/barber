@@ -125,3 +125,17 @@ export function cashAdjustmentEntry(
     ],
   };
 }
+
+/** Umbral por defecto para revisar un cierre: $20.000 (se ajusta en Ajustes). */
+export const DEFAULT_CASH_REVIEW_THRESHOLD: Money = money(2_000_000n);
+
+/**
+ * ¿Un cierre con esta diferencia (contado − esperado) queda para revisión del dueño? Sí cuando el
+ * faltante o el sobrante supera el umbral de la sede (docs/sprint-4-cobro-caja.md §9.2). La base
+ * calcula lo mismo en el trigger de cierre (0011); este es el espejo para la interfaz y las pruebas.
+ */
+export function needsCashReview(difference: Money, threshold: Money): boolean {
+  if (threshold.minor < 0n) throw new CashError("El umbral de revisión no puede ser negativo");
+  const size = difference.minor < 0n ? -difference.minor : difference.minor;
+  return size > threshold.minor;
+}

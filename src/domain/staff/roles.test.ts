@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { can, PERMISSIONS, requiredAccountSetup, ROLES } from "./roles";
+import { can, canDiscount, PERMISSIONS, requiredAccountSetup, ROLES } from "./roles";
 
 describe("lo que falta antes de usar el panel", () => {
   it("el dueño sin verificación en dos pasos debe inscribirla; los demás roles no", () => {
@@ -31,6 +31,29 @@ describe("permisos por rol", () => {
     expect(can("reception", "ledger.reverse")).toBe(false);
     expect(can("reception", "commissions.view.all")).toBe(false);
     expect(can("reception", "settings.manage")).toBe(false);
+  });
+
+  it("caja y gastos (sprint 4): recepción maneja la caja; el banco y los descuentos son del dueño", () => {
+    expect(can("owner", "cash.manage")).toBe(true);
+    expect(can("reception", "cash.manage")).toBe(true);
+    expect(can("barber", "cash.manage")).toBe(false);
+    expect(can("owner", "expenses.bank")).toBe(true);
+    expect(can("reception", "expenses.bank")).toBe(false);
+    expect(can("barber", "expenses.bank")).toBe(false);
+    // Conteo a ciegas (sprint 4, MEDIUM-3): solo el dueño ve el esperado con la caja abierta.
+    expect(can("owner", "cash.review")).toBe(true);
+    expect(can("reception", "cash.review")).toBe(false);
+    expect(can("barber", "cash.review")).toBe(false);
+    expect(can("reception", "sales.discount")).toBe(false);
+    expect(can("barber", "sales.discount")).toBe(false);
+  });
+
+  it("descuentos: el dueño siempre; recepción solo si la sede lo habilita; el barbero nunca", () => {
+    for (const receptionCanDiscount of [false, true]) {
+      expect(canDiscount("owner", { receptionCanDiscount })).toBe(true);
+      expect(canDiscount("reception", { receptionCanDiscount })).toBe(receptionCanDiscount);
+      expect(canDiscount("barber", { receptionCanDiscount })).toBe(false);
+    }
   });
 
   it("el barbero solo ve lo suyo: no toca caja ni ve contactos completos", () => {

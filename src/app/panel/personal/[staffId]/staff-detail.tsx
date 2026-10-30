@@ -168,7 +168,8 @@ function ProfileForm({ member }: { member: MemberView }) {
   const [displayName, setDisplayName] = useState(member.displayName);
   const [role, setRole] = useState<Role>(member.role);
   const [active, setActive] = useState(member.active);
-  // Cambiar el rol pide confirmar identidad (lo exige el servidor; aquí se pide y se reintenta).
+  // Cambiar el rol o tocar a un dueño (nombre, retirarlo) pide confirmar identidad (lo exige el
+  // servidor; aquí se pide y se reintenta).
   const reauth = useReauth();
 
   const dirty = displayName !== member.displayName || role !== member.role || active !== member.active;

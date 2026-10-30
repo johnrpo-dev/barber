@@ -9,16 +9,24 @@ import { FieldMessage, FormError, RadioDot, radioCard } from "../_manage/control
 import { Btn, cx, field, Sheet } from "./ui";
 
 // Confirmar identidad antes de una acción crítica (crear o ascender dueños, cambiar roles,
-// contraseñas del personal y, en el sprint 4, las acciones de dinero). El servidor decide: si la
-// acción responde code "reauth_required", se pide la contraseña o el código y se reintenta una vez.
+// contraseñas del personal y las acciones y ajustes de dinero). El servidor decide: si la acción
+// responde code "reauth_required", se pide la prueba y se reintenta una vez.
+// Con la verificación en dos pasos activa (los dueños siempre) solo vale el código de la app o un
+// código de respaldo: la contraseña sola no basta. Sin ella, la contraseña.
 
 const CANCELLED = "No se guardó nada: falta confirmar tu identidad.";
 
+type Method = "password" | "totp" | "backup";
+
 /**
  * `run(() => miAccion(datos))` en lugar de `miAccion(datos)`; `dialog` va en el JSX del componente.
- * `canUseCode`: si tiene la verificación en dos pasos (los dueños siempre).
+ * `canUseCode`: si tiene la verificación en dos pasos (los dueños siempre); entonces se confirma con
+ * un código, no con la contraseña. `description` dice por qué se pide; el diálogo agrega cómo.
  */
-export function useReauth({ canUseCode = true }: { canUseCode?: boolean } = {}): {
+export function useReauth({
+  canUseCode = true,
+  description = "Esta acción cambia quién puede entrar o qué puede hacer.",
+}: { canUseCode?: boolean; description?: string } = {}): {
   run: <T>(action: () => Promise<ActionResult<T>>) => Promise<ActionResult<T>>;
   dialog: ReactNode;
 } {
@@ -42,6 +50,7 @@ export function useReauth({ canUseCode = true }: { canUseCode?: boolean } = {}):
     return action();
   }, []);
 
+  const how = canUseCode ? "Confírmala con el código de tu app o con uno de respaldo." : "Confírmala con tu contraseña.";
   const dialog = (
     <Sheet
       isOpen={open}
@@ -49,7 +58,7 @@ export function useReauth({ canUseCode = true }: { canUseCode?: boolean } = {}):
         if (!isOpen) finish(false);
       }}
       title="Confirma que eres tú"
-      description="Esta acción cambia quién puede entrar o qué puede hacer. Confírmala con tu contraseña o con el código de tu app."
+      description={`${description} ${how}`}
     >
       {open ? <ReauthForm canUseCode={canUseCode} onConfirmed={() => finish(true)} onCancel={() => finish(false)} /> : null}
     </Sheet>
@@ -58,8 +67,10 @@ export function useReauth({ canUseCode = true }: { canUseCode?: boolean } = {}):
   return { run, dialog };
 }
 
+const LABELS: Record<Method, string> = { totp: "Código de 6 dígitos", backup: "Código de respaldo", password: "Tu contraseña" };
+
 function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean; onConfirmed: () => void; onCancel: () => void }) {
-  const [method, setMethod] = useState<"password" | "totp">(canUseCode ? "totp" : "password");
+  const [method, setMethod] = useState<Method>(canUseCode ? "totp" : "password");
   const [value, setValue] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,18 +82,21 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
     e.stopPropagation();
     setError(null);
     const code = value.replace(/\s/g, "");
-    if (method === "totp" && !/^\d{6}$/.test(code)) {
-      setFieldError("El código tiene 6 dígitos.");
-      e.currentTarget.querySelector<HTMLElement>('[name="secret"]')?.focus();
-      return;
-    }
-    if (method === "password" && !value) {
-      setFieldError("Escribe tu contraseña.");
+    const problem =
+      method === "totp" && !/^\d{6}$/.test(code)
+        ? "El código tiene 6 dígitos."
+        : method === "backup" && !code
+          ? "Escribe uno de tus códigos de respaldo."
+          : method === "password" && !value
+            ? "Escribe tu contraseña."
+            : null;
+    if (problem) {
+      setFieldError(problem);
       e.currentTarget.querySelector<HTMLElement>('[name="secret"]')?.focus();
       return;
     }
     setPending(true);
-    const res = await reauthenticateAction(method === "totp" ? { method, code } : { method, password: value });
+    const res = await reauthenticateAction(method === "password" ? { method, password: value } : { method, code });
     setPending(false);
     if (!res.ok) {
       setValue("");
@@ -98,7 +112,7 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
         <RadioGroup
           value={method}
           onChange={(v) => {
-            setMethod(v as "password" | "totp");
+            setMethod(v as Method);
             setValue("");
             setFieldError(null);
             setError(null);
@@ -111,9 +125,9 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
               <RadioDot />
               Código de la app
             </Radio>
-            <Radio value="password" className={cx(radioCard, "group")}>
+            <Radio value="backup" className={cx(radioCard, "group")}>
               <RadioDot />
-              Contraseña
+              Código de respaldo
             </Radio>
           </div>
         </RadioGroup>
@@ -133,17 +147,21 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
         autoFocus
         className={field.root}
       >
-        <Label className={field.label}>{method === "password" ? "Tu contraseña" : "Código de 6 dígitos"}</Label>
+        <Label className={field.label}>{LABELS[method]}</Label>
         <Input
-          className={cx(field.input, method === "totp" && "font-mono tracking-widest")}
+          className={cx(field.input, method !== "password" && "font-mono tracking-widest")}
           autoComplete={method === "password" ? "current-password" : "one-time-code"}
-          inputMode={method === "password" ? undefined : "numeric"}
-          maxLength={method === "password" ? 128 : 7}
+          inputMode={method === "totp" ? "numeric" : undefined}
+          maxLength={method === "password" ? 128 : method === "totp" ? 7 : 32}
           spellCheck={false}
         />
         {method === "totp" ? (
           <Text slot="description" className={field.description}>
             El que muestra ahora tu app de verificación para Villa.
+          </Text>
+        ) : method === "backup" ? (
+          <Text slot="description" className={field.description}>
+            Uno de los que guardaste al activar la verificación. Cada uno sirve una sola vez.
           </Text>
         ) : null}
         <FieldMessage>{fieldError}</FieldMessage>

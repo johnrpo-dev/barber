@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, ChevronLeft, ChevronRight, Lock, Plus, Zap } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Lock, Plus, Receipt, Zap } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useOptimistic, useRef, useState } from "react";
@@ -21,6 +21,7 @@ import { addDays } from "@/domain/booking/clock";
 import { type AppointmentStatus, STATUS_LABELS } from "@/domain/booking/status";
 import { formatTime } from "@/domain/staff/schedule";
 import { Btn, cx } from "../../_components/ui";
+import { CheckoutSheet } from "../../cobro/checkout-sheet";
 import type { AgendaAppointmentView, AgendaView } from "../data";
 import { AppointmentSheet } from "./appointment-sheet";
 import { type BookingMode, type BookingPrefill, BookingSheet, initials } from "./booking-sheet";
@@ -32,7 +33,7 @@ import { BLOCK_STYLE, STATUS_ICON, StatusBadge } from "./status";
 
 const OFF_GRID: readonly AppointmentStatus[] = ["cancelled", "no_show"];
 
-export function AgendaBoard({ view }: { view: AgendaView }) {
+export function AgendaBoard({ view, canCharge = false }: { view: AgendaView; canCharge?: boolean }) {
   const router = useRouter();
   const [appointments, setOptimistic] = useOptimistic(
     view.appointments,
@@ -41,6 +42,8 @@ export function AgendaBoard({ view }: { view: AgendaView }) {
   );
   const [openId, setOpenId] = useState<string | null>(null);
   const [booking, setBooking] = useState<{ mode: BookingMode; prefill?: BookingPrefill } | null>(null);
+  /** Cobro sin cita (walk-in que no pasó por la agenda). */
+  const [walkInCheckout, setWalkInCheckout] = useState(false);
   const defaultStaff = view.columns.find((c) => c.staffId === view.viewer.staffId)?.staffId ?? view.columns[0]?.staffId ?? "";
   const [phoneStaff, setPhoneStaff] = useState(defaultStaff);
   const visibleStaff = view.columns.some((c) => c.staffId === phoneStaff) ? phoneStaff : defaultStaff;
@@ -124,14 +127,23 @@ export function AgendaBoard({ view }: { view: AgendaView }) {
             {counts.inChair > 0 ? ` · ${counts.inChair} en silla` : ""}
           </p>
         </div>
-        {view.viewer.canManageAll ? (
+        {view.viewer.canManageAll || canCharge ? (
           <div className="flex items-center gap-2">
+            {canCharge ? (
+              <Btn variant="secondary" aria-label="Cobrar sin cita" onPress={() => setWalkInCheckout(true)}>
+                <Receipt size={18} aria-hidden /> Cobrar
+              </Btn>
+            ) : null}
+            {view.viewer.canManageAll ? (
+              <>
             <Btn variant="success" className="max-md:hidden" onPress={() => setBooking({ mode: "walk_in" })}>
               <Zap size={18} aria-hidden /> Walk-in
             </Btn>
             <Btn onPress={() => setBooking({ mode: "appointment" })}>
               <Plus size={18} aria-hidden /> Nueva cita
             </Btn>
+              </>
+            ) : null}
           </div>
         ) : null}
       </header>
@@ -335,7 +347,18 @@ export function AgendaBoard({ view }: { view: AgendaView }) {
         today={view.today}
         onClose={() => setOpenId(null)}
         onOptimistic={(id, status) => setOptimistic({ id, status })}
+        canCharge={canCharge}
       />
+      {canCharge ? (
+        <CheckoutSheet
+          appointmentId={null}
+          walkIn={walkInCheckout}
+          onClose={(charged) => {
+            setWalkInCheckout(false);
+            if (charged) router.refresh();
+          }}
+        />
+      ) : null}
     </main>
   );
 }

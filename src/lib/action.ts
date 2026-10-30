@@ -3,6 +3,9 @@ import { BookingError } from "@/domain/booking/appointment";
 import { TransitionError } from "@/domain/booking/status";
 import { InvalidServiceError } from "@/domain/catalog/service";
 import { InvalidClientError } from "@/domain/clients/client";
+import { CashError } from "@/domain/sales/cash";
+import { CheckoutError } from "@/domain/sales/checkout";
+import { VoidError } from "@/domain/sales/void";
 import { IdempotencyConflictError } from "@/domain/security/idempotency";
 import { ReauthRequiredError } from "@/domain/security/reauth";
 import { InvalidScheduleError } from "@/domain/staff/schedule";
@@ -37,6 +40,9 @@ const BUSINESS_ERRORS = [
   StaffError,
   RateLimitError,
   PublicBookingUnavailableError,
+  CheckoutError,
+  CashError,
+  VoidError,
 ];
 
 export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {

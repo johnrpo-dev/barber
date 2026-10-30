@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, like, sql } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { isRole, type Role } from "@/domain/staff/roles";
 import { assertValidWeeklySchedule, type ScheduleBlock, type Weekday } from "@/domain/staff/schedule";
-import { account, locations, session, staffMembers, staffSchedules, user } from "./schema";
+import { account, locations, session, staffMembers, staffSchedules, user, verification } from "./schema";
 import type { Db } from "./types";
 
 // Personal de la sede y sus horarios. Los roles se guardan por sede (staff_members),
@@ -167,6 +167,16 @@ async function withOwnerGuard(db: Db, locationId: bigint, change: (tx: Db) => Pr
   });
 }
 
+/**
+ * Borra los "dispositivos de confianza" de better-auth de un usuario (verification con
+ * identifier "trust-device-…" y value = id del usuario). La app ya rechaza trustDevice, pero un
+ * registro viejo saltaría el segundo factor: se borran al retirar a alguien, al reiniciarle la
+ * contraseña o al cerrarle las sesiones.
+ */
+export async function revokeTrustedDevices(db: Db, userId: string): Promise<void> {
+  await db.delete(verification).where(and(like(verification.identifier, "trust-device-%"), eq(verification.value, userId)));
+}
+
 /** Cambia nombre y rol. El rol vale para esta sede; el usuario (si tiene) no se toca. */
 export async function updateStaffMember(
   db: Db,
@@ -203,7 +213,10 @@ export async function setStaffActive(
       .returning({ id: staffMembers.id, userId: staffMembers.userId });
     if (updated.length === 0) throw new StaffError("La persona no existe en esta sede");
     const userId = updated[0]!.userId;
-    if (!input.active && userId) await tx.delete(session).where(eq(session.userId, userId));
+    if (!input.active && userId) {
+      await tx.delete(session).where(eq(session.userId, userId));
+      await revokeTrustedDevices(tx, userId);
+    }
   });
 }
 

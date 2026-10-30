@@ -247,3 +247,201 @@ Cada acción nueva entra en `authorization.test.ts`, con sus casos de aislamient
 - los triggers de solo-inserción funcionan en todas las tablas nuevas.
 
 **De autorización:** la matriz completa y el aislamiento entre sedes.
+
+## 9. Contrato backend ↔ interfaz (obligatorio)
+
+Ambas partes se construyen en paralelo contra este contrato. Si una necesita cambiarlo, lo dice en su informe; no lo cambia en silencio.
+
+**Convenciones:**
+
+- Todas las acciones devuelven `ActionResult<T>` (`src/lib/action.ts`).
+  - Si falta reautenticación, devuelven `{ ok: false, code: "reauth_required" }`, y la interfaz usa `useReauth().run(...)` (`src/app/panel/_components/reauth.tsx`).
+  - Los ids internos viajan como texto (`idSchema`).
+- **Dinero que entra:** pesos enteros en texto, con el sufijo `Units` (`"30000"`), como en Servicios. **Dinero que sale:** texto de centavos con el sufijo `Minor` (`"3000000"`), más una etiqueta ya formateada con el sufijo `Label` (`"$ 30.000"`).
+  - La interfaz **nunca** calcula montos que se guarden. El total, el cambio y el resto por pagar que muestra son solo vista previa. Puede calcularlos con `priceCheckout` del dominio, importado en el cliente, porque es puro.
+  - Lo que vale es lo que devuelve el servidor.
+- Toda acción que escribe recibe `idempotencyKey` (el `formId` del formulario). La interfaz la conserva entre reintentos de red y la renueva después de cualquier respuesta del servidor.
+- **El servidor toma de la base, nunca del navegador:**
+  - el precio y la comisión de cada servicio;
+  - el tipo y el costo de cada medio de pago;
+  - las reglas de cobro;
+  - el día contable.
+
+**`src/app/panel/cobro/actions.ts`:**
+
+- **`loadCheckout({ appointmentId })`** devuelve `ActionResult<CheckoutView>`.
+
+  ```ts
+  type CheckoutView = {
+    appointmentId: string; clientName: string | null; status: string;
+    lines: { key: string; serviceId: string; serviceName: string; staffId: string; staffName: string; unitPriceMinor: string; unitPriceLabel: string; commissionBps: string }[];
+    extraServices: { serviceId: string; name: string; unitPriceMinor: string; unitPriceLabel: string }[];
+    staff: { id: string; name: string }[];                 // para propinas y extras
+    methods: { id: string; kind: "cash" | "card" | "transfer" | "wallet"; label: string; feeBps: string }[];
+    rules: { maxDiscountBps: string; canDiscount: boolean; tipsBearCardFees: boolean; commissionBase: "net" | "gross" };
+    cashSessionOpen: boolean; dayClosed: boolean; businessDate: string;
+    paid: { saleId: string; totalLabel: string; paidAt: string } | null;
+  };
+  ```
+
+  `commissionBps` sirve solo para la vista previa: el servidor la vuelve a leer.
+
+- **`checkoutAction({ appointmentId, extras, discounts, tips, payments, idempotencyKey })`** devuelve `ActionResult<Receipt>`. Los campos de entrada:
+  - `extras: { serviceId: string; staffId: string }[]`;
+  - `discounts: { key: string; amountUnits: string; reason: string }[]`, donde `key` es el de `lines` o `extra:<i>`;
+  - `tips: { staffId: string; amountUnits: string }[]`;
+  - `payments: { methodId: string; amountUnits: string; tenderedUnits?: string }[]`.
+
+  ```ts
+  type Receipt = { saleId: string; totalLabel: string; changeLabel: string | null; lines: { description: string; netLabel: string }[]; tips: { staffName: string; amountLabel: string }[]; payments: { label: string; amountLabel: string }[]; businessDate: string };
+  ```
+
+  - La cita queda `completed` si estaba `in_chair`.
+  - Los mensajes de error conocidos (prefijos):
+    - "Esta cita ya está cobrada";
+    - "Abre la caja para recibir efectivo";
+    - "El día ya está cerrado";
+    - "Falta dinero por cobrar";
+    - "Los pagos superan el total";
+    - "El efectivo entregado no alcanza";
+    - "El descuento supera el tope";
+    - "Escribe el motivo del descuento".
+- **`requestVoidAction({ saleId, reason, idempotencyKey })`**: permiso `ledger.post`.
+
+**`src/app/panel/caja/actions.ts`:**
+
+- **`loadCashView()`** devuelve `ActionResult<CashView>`.
+
+  ```ts
+  type CashView = {
+    businessDate: string; dayClosed: boolean;
+    session: null | {
+      id: string; openedAtLabel: string; openedBy: string;
+      expectedMinor: string; expectedLabel: string;
+      breakdown: { label: string; amountLabel: string; sign: "+" | "-" | "±" }[];
+      byMethod: { label: string; totalLabel: string }[];
+      movements: { at: string; kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal"; description: string; amountLabel: string; sign: "+" | "-" }[];
+    };
+    expectedOpeningMinor: string; expectedOpeningLabel: string; // saldo actual de 1105, para la vista previa al abrir
+    lastClosed: null | { closedAtLabel: string; countedLabel: string; differenceLabel: string; note: string | null };
+    tipsOwed: { staffId: string; name: string; owedMinor: string; owedLabel: string }[];
+    categories: { id: string; name: string }[];
+    canBankExpense: boolean; canCloseDay: boolean; canReopenDay: boolean;
+    daySales: { saleId: string; atLabel: string; clientName: string | null; totalLabel: string; status: "paid" | "voided"; voidRequested: boolean; chargedBy: string }[];
+  };
+  ```
+
+- Acciones de caja, todas con `idempotencyKey`:
+  - `openCashSessionAction({ countedUnits, note?, idempotencyKey })`;
+  - `closeCashSessionAction({ countedUnits, note?, idempotencyKey })`;
+  - `addExpenseAction({ categoryId, amountUnits, paidFrom: "cash" | "bank", description, idempotencyKey })`;
+  - `payTipsAction({ staffId, amountUnits, idempotencyKey })`;
+  - `cashDepositAction({ amountUnits, idempotencyKey })`.
+- Acciones del día:
+  - `closeDayAction({ businessDate })`;
+  - `reopenDayAction({ businessDate, reason })`, que pide reautenticación.
+
+**`src/app/panel/anulaciones/actions.ts`:**
+
+- **`loadVoidQueue()`** devuelve `ActionResult<{ requests: { id: string; saleId: string; atLabel: string; requestedBy: string; chargedBy: string; reason: string; totalLabel: string; lines: string[]; status: "pending" | "approved" | "rejected" }[] }>`.
+- **`decideVoidAction({ requestId, approve: boolean, note, idempotencyKey })`**: permiso `ledger.reverse` y reautenticación.
+
+**`src/app/panel/ajustes/actions.ts`** (se agregan; permiso `settings.manage`):
+
+- `savePaymentMethodAction({ id?, kind, label, feeBps, active })`. El efectivo no se desactiva y su costo es 0.
+- `saveExpenseCategoryAction({ id?, name, accountCode, active })`. `accountCode` debe pasar `isExpenseCategoryAccount`.
+- `updateCheckoutRulesAction({ commissionBase, maxDiscountBps, receptionCanDiscount, tipsBearCardFees })`.
+- `loadCheckoutSettings()` devuelve `ActionResult<{ methods: { id; kind; label; feeBps; active }[]; categories: { id; name; accountCode; active }[]; rules: { commissionBase; maxDiscountBps; receptionCanDiscount; tipsBearCardFees } }>`. Los puntos básicos viajan como texto de dígitos (`"299"`).
+- La página de Ajustes recibe además `methods`, `categories`, `checkoutRules` y la lista de cuentas de gasto permitidas.
+
+**Pantallas** (las hace la interfaz):
+
+- La hoja de cobro, que se abre desde la cita en `/panel/agenda` y en `/panel/mi-dia` (solo para quien tiene `ledger.post`).
+- `/panel/caja`.
+- `/panel/anulaciones`.
+- Las secciones nuevas de `/panel/ajustes`.
+- Los ítems de navegación: "Caja" (`ledger.post`) y "Anulaciones" (`ledger.post`; el dueño ve la cola y recepción ve las suyas).
+
+### 9.1 Lo que se precisó al construir
+
+- **Claves de las líneas del cobro:** la línea de la cita es `"appointment"` y los extras son `"extra:<i>"` (`i` de 0 a 19, sin ceros a la izquierda). Una clave de descuento que no es de una línea de la venta se rechaza; en un walk-in no existe `"appointment"`.
+- **Resultados de las acciones de escritura:**
+  - `requestVoidAction` devuelve `{ requestId }`.
+  - `decideVoidAction` devuelve `{ status, warning }`. El aviso aparece si la propina ya se pagó en efectivo.
+  - `openCashSessionAction` devuelve `{ sessionId, differenceLabel }`.
+  - `closeCashSessionAction` devuelve `{ expectedLabel, countedLabel, differenceLabel, needsReview }`.
+  - `markCashSessionReviewedAction` (solo el dueño) no devuelve datos.
+  - `addExpenseAction` devuelve `{ expenseId }`.
+  - `payTipsAction` y `cashDepositAction` devuelven `{ movementId }`.
+  - Los guardados de Ajustes devuelven `{ id }`.
+  - `closeDayAction`, `reopenDayAction` y `updateCheckoutRulesAction` no devuelven datos.
+- **Movimientos de caja:** se guardan en `cash_movements`, junto a su asiento. `CashView.movements` no muestra los ajustes por conteo; esos se ven en `lastClosed` y en la diferencia al abrir.
+- **Límites de efectivo:**
+  - un gasto, una consignación o un pago de propinas no puede superar el efectivo de la caja ("No hay tanto efectivo en la caja");
+  - el pago de propinas tampoco puede superar lo que se le debe al barbero;
+  - una venta con efectivo solo se anula con la caja ABIERTA y con ese efectivo en el turno ("Abre la caja para devolver el efectivo de esta venta" / "En la caja no hay $ … para devolver esta venta en efectivo"). Ver §9.2.
+- **Anulaciones con la caja cerrada:** las de tarjeta, transferencia o billetera sí; las que tuvieron efectivo, no (§9.2, C1).
+
+### 9.2 Revisión del sprint 4 (lo que cambió)
+
+Las revisiones de cierre del sprint encontraron fallas en la caja y en la base. Todo el esquema nuevo va en la migración `0011_cash_integrity.sql` (0010 no se tocó).
+
+**Anular una venta en efectivo exige la caja abierta (C1).**
+
+- Antes, con la caja cerrada, la anulación se aprobaba "con aviso": la devolución bajaba 1105 por debajo de cero y la apertura siguiente inventaba un sobrante en 5310.
+- Ahora la devolución es un movimiento del turno: `decideVoid` bloquea el turno abierto (`requireOpenSession`), exige que el libro tenga ese efectivo y registra el movimiento `reversal`. Ya no hay aviso de caja cerrada.
+- La base lo respalda: un constraint trigger diferido (`journal_lines_cash_nonnegative`) no deja confirmar ninguna transacción que deje 1105 negativo.
+- En Anulaciones, el error lleva un botón "Ir a la caja".
+
+**Conteo a ciegas (MEDIUM-3).**
+
+- Con la caja abierta, solo quien tiene `cash.review` (el dueño) recibe del servidor el esperado, su desglose y los montos de los movimientos. Recepción ve "Conteo a ciegas", cuenta, y solo al cerrar ve el esperado y la diferencia.
+- Para quien cuenta a ciegas, la nota del cierre es **siempre** obligatoria ("Escribe una nota del conteo…"): si solo se pidiera con diferencia, el error diría si el conteo cuadra y se podría tantear el esperado.
+- La base marca `needs_review` al cerrar si |diferencia| > `locations.cash_review_threshold` (por defecto $20.000; el dueño lo cambia en Ajustes → Reglas de cobro), y `opening_needs_review` al abrir si |contado − libro| supera el mismo umbral. La app no puede fingir ni quitar ninguna de las dos.
+- El dueño ve "Turnos por revisar" en Caja (apertura, cierre o ambos). Un turno abierto con la apertura marcada aparece, pero se da por revisado después de cerrarlo; una sola revisión (`markCashSessionReviewedAction`) cubre apertura y cierre. La hora la pone la base.
+- 0011 rellena las dos marcas en los turnos viejos con diferencia mayor que $20.000.
+- Con la caja abierta, el saldo de apertura (`expectedOpeningMinor`/`Label`) tampoco llega a quien cuenta a ciegas: es el mismo esperado.
+- "No hay tanto efectivo en la caja" (gasto, consignación) solo lo recibe quien tiene `cash.review`; los demás reciben un mensaje genérico. El rechazo en sí sigue diciendo que el monto no alcanza: no se puede evitar sin dejar sacar de más.
+- **Lo que todavía deja ver algo del esperado:** las ventas del día (totales, sin medio) y las propinas por pagar. Sumarlas a mano da una idea aproximada del efectivo; no exacta, porque no dicen qué parte fue en efectivo. Se acepta.
+
+**Integridad en la base (M2, L2, L7).**
+
+- 1105 ≥ 0 también en READ COMMITTED: el trigger toma un candado de transacción por sede antes de sumar, así dos salidas simultáneas no pasan las dos.
+- 0011 borra los registros `trust-device-*` que quedaron en `verification` (el código se pide en cada ingreso).
+- Constraint triggers diferidos (al hacer COMMIT):
+  - todo asiento `sale`, `expense`, `tip_payout`, `cash_deposit` o `reversal` tiene su registro operativo (venta, gasto o movimiento); la reversa de una venta es su `void_entry_id`;
+  - un gasto coincide con su asiento (monto, cuenta de la categoría, caja o banco) y, si es de caja, es un movimiento de su turno;
+  - un movimiento de caja coincide con su asiento y mueve efectivo en su sentido;
+  - al abrir y al cerrar un turno, 1105 es exactamente lo contado;
+  - una venta solo pasa a anulada con una solicitud aprobada.
+- Las horas `closed_at`, `voided_at`, `decided_at` y `reviewed_at` las pone la base (`now()`); CHECK `closed_at >= opened_at`.
+- CHECK `commission <= unit_price` en las líneas.
+
+**search_path fijo (HIGH-1).** Todas las funciones de `public` llevan `SET search_path = pg_catalog, public, pg_temp`: nadie puede reemplazar `ledger_assert_entry()` y compañía con una función del mismo nombre en otro esquema. El esquema de la cola (`pgboss`) pasa a un rol propio, `villa_queue` (ver Arquitectura, Seguridad).
+
+**Concurrencia y lecturas (M1, M3, L3, L4).**
+
+- `closeBusinessDay` y `reopenBusinessDay` leen los asientos del día: bajo SERIALIZABLE, un cobro de ese día que se cruce con el cierre hace abortar a uno de los dos (SSI) y el reintento ve el día cerrado.
+- `serializable()` reintenta 40001, 40P01 y las claves de idempotencia duplicadas con una espera corta al azar (5–25 ms × intento).
+- Las carreras que llegan a una restricción única se traducen al mensaje de siempre: "La caja ya está abierta", "Ya hay una solicitud de anulación pendiente…", "Esta cita ya está cobrada", "Esta venta ya está anulada".
+- La pantalla de Caja se lee en una sola transacción REPEATABLE READ de solo lectura.
+- Abrir un turno en un día cerrado se rechaza siempre (antes solo si había diferencia).
+
+**Cobro sin cita (walk-in).**
+
+- Botón "Cobrar sin cita" en Caja y "Cobrar" en Agenda. En la hoja se eligen los servicios y quién los hizo; el cliente es opcional (buscarlo o crearlo con nombre y celular).
+- Mismo cálculo (`priceCheckout`), mismo asiento, misma clave de idempotencia y la misma verificación de totales en la base. `checkoutAction` acepta `appointmentId: null`, `client` (`existing`, `new` o `none`) y hasta 20 servicios.
+- Un cliente nuevo se crea (o se encuentra por celular) dentro de la transacción del cobro: si el cobro falla, no queda creado.
+- Acción nueva: `loadWalkInCheckout`.
+
+**Sigue sin poder registrarse:** un cobro con descuento del 100 % y sin propina (total cero). No hay pago que registrar y la base exige al menos uno. Queda para después, si el dueño lo pide.
+
+**Queda por confirmar con el dueño y el contador:**
+
+- el costo del datáfono por medio de pago (hoy es 0);
+- el IVA;
+- si se usa la cuenta 4175 para descuentos o el ingreso va neto;
+- si la comisión se calcula sobre el precio neto o el bruto;
+- el mapeo de las categorías de gasto (hoy todas van a 5195);
+- si la anulación se registra el día de la venta (como ahora) o el día actual;
+- qué medios de pago usan de verdad.

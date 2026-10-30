@@ -19,7 +19,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
-    "staff:create-owner": "tsx --env-file-if-exists=.env src/scripts/create-owner.ts"
+    "staff:create-owner": "tsx --env-file-if-exists=.env src/scripts/create-owner.ts",
+    "staff:unlock": "tsx --env-file-if-exists=.env src/scripts/unlock-staff.ts"
   },
   "dependencies": {
     "@date-fns/tz": "1.5.0",

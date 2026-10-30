@@ -77,6 +77,19 @@ export async function setServiceActive(
   if (updated.length === 0) throw new Error(`El servicio ${input.serviceId} no existe en la sede ${input.locationId}`);
 }
 
+/** Un servicio de la sede, o null si no existe en esa sede. */
+export async function serviceOf(
+  db: Db,
+  input: { locationId: bigint; serviceId: bigint; forUpdate?: boolean },
+): Promise<Service | null> {
+  const query = db
+    .select(columns)
+    .from(services)
+    .where(and(eq(services.locationId, input.locationId), eq(services.id, input.serviceId)));
+  const [row] = input.forUpdate ? await query.for("update") : await query;
+  return row ? toService(row) : null;
+}
+
 export async function listServices(
   db: Db,
   input: { locationId: bigint; includeInactive?: boolean },

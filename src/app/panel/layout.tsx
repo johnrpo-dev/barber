@@ -18,6 +18,11 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   if (can(staff.role, "appointments.manage.all") || can(staff.role, "appointments.manage.own")) {
     items.push({ href: "/panel/agenda", label: "Agenda", icon: "agenda" });
   }
+  // Cobro y caja (sprint 4): recepción y dueño. En Anulaciones el dueño ve la cola; recepción, las suyas.
+  if (can(staff.role, "ledger.post")) {
+    items.push({ href: "/panel/caja", label: "Caja", icon: "caja" });
+    items.push({ href: "/panel/anulaciones", label: "Anulaciones", icon: "anulaciones", short: "Anular" });
+  }
   if (can(staff.role, "time_off.manage.all") || can(staff.role, "time_off.manage.own")) {
     items.push({ href: "/panel/bloqueos", label: "Bloqueos", icon: "bloqueos" });
   }

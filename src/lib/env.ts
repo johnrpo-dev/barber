@@ -16,6 +16,22 @@ export function env(): Env {
   return cached;
 }
 
+/**
+ * Conexión de la cola del worker (pg-boss). En el VPS es QUEUE_DATABASE_URL, con el rol villa_queue
+ * (dueño solo del esquema pgboss; src/db/roles/setup-roles.sql), para que la app nunca vuelva a ser
+ * dueña de un esquema (auditoría del sprint 4, HIGH-1). Si falta y NODE_ENV=production, el worker no
+ * arranca. En desarrollo se usa DATABASE_URL; y si alguien la omite en el VPS sin NODE_ENV, la base
+ * igual lo frena: villa_app no tiene permisos en el esquema pgboss.
+ */
+export function queueDatabaseUrl(source: Record<string, string | undefined> = process.env): string {
+  const raw = source.QUEUE_DATABASE_URL?.trim();
+  if (raw) return z.url("QUEUE_DATABASE_URL no es una URL válida").parse(raw);
+  if (source.NODE_ENV === "production") {
+    throw new Error("Falta QUEUE_DATABASE_URL (rol villa_queue): la cola del worker no corre con el rol de la app");
+  }
+  return z.url("DATABASE_URL no es una URL válida").parse(source.DATABASE_URL);
+}
+
 // ─── Reserva pública (sprint 3) ──────────────────────────────────────────────
 // Todas opcionales: el panel nunca se cae porque falte algo de lo público. Cada variable se
 // valida por separado; una mal escrita cuenta como ausente y publicBookingReadiness() la reporta.

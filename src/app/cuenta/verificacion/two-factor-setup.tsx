@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Checkbox, Form, Input, Label, Text, TextField } from "react-aria-components";
 import { authClient } from "@/lib/auth-client";
+import { disableTwoFactorAction, regenerateBackupCodesAction } from "../actions";
 import { Btn, cx, field, useToast } from "../../panel/_components/ui";
 import { card, FieldMessage, FormError } from "../../panel/_manage/controls";
 
@@ -16,7 +17,8 @@ import { card, FieldMessage, FormError } from "../../panel/_manage/controls";
 type AuthError = { status: number; code?: string; message?: string };
 
 function authMessage(error: AuthError, wrong: string): string {
-  if (error.status === 429) return "Demasiados intentos. Espera un momento y vuelve a intentar.";
+  // La contraseña aquí cuenta para el bloqueo por cuenta (src/lib/auth.ts): su mensaje dice cuánto esperar.
+  if (error.status === 429) return error.code === "ACCOUNT_LOCKED" && error.message ? error.message : "Demasiados intentos. Espera un momento y vuelve a intentar.";
   if (error.code === "INVALID_PASSWORD") return "La contraseña no es correcta.";
   if (error.code === "INVALID_CODE") return wrong;
   if (error.status === 401) return "Tu sesión terminó. Vuelve a ingresar.";
@@ -88,32 +90,44 @@ function PasswordStep({
   submitLabel,
   onSubmit,
   tone = "primary",
+  withCode = false,
 }: {
   title: string;
   description?: string;
   submitLabel: string;
-  /** Devuelve el mensaje de error, o null si salió bien. */
-  onSubmit: (password: string) => Promise<string | null>;
+  /** Devuelve el mensaje de error, o null si salió bien. `code` va vacío si no se pide. */
+  onSubmit: (password: string, code: string) => Promise<string | null>;
   tone?: "primary" | "danger";
+  /** Con el TOTP activo, la contraseña sola no basta: también el código de la app o uno de respaldo. */
+  withCode?: boolean;
 }) {
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+    const typedCode = code.replace(/\s/g, "");
     if (!password) {
       setFieldError("Escribe tu contraseña.");
       e.currentTarget.querySelector<HTMLElement>('[name="password"]')?.focus();
       return;
     }
+    if (withCode && !typedCode) {
+      setCodeError("Escribe el código de tu app o uno de respaldo.");
+      e.currentTarget.querySelector<HTMLElement>('[name="code"]')?.focus();
+      return;
+    }
     setPending(true);
-    const message = await onSubmit(password);
+    const message = await onSubmit(password, typedCode);
     setPending(false);
     if (message) {
       setPassword("");
+      setCode("");
       setError(message);
     }
   }
@@ -140,6 +154,26 @@ function PasswordStep({
         <Input className={field.input} autoComplete="current-password" />
         <FieldMessage>{fieldError}</FieldMessage>
       </TextField>
+      {withCode ? (
+        <TextField
+          name="code"
+          value={code}
+          onChange={(v) => {
+            setCode(v);
+            setCodeError(null);
+          }}
+          isRequired
+          isInvalid={!!codeError}
+          className={field.root}
+        >
+          <Label className={field.label}>Código de tu app o de respaldo</Label>
+          <Input className={field.input} autoComplete="one-time-code" autoCapitalize="none" spellCheck={false} />
+          <Text slot="description" className="text-xs text-tinta/70">
+            Los 6 dígitos que muestra la app ahora, o uno de tus códigos de respaldo.
+          </Text>
+          <FieldMessage>{codeError}</FieldMessage>
+        </TextField>
+      ) : null}
       <FormError message={error} />
       <Btn type="submit" variant={tone} isPending={pending} className="self-stretch min-[400px]:self-end">
         {pending ? "Un momento…" : submitLabel}
@@ -319,10 +353,11 @@ function ManageTwoFactor({ required }: { required: boolean }) {
         title="Códigos de respaldo nuevos"
         description="Los anteriores dejan de servir."
         submitLabel="Generar códigos nuevos"
-        onSubmit={async (password) => {
-          const { data, error } = await authClient.twoFactor.generateBackupCodes({ password });
-          if (error || !data) return authMessage((error ?? { status: 500 }) as AuthError, "No se pudieron generar. Intenta de nuevo.");
-          setNewCodes(data.backupCodes);
+        withCode
+        onSubmit={async (password, code) => {
+          const result = await regenerateBackupCodesAction({ password, code });
+          if (!result.ok) return result.error;
+          setNewCodes(result.data.backupCodes);
           return null;
         }}
       />
@@ -339,9 +374,10 @@ function ManageTwoFactor({ required }: { required: boolean }) {
         }
         submitLabel={required ? "Borrar e inscribir de nuevo" : "Desactivar"}
         tone="danger"
-        onSubmit={async (password) => {
-          const { error } = await authClient.twoFactor.disable({ password });
-          if (error) return authMessage(error as AuthError, "No se pudo desactivar. Intenta de nuevo.");
+        withCode
+        onSubmit={async (password, code) => {
+          const result = await disableTwoFactorAction({ password, code });
+          if (!result.ok) return result.error;
           toast(required ? "Ahora inscribe el celular nuevo" : "Verificación en dos pasos desactivada");
           router.replace(required ? "/cuenta/verificacion" : "/cuenta");
           router.refresh();

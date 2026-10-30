@@ -100,8 +100,9 @@ export async function updateStaffProfileAction(raw: unknown): Promise<ActionResu
       throw new StaffError("No puedes retirarte ni quitarte el rol de dueño a ti mismo");
     }
     const current = await requireMember(staff.locationId, input.staffId);
-    // Cambiar un rol (sobre todo ascender a dueño) es crítico: confirmar identidad.
-    if (current.role !== input.role) requireRecentAuth(staff);
+    // Críticos: cambiar un rol (sobre todo ascender a dueño) y tocar a un dueño (su nombre, que
+    // aparece en las cuentas, o retirarlo/reactivarlo). Confirmar identidad.
+    if (current.role !== input.role || current.role === "owner" || input.role === "owner") requireRecentAuth(staff);
     // Retirar a alguien también cierra sus sesiones (setStaffActive), en la misma transacción.
     await conn().transaction(async (tx) => {
       const t = tx as unknown as Db;

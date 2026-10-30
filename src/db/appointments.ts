@@ -25,6 +25,7 @@ import {
   user,
 } from "./schema";
 import { extendManageLink, revokeManageLinks } from "./manage-links";
+import { pgError } from "./serializable";
 import type { TimeRange } from "./tstzrange";
 import type { Db } from "./types";
 import { ulid } from "./ulid";
@@ -52,13 +53,7 @@ function actorFields(actor: AgendaActor): { actorKind: "staff" | "client" | "sys
   return "kind" in actor ? { actorKind: actor.kind, actorUserId: null } : { actorKind: "staff", actorUserId: actor.userId };
 }
 
-function pgCode(err: unknown): { code?: string; constraint?: string } {
-  for (let e: unknown = err; e && typeof e === "object"; e = (e as { cause?: unknown }).cause) {
-    const { code, constraint, constraint_name } = e as { code?: string; constraint?: string; constraint_name?: string };
-    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return { code, constraint: constraint ?? constraint_name };
-  }
-  return {};
-}
+const pgCode = pgError;
 
 const isExclusionViolation = (err: unknown) => pgCode(err).code === "23P01";
 

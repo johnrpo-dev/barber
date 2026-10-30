@@ -16,6 +16,14 @@ export const LOCKOUT_POLICY = {
 export type LockoutPolicy = { threshold: number; baseMs: number; maxMs: number; resetAfterMs: number };
 
 /**
+ * Límite blando por correo, sumando todas las IP (ataque repartido desde muchas direcciones).
+ * Mucho más alto que el duro por (correo, IP), para que un atacante no deje al dueño fuera con
+ * pocos intentos; además, un navegador donde el dueño ya ingresó ("dispositivo conocido") no lo
+ * sufre. Ver docs/arquitectura.md, "Seguridad".
+ */
+export const LOGIN_EMAIL_POLICY: LockoutPolicy = { ...LOCKOUT_POLICY, threshold: 50 };
+
+/**
  * Duración del bloqueo después del fallo número `failures` (contado desde el último éxito).
  * Cero por debajo del umbral; desde ahí, base · 2^(fallos − umbral), con tope.
  */

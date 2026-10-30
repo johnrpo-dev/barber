@@ -12,7 +12,16 @@ const migrationsFolder = fileURLToPath(new URL("./migrations", import.meta.url))
  * PostgreSQL real en memoria (PGlite) con todas las migraciones aplicadas,
  * incluidas las garantías contables. Solo para tests: no requiere una base instalada.
  */
-export async function createTestDb(opts: { role?: "app" } = {}): Promise<{ db: Db; client: PGlite }> {
+export async function createTestDb(
+  opts: {
+    role?: "app";
+    /**
+     * Dueño del esquema pgboss: "queue" (villa_queue, como setup-roles.sql desde la revisión del
+     * sprint 4) o "app" (la instalación vieja, para la prueba de regresión de HIGH-1).
+     */
+    pgbossOwner?: "queue" | "app";
+  } = {},
+): Promise<{ db: Db; client: PGlite }> {
   const client = new PGlite({ extensions: { btree_gist } });
   const db = drizzle({ client, schema });
   // VILLA_TEST_DB_ROLE=app corre cualquier test como en producción (para revisar los permisos a mano).
@@ -20,6 +29,7 @@ export async function createTestDb(opts: { role?: "app" } = {}): Promise<{ db: D
     await setUpRoles(client);
     await client.exec("SET ROLE villa_owner");
     await migrate(db, { migrationsFolder });
+    await client.exec(`RESET ROLE; CREATE SCHEMA pgboss AUTHORIZATION ${opts.pgbossOwner === "app" ? "villa_app" : "villa_queue"}`);
     // SESSION AUTHORIZATION y no SET ROLE: como en el VPS, la sesión ES villa_app y no puede volver atrás.
     await client.exec("RESET ROLE; SET SESSION AUTHORIZATION villa_app");
   } else {
@@ -30,17 +40,19 @@ export async function createTestDb(opts: { role?: "app" } = {}): Promise<{ db: D
 
 /**
  * Los mismos roles que src/db/roles/setup-roles.sql crea en el VPS, en el PGlite en memoria:
- * villa_owner es dueño del esquema y migra; villa_app es la app (sin DDL ni UPDATE/DELETE en el libro).
+ * villa_owner es dueño del esquema y migra; villa_app es la app (sin DDL ni UPDATE/DELETE en el libro,
+ * sin CREATE en ningún esquema); villa_queue es dueño del esquema pgboss (la cola del worker).
  */
 async function setUpRoles(client: PGlite): Promise<void> {
   await client.exec(`
     CREATE ROLE villa_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
     CREATE ROLE villa_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
+    CREATE ROLE villa_queue NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE;
     CREATE EXTENSION IF NOT EXISTS btree_gist;
     ALTER SCHEMA public OWNER TO villa_owner;
     REVOKE CREATE ON SCHEMA public FROM PUBLIC;
     GRANT CREATE ON DATABASE postgres TO villa_owner;
-    REVOKE CREATE ON DATABASE postgres FROM PUBLIC;
+    REVOKE CREATE, TEMPORARY ON DATABASE postgres FROM PUBLIC;
   `);
 }
 

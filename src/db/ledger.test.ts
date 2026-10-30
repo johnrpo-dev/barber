@@ -42,12 +42,15 @@ async function accountId(code: string, location: bigint = locationId): Promise<s
   return rows[0]!.id;
 }
 
+// Asientos sueltos del libro genérico: desde 0011 un asiento "sale" (o de gasto, propinas o
+// consignación) exige su fila operativa al hacer COMMIT (eso lo prueban sales/cash/voids.test.ts),
+// así que aquí se usa un tipo sin fila operativa; las reglas del libro son las mismas.
 function haircut(overrides: Partial<JournalEntryDraft> = {}): JournalEntryDraft {
   const price = fromUnits(25_000n);
   const commission = percentOf(price, 4_000n, PESO);
   return {
     businessDate: DAY,
-    kind: "sale",
+    kind: "owner_contribution",
     memo: "Corte clásico — Andrés",
     lines: [
       { account: ACCOUNTS.cash.code, side: "debit", amount: price },
@@ -155,7 +158,7 @@ describe("libro mayor: garantías dentro de PostgreSQL (aunque el código tenga 
     );
     return rawTx(`
       INSERT INTO journal_entries (location_id, business_date, kind, memo, currency, created_by)
-        VALUES (${locationId}, '${date}', 'sale', 'sql directo', 'COP', '${USER}');
+        VALUES (${locationId}, '${date}', 'owner_contribution', 'sql directo', 'COP', '${USER}');
       ${values.length ? `INSERT INTO journal_lines (location_id, entry_id, account_id, debit, credit) VALUES ${values.join(",")}` : "SELECT 1"}
     `);
   }
@@ -203,7 +206,10 @@ describe("libro mayor: garantías dentro de PostgreSQL (aunque el código tenga 
     );
     expect(await dbError(client.exec("UPDATE journal_entries SET memo = 'editado'"))).toMatch(/solo-inserción/);
     expect(await dbError(client.exec("DELETE FROM journal_entries"))).toMatch(/solo-inserción/);
-    expect(await dbError(client.exec("TRUNCATE journal_lines, journal_entries"))).toMatch(/solo-inserción/);
+    // Desde el sprint 4 las ventas y la caja apuntan al libro: sin CASCADE frena la FK; con CASCADE,
+    // los triggers de solo-inserción del libro o de las tablas que lo referencian.
+    expect(await dbError(client.exec("TRUNCATE journal_lines, journal_entries"))).toMatch(/solo-inserción|foreign key/);
+    expect(await dbError(client.exec("TRUNCATE journal_lines, journal_entries CASCADE"))).toMatch(/solo-inserción|no admite TRUNCATE/);
   });
 
   it("no permite agregar líneas a un asiento ya confirmado", async () => {
@@ -226,7 +232,7 @@ describe("libro mayor: garantías dentro de PostgreSQL (aunque el código tenga 
     const msg = await dbError(
       rawTx(`
         INSERT INTO journal_entries (location_id, business_date, kind, memo, currency, created_by)
-          VALUES (${locationId}, '${DAY}', 'sale', 'cruce de sedes', 'COP', '${USER}');
+          VALUES (${locationId}, '${DAY}', 'owner_contribution', 'cruce de sedes', 'COP', '${USER}');
         INSERT INTO journal_lines (location_id, entry_id, account_id, debit, credit) VALUES
           (${locationId}, currval('journal_entries_id_seq'), ${foreignCash}, 100, 0),
           (${locationId}, currval('journal_entries_id_seq'), ${income}, 0, 100)
@@ -239,7 +245,7 @@ describe("libro mayor: garantías dentro de PostgreSQL (aunque el código tenga 
     const msg = await dbError(
       client.exec(`
         INSERT INTO journal_entries (location_id, business_date, kind, memo, currency, created_by)
-          VALUES (${locationId}, '${DAY}', 'sale', 'dólares', 'USD', '${USER}');
+          VALUES (${locationId}, '${DAY}', 'owner_contribution', 'dólares', 'USD', '${USER}');
       `),
     );
     expect(msg).toMatch(/moneda USD/);
@@ -368,7 +374,7 @@ describe("libro mayor: propiedad", () => {
           ];
           await postEntry(db, {
             locationId: loc,
-            entry: { businessDate: DAY, kind: "sale", memo: "propiedad", lines },
+            entry: { businessDate: DAY, kind: "owner_contribution", memo: "propiedad", lines },
             createdBy: USER,
           });
           expectedIncome += price.minor;

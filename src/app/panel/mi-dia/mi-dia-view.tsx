@@ -18,7 +18,7 @@ import type { AgendaAppointmentView, AgendaView } from "../agenda/data";
 
 const DONE: readonly AppointmentStatus[] = ["completed", "cancelled", "no_show"];
 
-export function MiDiaView({ view, name }: { view: AgendaView; name: string }) {
+export function MiDiaView({ view, name, canCharge = false }: { view: AgendaView; name: string; canCharge?: boolean }) {
   const toast = useToast();
   const [appointments, setOptimistic] = useOptimistic(
     view.appointments,
@@ -177,6 +177,7 @@ export function MiDiaView({ view, name }: { view: AgendaView; name: string }) {
         today={view.today}
         onClose={() => setOpenId(null)}
         onOptimistic={(id, status) => setOptimistic({ id, status })}
+        canCharge={canCharge}
       />
     </main>
   );

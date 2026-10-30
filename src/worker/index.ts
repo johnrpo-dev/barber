@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { PgBoss } from "pg-boss";
 import { db } from "@/db/client";
 import type { Db } from "@/db/types";
-import { env } from "@/lib/env";
+import { queueDatabaseUrl } from "@/lib/env";
 import { describeError } from "@/lib/log";
 import { runExpireHolds } from "./jobs/expire-holds";
 import { runMaintenance } from "./jobs/maintenance";
@@ -20,9 +20,12 @@ const JOBS: { name: string; cron: string; run: (database: Db) => Promise<unknown
 ];
 
 /**
- * En el VPS el esquema "pgboss" lo crea src/db/roles/setup-roles.sql (dueño: villa_app) y
- * villa_app no puede crear esquemas, así que pg-boss no debe intentar CREATE SCHEMA.
- * En desarrollo, sin ese script, pg-boss lo crea como siempre.
+ * En el VPS el esquema "pgboss" lo crea src/db/roles/setup-roles.sql (dueño: villa_queue, el rol de
+ * QUEUE_DATABASE_URL) y ningún rol de la app puede crear esquemas, así que pg-boss no debe intentar
+ * CREATE SCHEMA. En desarrollo, sin ese script, pg-boss lo crea como siempre.
+ *
+ * Dos conexiones: la cola usa villa_queue (solo el esquema pgboss) y los trabajos usan villa_app
+ * (DATABASE_URL), así ninguno de los dos roles es dueño de algo que toque las garantías de public.
  */
 async function pgBossSchemaExists(database: Db): Promise<boolean> {
   const result: unknown = await database.execute(sql`select to_regnamespace('pgboss') is not null as present`);
@@ -32,7 +35,7 @@ async function pgBossSchemaExists(database: Db): Promise<boolean> {
 
 async function main() {
   const database = db() as unknown as Db;
-  const boss = new PgBoss({ connectionString: env().DATABASE_URL, createSchema: !(await pgBossSchemaExists(database)) });
+  const boss = new PgBoss({ connectionString: queueDatabaseUrl(), createSchema: !(await pgBossSchemaExists(database)) });
   boss.on("error", (err) => console.error("[worker] error de pg-boss", describeError(err)));
   await boss.start();
 

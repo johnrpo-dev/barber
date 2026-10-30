@@ -3,15 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/db/client";
-import { createService, setServiceActive, updateService } from "@/db/catalog";
+import { createService, serviceOf, setServiceActive, updateService } from "@/db/catalog";
 import type { Db } from "@/db/types";
 import { InvalidServiceError, percentToBps, type ServiceDraft } from "@/domain/catalog/service";
 import { fromUnits } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { requirePermission } from "@/lib/session";
+import { requirePermission, requireRecentAuth } from "@/lib/session";
 
 // Catálogo de servicios. La sede sale SIEMPRE de la sesión, nunca del cliente.
 // El precio viaja como texto de pesos enteros ("35000") y se convierte con fromUnits: nunca pasa por number.
+// Precio y comisión son dinero: crear un servicio o cambiarlos exige reautenticación reciente.
 
 const draftSchema = z.object({
   name: z.string().max(80, "El nombre debe tener entre 2 y 80 caracteres"),
@@ -52,6 +53,7 @@ export async function createServiceAction(raw: unknown): Promise<ActionResult> {
     const staff = await requirePermission("services.manage");
     const input = draftSchema.parse(raw);
     const draft = toDraft(input);
+    requireRecentAuth(staff);
     const conn = db() as unknown as Db;
     await conn
       .transaction(async (tx) => {
@@ -74,6 +76,10 @@ export async function updateServiceAction(raw: unknown): Promise<ActionResult> {
     await conn
       .transaction(async (tx) => {
         const t = tx as unknown as Db;
+        // Se compara dentro de la transacción, con la fila bloqueada: nadie cambia el precio entre medio.
+        const current = await serviceOf(t, { locationId: staff.locationId, serviceId: input.serviceId, forUpdate: true });
+        if (!current) throw new InvalidServiceError("El servicio no existe en esta sede");
+        if (current.price.minor !== draft.price.minor || current.commissionBps !== draft.commissionBps) requireRecentAuth(staff);
         await updateService(t, { locationId: staff.locationId, serviceId: input.serviceId, draft });
         await setServiceActive(t, { locationId: staff.locationId, serviceId: input.serviceId, active: input.active });
       })

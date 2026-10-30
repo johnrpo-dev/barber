@@ -1,10 +1,12 @@
 "use client";
 
-import { CalendarClock, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
+import { Banknote, CalendarClock, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Dialog, Heading, Label, Modal, ModalOverlay, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { type AppointmentStatus, NEXT_STEP, NEXT_STEP_LABELS, STATUS_LABELS } from "@/domain/booking/status";
 import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
+import { CheckoutSheet } from "../../cobro/checkout-sheet";
 import { type HistoryEntry, loadHistory, reschedule, setStatus } from "../actions";
 import type { AgendaAppointmentView, AgendaColumnView } from "../data";
 import { relativeDate, SlotPicker } from "./slot-picker";
@@ -37,6 +39,7 @@ export function AppointmentSheet({
   today,
   onClose,
   onOptimistic,
+  canCharge = false,
 }: {
   appointment: AgendaAppointmentView | null;
   columns: AgendaColumnView[];
@@ -44,9 +47,14 @@ export function AppointmentSheet({
   today: string;
   onClose: () => void;
   onOptimistic?: (id: string, status: AppointmentStatus) => void;
+  /** Quien tiene ledger.post ve "Cobrar" en citas en silla o terminadas. */
+  canCharge?: boolean;
 }) {
+  const router = useRouter();
   const [mode, setMode] = useState<"detail" | "reschedule">("detail");
+  const [checkout, setCheckout] = useState<{ id: string; clientName: string | null } | null>(null);
   return (
+    <>
     <Sheet
       isOpen={appointment !== null}
       onOpenChange={(open) => {
@@ -67,6 +75,14 @@ export function AppointmentSheet({
             onReschedule={() => setMode("reschedule")}
             onClose={onClose}
             onOptimistic={onOptimistic}
+            onCharge={
+              canCharge && CHARGEABLE.includes(appointment.status)
+                ? () => {
+                    setCheckout({ id: appointment.id, clientName: appointment.clientName });
+                    onClose();
+                  }
+                : undefined
+            }
           />
         ) : (
           <Reschedule
@@ -83,19 +99,33 @@ export function AppointmentSheet({
         )
       ) : null}
     </Sheet>
+    <CheckoutSheet
+      appointmentId={checkout?.id ?? null}
+      clientName={checkout?.clientName}
+      onClose={(charged) => {
+        setCheckout(null);
+        if (charged) router.refresh();
+      }}
+    />
+    </>
   );
 }
+
+/** Se cobra una cita en silla (queda terminada al cobrar) o ya terminada. */
+const CHARGEABLE: readonly AppointmentStatus[] = ["in_chair", "completed"];
 
 function Detail({
   appointment: a,
   onReschedule,
   onClose,
   onOptimistic,
+  onCharge,
 }: {
   appointment: AgendaAppointmentView;
   onReschedule: () => void;
   onClose: () => void;
   onOptimistic?: (id: string, status: AppointmentStatus) => void;
+  onCharge?: () => void;
 }) {
   const toast = useToast();
   const [pending, startTransition] = useTransition();
@@ -171,10 +201,17 @@ function Detail({
         ) : null}
       </dl>
 
+      {onCharge ? (
+        <Btn size="xl" variant="success" className="w-full" onPress={onCharge} isDisabled={pending}>
+          <Banknote size={22} aria-hidden />
+          Cobrar
+        </Btn>
+      ) : null}
+
       {canNext && next ? (
         <Btn
           size="xl"
-          variant={next === "completed" || next === "in_chair" ? "success" : "primary"}
+          variant={onCharge ? "secondary" : next === "completed" || next === "in_chair" ? "success" : "primary"}
           className="w-full"
           isPending={pending}
           onPress={() => move(next)}

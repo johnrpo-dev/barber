@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays, CalendarOff, CircleUserRound, LogOut, type LucideIcon, Scissors, Settings, Sun, Users } from "lucide-react";
+import { CalendarDays, CalendarOff, CircleUserRound, LogOut, type LucideIcon, ReceiptText, Scissors, Settings, Sun, Users, Wallet } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cx } from "./ui";
@@ -8,11 +8,13 @@ import { cx } from "./ui";
 // Navegación del panel: barra inferior en celular; riel lateral desde tablet horizontal;
 // barra lateral con texto en escritorio. Los ítems ya vienen filtrados por rol desde el servidor.
 
-export type NavIcon = "agenda" | "mi-dia" | "bloqueos" | "servicios" | "personal" | "ajustes";
+export type NavIcon = "agenda" | "mi-dia" | "bloqueos" | "servicios" | "personal" | "ajustes" | "caja" | "anulaciones";
 export interface NavItem {
   href: string;
   label: string;
   icon: NavIcon;
+  /** Etiqueta corta para la barra inferior del celular (a 360 px caben ~7 ítems de 6 letras). */
+  short?: string;
 }
 
 const ICONS: Record<NavIcon, LucideIcon> = {
@@ -22,6 +24,8 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   servicios: Scissors,
   personal: Users,
   ajustes: Settings,
+  caja: Wallet,
+  anulaciones: ReceiptText,
 };
 
 function isActive(pathname: string, href: string) {
@@ -121,18 +125,28 @@ export function PanelNav({
             const Icon = ICONS[item.icon];
             const active = isActive(pathname, item.href);
             return (
-              <li key={item.href} className="flex-1">
+              <li key={item.href} className="min-w-0 flex-1">
                 <Link
                   href={item.href}
                   aria-current={active ? "page" : undefined}
                   className={cx(
-                    "relative flex h-full flex-col items-center justify-center gap-0.5 text-[11px] font-semibold",
+                    "relative flex h-full flex-col items-center justify-center gap-0.5 font-semibold",
+                    items.length > 5 ? "text-[10px] tracking-tight" : "text-[11px]",
                     active ? "text-cuero" : "text-tinta/70",
                   )}
                 >
-                  {active ? <span className="absolute inset-x-6 top-0 h-0.5 rounded-full bg-cuero" aria-hidden /> : null}
+                  {active ? <span className="absolute inset-x-3 top-0 h-0.5 rounded-full bg-cuero" aria-hidden /> : null}
                   <Icon size={22} strokeWidth={1.75} aria-hidden />
-                  {item.label}
+                  {item.short ? (
+                    <>
+                      <span aria-hidden className="max-w-full truncate px-0.5">
+                        {item.short}
+                      </span>
+                      <span className="sr-only">{item.label}</span>
+                    </>
+                  ) : (
+                    <span className="max-w-full truncate px-0.5">{item.label}</span>
+                  )}
                 </Link>
               </li>
             );
