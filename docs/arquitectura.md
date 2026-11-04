@@ -168,6 +168,7 @@ Las reglas de esta tabla son configurables; lo que **no** cambia es que se redon
 - El escritorio es la versión ampliada, no al revés.
 - La PWA se instala en el celular. El dueño entra con MFA.
 - Los informes leen el libro contable. **Nunca se calculan sumando en el cliente:** la suma la hace Postgres.
+- Diseño y contrato del sprint 5 (liquidación de comisiones, anticipos, informes, CSV, tablero y bitácora de auditoría): [sprint-5-comisiones-informes.md](sprint-5-comisiones-informes.md).
 
 ## Seguridad: estado y plan (auditorías de los sprints 2 y 3, endurecimiento del sprint 4)
 
@@ -182,14 +183,14 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
   - el dueño de otra sede no alcanza nada de esta (IDOR).
 
   Una guarda busca todo archivo de `src/app` con `"use server"` y falla si uno no está clasificado (personal o público) o si exporta una acción que no está en la matriz.
-- **Inyección y XSS.** Las consultas son parametrizadas: no hay `sql.raw` ni `unsafe`. React escapa el texto, no hay `dangerouslySetInnerHTML` y el único enlace con datos es un `tel:` ya validado.
+- **Inyección y XSS.** Las consultas son parametrizadas: no hay `unsafe`, y `sql.raw` solo aparece en `schema.ts`, para escribir los CHECK de la bitácora a partir de listas constantes del código (nunca con datos de una petición). React escapa el texto, no hay `dangerouslySetInnerHTML` y el único enlace con datos es un `tel:` ya validado.
 - **Registro y sesiones.**
   - No existe registro público (`disableSignUp`).
   - La membresía se relee en cada petición, así que quien se retira pierde el acceso al instante.
   - Las cookies son HttpOnly y SameSite=Lax, con Secure forzado en producción.
   - `BETTER_AUTH_URL` exige `https://` en producción.
   - El límite de intentos usa la IP real detrás de Caddy (`trustedProxies`).
-- **Cabeceras** (`next.config.ts`): CSP con `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS en producción y sin `X-Powered-By`.
+- **Cabeceras** (`next.config.ts`; la CSP de scripts con nonce está más abajo, en el sprint 5): CSP con `frame-ancestors 'none'`, `X-Frame-Options`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, HSTS en producción y sin `X-Powered-By`.
 - **Registros sin datos personales.** `src/lib/log.ts` corta los parámetros de la consulta (correos, celulares, hashes).
 - **CI.** `npm audit` de dependencias de producción (frena ante vulnerabilidades altas o críticas) y checkout sin credenciales persistentes.
 - **Contraseñas.** better-auth usa scrypt. Es aceptable según OWASP; la sección 9 del descubrimiento decía Argon2id o bcrypt.
@@ -254,13 +255,61 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
   - **Conteo a ciegas (auditoría del sprint 4, MEDIUM-3).** Con la caja abierta, el servidor no manda el esperado, el saldo de apertura, el desglose ni los montos de los movimientos a quien no tiene `cash.review` (solo el dueño); quien cuenta a ciegas siempre deja nota, así el error no sirve de oráculo, y "no hay tanto efectivo" le llega como mensaje genérico. La base marca para revisión las aperturas y los cierres con diferencia mayor que el umbral de la sede ($20.000 por defecto) y el dueño los revisa en Caja. Probado en `authorization.test.ts` ("conteo a ciegas") y `cash.test.ts`.
   - **Gasto de banco.** La acción decide sobre la entrada ya validada, y `addExpense` exige además `expenses.bank` con el rol que recibe. Tampoco se puede colar por otro camino.
   - **Vencimiento de los enlaces de gestión.** Un trigger (0009) impide alargarlos más de 7 días después del fin de la cita.
+- **Operación y datos personales (sprint 5, migración 0012).**
+  - **CSP de scripts con nonce** (`src/proxy.ts`, `src/lib/csp.ts`):
+    - El proxy de Next 16 genera 128 bits por petición. La política lleva `script-src 'self' 'nonce-…' 'strict-dynamic' https://challenges.cloudflare.com`, `frame-src` de Turnstile, `object-src 'none'` y `frame-ancestors 'none'`.
+    - **En producción bloquea por defecto.** `CSP_ENFORCE=false` la deja en modo reporte (`Content-Security-Policy-Report-Only`): es la semana de prueba obligatoria del lanzamiento y la vuelta atrás ([despliegue.md](despliegue.md) §10). Al arrancar sin bloquear, el servidor lo avisa en el registro (`src/instrumentation.ts`).
+    - `/api/csp-report` deja cada violación en el registro sin datos personales: directiva, origen y ruta sin consulta ni token de `/cita` (en cualquier parte de la ruta). Máximo 60 por minuto. Lee el cuerpo como flujo y corta apenas pasa de 16 KB, aunque no venga `Content-Length` (`route.test.ts`); Caddy además limita `/api/*` a 64 KB.
+    - La cabecera estática de `next.config.ts` sigue bloqueando siempre el enmarcado, las bases, los formularios y los plugins.
+    - El layout raíz llama a `connection()`: ninguna página queda estática, ni la 404, porque una página estática sale sin nonce y la CSP frenaría sus scripts.
+  - **Purga de datos personales** (`purge_expired_personal_data()`):
+    - Es `SECURITY DEFINER` de `villa_owner`, sin parámetros, con `search_path` fijo y EXECUTE solo para `villa_app`.
+    - **Qué borra:**
+      - de `booking_verifications`, la IP, el navegador, el nombre y el correo escritos;
+      - de `notifications`, `params`;
+      - del registro de lecturas, lo que ya venció.
+    - **Cuándo:** a los 30 días, o en la siguiente corrida si el cliente fue anonimizado. Lo de lecturas, a los 365 días.
+    - **Los triggers lo vigilan:** solo dejan poner esos campos en NULL o `{}` cuando se cumple el plazo o el cliente está anonimizado. Cualquier otro UPDATE o DELETE sigue prohibido.
+    - Corre en el mantenimiento diario del worker. La política de privacidad (desde 2026-11-02) dice los plazos, tomados de `src/domain/clients/retention.ts`; la versión 2026-11-03 agrega los 12 meses de las copias de seguridad y qué pasa con una supresión en ellas.
+    - Probado en `src/db/privacy.test.ts`, también como `villa_app` y con test de propiedades.
+  - **Aviso al dueño por bloqueo de ingreso:**
+    - Cada bloqueo se registra en `security_alerts`, dentro de la misma transacción del contador. Guarda el tipo, el usuario si el correo es del equipo, los fallos y hasta cuándo; **nunca** la IP ni el correo escrito.
+    - **Sin inundación (auditoría del sprint 5, M1):** hay una sola fila pendiente por (tipo, cuenta o "sin cuenta", ventana de 15 minutos); los bloqueos siguientes suman en `occurrences`. 500 intentos con correos ajenos son una fila.
+    - El trabajo `security.alerts` (cada minuto) manda a `ALERT_EMAIL` como mucho un correo cada 15 minutos. Primero las cuentas del equipo; los correos ajenos, en una sola línea con el conteo. Si no hay canal, lo deja en el registro.
+    - Un trigger impide borrar un aviso sin entregar.
+  - **Vida máxima absoluta de la sesión: 12 h** (`SESSION_MAX_AGE_S`):
+    - better-auth no la renueva (`disableSessionRefresh`);
+    - `sessionState` corta además por `created_at`, aunque alguien alargue `expires_at`.
+    - Probado en `auth.test.ts` y `reauth.test.ts`.
+  - **Cookie `villa_hold` firmada** (HMAC con llave derivada de `OTP_PEPPER`). Una cookie plantada o sin retención viva para ese navegador se reemplaza por una nueva (`public-endpoints.test.ts`).
+  - **Historial de la cita con `display_name`**, como las vistas de dinero.
+  - **Auditoría de lecturas de contactos (Ley 1581).**
+    - `personal_data_reads` registra quién vio el celular de qué clientes: la agenda del día y la búsqueda de clientes, solo para los roles que lo ven.
+    - Agrupa por ventanas de 10 minutos, para que recargar no infle el registro.
+    - Es solo-inserción y se purga a los 365 días.
+  - **Kit de despliegue y backups** ([despliegue.md](despliegue.md), carpeta `deploy/`), con los arreglos de la auditoría del sprint 5:
+    - **Root no corre nada de `villa` (H1).** Los scripts viven en `/usr/local/sbin` y salen de una copia de root parada en un tag verificado (`install-kit.sh` se niega si no). `/srv/villa` y `releases/` son de root; la versión es de `villa` solo mientras se construye, y después pasa a root sin escritura.
+    - **Build y migraciones sin secretos de más (M2).** `npm ci --ignore-scripts`; el build solo recibe `NEXT_PUBLIC_*`; las migraciones corren con `deploy/scripts/migrate.mjs`, que solo usa dependencias de producción fijadas por el lockfile. Cada paso como `villa` es una unidad transitoria: al terminar no queda ningún proceso vivo.
+    - **Vuelta atrás explícita (L6):** `rollback.sh previous` o una versión con nombre. Las versiones a medias se borran.
+    - **Backup (H2, M6):** `pg_dump` cifrado con age, subido archivo por archivo con `rclone copyto --immutable`. Retención 7/4/12 en reglas del bucket, con bloqueo de objetos y una llave del VPS que no borra.
+    - **Restauración (M5, M6):** sin SHA-256 no restaura. Las bases de prueba se restauran como `villa_restore`, sin superusuario. Sobre producción se vuelve a aplicar el endurecimiento de la base de `setup-roles.sql` y las supresiones de clientes posteriores al backup.
+    - **`sanity.sql`:** cuadre del libro, triggers de garantía presentes y activos, y postura de `villa_app` (sin `TEMPORARY`, sin DDL, sin UPDATE/DELETE en el libro, sin `pgboss`). Probado en `src/db/backup-sanity.test.ts`.
+    - **Caddy (M3, M4, M8, L2):** API de administración en un socket `0600`; el registro general (errores) con los mismos filtros que el de acceso; `/api/*` hasta 64 KB.
+    - **Permisos de `/etc/villa` (L5):** `root:postgres 0750`; los secretos de la app `root 0600`; `rclone.conf` de `postgres 0600`; las llaves públicas de age `root:postgres 0640`. Node sale del repositorio firmado de NodeSource, sin correr su script.
 
-**Requisitos de despliegue que la seguridad da por hechos** (auditoría del sprint 3):
+**Requisitos de despliegue que la seguridad da por hechos** (auditoría del sprint 3). El kit de `deploy/` ya los trae; el paso a paso está en [despliegue.md](despliegue.md):
 
-- `villa-web` escucha solo en `127.0.0.1` (`HOSTNAME=127.0.0.1` en la unidad systemd) y el firewall cierra el puerto 3000. Si alguien llega directo a Next, puede inventarse `X-Forwarded-For` y saltarse todos los límites por IP.
-- Si se pone Cloudflare delante de Caddy, hay que agregar sus rangos a `trusted_proxies` en Caddy y en `src/lib/client-ip.ts`. Si no, todos los clientes comparten los mismos contadores.
+- `villa-web` escucha solo en `127.0.0.1` y el firewall cierra el puerto 3000. Si alguien llega directo a Next, puede inventarse `X-Forwarded-For` y saltarse todos los límites por IP.
+  - La unidad `deploy/systemd/villa-web.service` pone `HOSTNAME=127.0.0.1`.
+  - `ufw` deja abiertos solo el 22, el 80 y el 443.
+- **IP real del cliente.** Caddy reemplaza `X-Forwarded-For` por la IP que él mismo validó (`header_up X-Forwarded-For {client_ip}`).
+  - Si se pone Cloudflare delante, se descomentan `trusted_proxies` y `client_ip_headers` en el `Caddyfile`. Así Caddy resuelve la IP real y la app no cambia.
+  - Sin eso, todos los clientes compartirían los mismos contadores.
 - Las dos unidades (`villa-web` y `villa-worker`) llevan `Environment=NODE_ENV=production`. Fuera de `development` o `test`, la app falla cerrado si faltan secretos o canales.
-- El registro de acceso de Caddy no guarda las rutas `/cita/*`, porque el token de esa ruta permite cancelar y reprogramar.
+- **El registro de acceso de Caddy no guarda datos sensibles.** Esto importa porque el token de `/cita/<token>` permite cancelar y reprogramar.
+  - Borra el token de `/cita/<token>` en cualquier parte de la ruta (queda `/cita/`), también en el registro de errores.
+  - Quita las consultas, las cookies y el `Referer`.
+  - Recorta la IP (/24 en IPv4, /48 en IPv6).
 - **`BETTER_AUTH_SECRET` no se rota a la ligera.** Ese secreto:
   - cifra los secretos TOTP y los códigos de respaldo (`two_factor`);
   - firma las cookies de sesión y la de dispositivo conocido;
@@ -272,24 +321,29 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 
 | Ítem | Riesgo | Cuándo |
 |---|---|---|
-| **Aplicar la separación de roles en el VPS**: correr `src/db/roles/setup-roles.sql` (ahora crea también `villa_queue` y le pasa el esquema `pgboss`), poner `DATABASE_URL` con `villa_app`, `MIGRATION_DATABASE_URL` con `villa_owner` y `QUEUE_DATABASE_URL` con `villa_queue`, y migrar (0011). Hasta entonces la app sigue siendo dueña de las tablas. Con `NODE_ENV=production` el worker no arranca sin `QUEUE_DATABASE_URL` | Medio: los triggers valen lo que valga el rol de la base | **Antes de la primera acción contable en producción (sprint 4)** |
+| **Aplicar la separación de roles en el VPS**: correr `src/db/roles/setup-roles.sql` (crea `villa_owner`, `villa_app` y `villa_queue`), poner `DATABASE_URL` con `villa_app`, `MIGRATION_DATABASE_URL` con `villa_owner` y `QUEUE_DATABASE_URL` con `villa_queue`, y migrar. Hasta entonces la app sigue siendo dueña de las tablas. Con `NODE_ENV=production` el worker no arranca sin `QUEUE_DATABASE_URL`. Los pasos están en [despliegue.md](despliegue.md) §3–§6 | Medio: los triggers valen lo que valga el rol de la base | **Lo corre el dueño al desplegar, antes de la primera acción contable en producción** |
 | HIGH-1, lo que queda: el search_path fijo incluye `pg_temp` al final (más estricto que `pg_catalog, public`); `villa_app` ya no tiene TEMP, pero si un DBA se lo devolviera, `pg_temp` va último y no tapa nada de `public`. Las funciones nuevas deben llevar el mismo `SET search_path` (lo exige la prueba de `pg_proc`) | Bajo | Hecho en el sprint 4; vigilar en cada migración |
 | MEDIUM-3, lo que queda: con la caja abierta, recepción todavía ve los totales de las ventas del día y las propinas por pagar, que dan una idea aproximada del efectivo (no exacta: no dicen el medio). Y un gasto o consignación rechazado por falta de efectivo dice, aunque con mensaje genérico, que el monto supera el esperado: probando montos se podría acotar. El umbral de revisión lo cambia el dueño con reautenticación | Bajo | Aceptado; revisar con el dueño en el sprint 5 |
 | Inscripción del TOTP por confianza en el primer uso: quien tenga la contraseña del dueño antes de que él inscriba su celular podría inscribir el suyo. Mitigación: el dueño inscribe el TOTP apenas recibe la cuenta, y la de cada socio nuevo tiene contraseña temporal que debe cambiar primero | Medio, solo en la ventana de inscripción | Aceptado; revisar en la auditoría del sprint 4 |
 | Un código TOTP se acepta hasta unos 90 s (ventana de ±1 paso de 30 s) y better-auth no recuerda el último paso usado: alguien que lo vea por encima del hombro puede repetirlo en ese lapso | Bajo: necesita también la contraseña | Aceptado |
 | Sin código QR en la inscripción: hay enlace `otpauth://` (abre la app en el celular) y clave para escribir a mano. Agregar QR exige una dependencia nueva | Bajo (usabilidad) | Sprint 5, si el dueño lo pide |
-| Aviso al dueño cuando se dispara un bloqueo por intentos fallidos. Hoy solo queda un aviso en el registro del servidor, sin datos personales | Bajo: el dueño no se entera de un ataque en curso | Sprint 5 |
 | Bloqueo por (correo, IP) detrás de CGNAT: quien comparta IP pública con el dueño (mismo operador móvil) puede bloquearle 15 minutos el ingreso desde esa red. La cookie de dispositivo conocido no lo exime de ese bloqueo, a propósito | Bajo | Aceptado; `npm run staff:unlock` lo resuelve |
-| El historial de una cita (agenda) todavía muestra `user.name` de quien hizo el cambio. Ya nadie puede cambiarse ese nombre (`/update-user` está cerrado), pero conviene pasarlo a `display_name` como en las vistas de dinero | Bajo | Sprint 5 |
-| Vida máxima absoluta de la sesión; auditoría de lecturas de datos personales (Ley 1581) | Bajo | Sprint 5 |
-| CSP de scripts con nonce (primero en modo reporte) | Bajo | Sprint 5, con el despliegue |
-| Borrado de datos personales que hoy no se puede hacer: IP, navegador, nombre y correo escritos (`contact_name`, `contact_email`) en `booking_verifications`, y `params` en `notifications`, bloqueados por los triggers. Anonimizar al cliente no los borra. Hace falta una función de purga `SECURITY DEFINER` en el mantenimiento diario, y decir en la política de privacidad cuánto se guardan | Medio (Ley 1581): no se puede cumplir una solicitud de supresión | Sprint 5 |
-| Firmar la cookie `villa_hold` o emitir una nueva si no hay verificación viva para ese navegador | Bajo: hace falta plantar la cookie desde un subdominio | Sprint 5 |
-| CSP de scripts con nonce. Ahora es más urgente porque hay superficie pública; debe permitir `https://challenges.cloudflare.com` en `script-src` y `frame-src` | Medio en el portal | Sprint 5, con el despliegue |
+| **Terminar la semana de prueba de la CSP**: la plantilla de `villa.env` arranca con `CSP_ENFORCE=false`. Al terminar la semana sin violaciones propias se borra esa línea y la CSP bloquea. Mientras tanto, un XSS no se frena: solo queda en el registro | Medio en el portal durante esa semana | Primera semana en producción ([despliegue.md](despliegue.md) §10) |
+| La CSP permite `style-src 'unsafe-inline'`, porque los atributos `style` de React no llevan nonce. No ejecuta código, pero permite inyectar CSS si apareciera una inyección de HTML | Bajo | Aceptado |
+| Supresión y backups: la lista de supresiones que se re-aplica al restaurar lleva ids internos y no un hash del celular, como pedía la auditoría (M7). El id es el mismo en cualquier copia, y un hash de un celular colombiano se revierte fácil. Si una supresión no se puede volver a aplicar (p. ej., el cliente tenía citas activas en esa copia), la restauración falla y alguien debe resolverla a mano | Bajo | Aceptado |
+| La restauración sobre producción corre como superusuario (conserva los dueños): confía en el archivo. El runbook exige probarlo antes en una base de prueba, sin superusuario. age cifra pero no autentica: quien tenga la llave pública y escriba en el bucket podría subir un backup falso con su SHA-256 | Bajo: necesita la llave del bucket, que no borra ni sobrescribe | Aceptado |
+| Con la app tomada, se puede marcar un aviso de bloqueo como entregado y luego borrarlo: el trigger solo frena el borrado de los pendientes | Bajo: el aviso del correo ya salió o salía en ese minuto | Aceptado |
+| La purga la puede ejecutar `villa_app`, el mismo rol de la web. No tiene parámetros y solo borra lo vencido o lo de clientes anonimizados, así que adelantarla no borra nada antes de tiempo | Bajo | Aceptado |
+| No se purgan `notification_events.error_detail` (errores del proveedor, sin el mensaje), ni la IP y el navegador de `client_consents`: son la prueba del consentimiento (Ley 1581, art. 9) y se guardan mientras exista la relación | Bajo | Aceptado; revisar con el abogado |
+| La auditoría de lecturas cubre la agenda y la búsqueda de clientes, por donde hoy se ve el celular. Toda pantalla nueva que muestre contacto debe llamar a `recordContactReads` | Bajo | Vigilar en cada pantalla nueva |
+| Llave privada de age: si se deja en el VPS para la prueba de restauración automática, quien tome root también lee los backups viejos del bucket. Por defecto queda fuera del VPS y la prueba es manual | Bajo | Decisión del dueño ([despliegue.md](despliegue.md) §8) |
+| **El kit de `deploy/` no se ha corrido en un servidor real.** Solo pasó `bash -n`, y localmente: `npm ci --ignore-scripts`, `tsx`, el build solo con `NEXT_PUBLIC_*` y `sanity.sql` en PGlite. Falta probar en el VPS las unidades, `install-kit.sh`, `deploy-release.sh`, el Caddyfile (`caddy validate`, socket de administración, `reload`), la subida con rclone, el bloqueo y las reglas del bucket (y que la llave no borre), la restauración como `villa_restore` y las supresiones al restaurar | Alto operativo hasta que se pruebe | Al desplegar, antes de abrir al público ([despliegue.md](despliegue.md) §12) |
+| El worker corre desde el código con `tsx` (necesita las dependencias de desarrollo en el VPS) | Bajo | Aceptado; compilarlo si pesa |
 | Verificar `X-Hub-Signature-256` en tiempo constante cuando exista el webhook de WhatsApp (estados de entrega) | Medio cuando exista | Cuando se agregue el webhook |
 | Contar por IP más una cookie de dispositivo, porque el CGNAT de los operadores móviles hace que muchos clientes compartan IP | Bajo: un vecino abusivo bloquea a otros | Sprint 5, si se ve en producción |
 | Bloquear un número a propósito: 6 solicitudes con Turnstile resuelto lo dejan sin reservar en línea 24 h. Se acepta y queda la reserva por teléfono | Bajo | Aceptado |
-| Backups cifrados y restauración probada | Alto operativo | Despliegue (sprint 5) |
+| Correr el primer backup en el bucket y **una restauración probada** con `cordura: OK` (el kit ya está en `deploy/backup/`) | Alto operativo | Lo corre el dueño al desplegar, antes de abrir al público |
+| Prueba de penetración completa contra el entorno propio desplegado | Medio | Antes del lanzamiento, sobre el VPS ya montado |
 
 ## Riesgos y cuándo esta decisión deja de servir
 

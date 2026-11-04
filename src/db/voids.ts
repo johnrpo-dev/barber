@@ -1,12 +1,24 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
+import { receiptNumberLabel } from "@/domain/commissions/settlement";
 import { format, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { assertCanApproveVoid, requireReason, VoidError } from "@/domain/sales/void";
 import type { Role } from "@/domain/staff/roles";
+import { recordAudit } from "./audit";
 import { ledgerCash, requireOpenSession, tipsOwed } from "./cash";
 import { isDayClosed, reverseEntry } from "./ledger";
-import { cashMovements, saleLines, salePayments, sales, saleTips, staffMembers, voidRequests } from "./schema";
+import {
+  cashMovements,
+  commissionSettlementLines,
+  commissionSettlements,
+  saleLines,
+  salePayments,
+  sales,
+  saleTips,
+  staffMembers,
+  voidRequests,
+} from "./schema";
 import { serializable } from "./serializable";
 import { sumAsBigint } from "./sql";
 import type { Db } from "./types";
@@ -53,6 +65,15 @@ export async function requestVoid(
         requestHash: hash,
       })
       .returning({ id: voidRequests.id });
+    // El motivo es texto libre y puede nombrar al cliente: no entra a la bitácora.
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "void.request",
+      targetKind: "void_request",
+      targetRef: row!.id.toString(),
+      summary: "Pidió anular una venta",
+    });
     return { requestId: row!.id, created: true };
   });
 }
@@ -74,7 +95,58 @@ async function paidOutTipsWarning(db: Db, locationId: bigint, saleId: bigint): P
   const ids = new Set(tipStaff.map((t) => t.staffId));
   const negative = (await tipsOwed(db, locationId)).filter((t) => ids.has(t.staffId) && t.owed < 0n);
   if (negative.length === 0) return null;
-  return `Las propinas de esta venta ya se pagaron en efectivo a ${negative.map((n) => n.name).join(", ")}. La anulación no las devuelve: arréglalo con esa persona.`;
+  return `Las propinas de esta venta ya se pagaron en efectivo a ${negative.map((n) => n.name).join(", ")}. La anulación no las devuelve en efectivo: se le descuentan en su próxima liquidación.`;
+}
+
+/**
+ * Comisiones de esta venta ya pagadas en una liquidación vigente (§3.4): la N.º pagada no se toca y
+ * se descuenta en la próxima liquidación de la persona.
+ */
+async function settledCommissionWarnings(db: Db, locationId: bigint, saleId: bigint): Promise<string[]> {
+  const rows = await db
+    .select({
+      name: staffMembers.displayName,
+      number: commissionSettlements.number,
+      // En una repetición de la aprobación el descuento pudo aplicarse ya: se dice dónde.
+      clawbackNumber: sql<string | null>`(
+        select max(cb_st.number)::text
+          from commission_settlement_lines cb
+          join commission_settlements cb_st on cb_st.location_id = cb.location_id and cb_st.id = cb.settlement_id
+         where cb.location_id = ${saleLines.locationId} and cb.sale_line_id = ${saleLines.id}
+           and cb.kind = 'clawback' and not cb.reversed
+      )`,
+    })
+    .from(saleLines)
+    .innerJoin(
+      commissionSettlementLines,
+      and(
+        eq(commissionSettlementLines.locationId, saleLines.locationId),
+        eq(commissionSettlementLines.saleLineId, saleLines.id),
+        eq(commissionSettlementLines.kind, "commission"),
+        eq(commissionSettlementLines.reversed, false),
+      ),
+    )
+    .innerJoin(
+      commissionSettlements,
+      and(eq(commissionSettlements.locationId, commissionSettlementLines.locationId), eq(commissionSettlements.id, commissionSettlementLines.settlementId)),
+    )
+    .innerJoin(staffMembers, and(eq(staffMembers.locationId, saleLines.locationId), eq(staffMembers.id, saleLines.staffId)))
+    .where(and(eq(saleLines.locationId, locationId), eq(saleLines.saleId, saleId)))
+    .orderBy(asc(commissionSettlements.number), asc(staffMembers.displayName));
+  const messages = rows.map((r) => {
+    const paid = `La comisión de esta venta ya se le pagó a ${r.name} en la liquidación ${receiptNumberLabel(r.number)}.`;
+    return r.clawbackNumber === null
+      ? `${paid} Se le descontará en su próxima liquidación.`
+      : `${paid} Ya se le descontó en la liquidación ${receiptNumberLabel(BigInt(r.clawbackNumber))}.`;
+  });
+  return [...new Set(messages)];
+}
+
+/** Todos los avisos de una anulación aprobada, uno por línea; null si no hay. */
+async function voidWarning(db: Db, locationId: bigint, saleId: bigint): Promise<string | null> {
+  const tips = await paidOutTipsWarning(db, locationId, saleId);
+  const parts = [...(tips ? [tips] : []), ...(await settledCommissionWarnings(db, locationId, saleId))];
+  return parts.length > 0 ? parts.join("\n") : null;
 }
 
 export async function decideVoid(
@@ -117,7 +189,7 @@ export async function decideVoid(
     if (req.status !== "pending") {
       if (req.decisionKey !== input.idempotencyKey) throw new VoidError("Esta solicitud ya se decidió");
       assertSameRequest({ requestHash: req.decisionHash }, hash);
-      const warning = req.status === "approved" ? await paidOutTipsWarning(tx, input.locationId, req.saleId) : null;
+      const warning = req.status === "approved" ? await voidWarning(tx, input.locationId, req.saleId) : null;
       return { status: req.status, warning, created: false };
     }
     // Las horas las pone la base (0011: el trigger las fuerza a now()).
@@ -131,11 +203,19 @@ export async function decideVoid(
 
     if (!input.approve) {
       await tx.update(voidRequests).set({ status: "rejected", ...decided }).where(eq(voidRequests.id, req.id));
+      await recordAudit(tx, {
+        locationId: input.locationId,
+        actorUserId: input.approver.userId,
+        action: "void.reject",
+        targetKind: "void_request",
+        targetRef: req.id.toString(),
+        summary: "Rechazó la anulación de una venta",
+      });
       return { status: "rejected", warning: null, created: true };
     }
 
     const [sale] = await tx
-      .select({ id: sales.id, status: sales.status, createdBy: sales.createdBy, businessDate: sales.businessDate, journalEntryId: sales.journalEntryId })
+      .select({ id: sales.id, publicId: sales.publicId, status: sales.status, createdBy: sales.createdBy, businessDate: sales.businessDate, journalEntryId: sales.journalEntryId })
       .from(sales)
       .where(and(eq(sales.locationId, input.locationId), eq(sales.id, req.saleId)))
       .for("update");
@@ -168,7 +248,9 @@ export async function decideVoid(
       locationId: input.locationId,
       entryId: sale.journalEntryId,
       businessDate: sale.businessDate,
-      reason: (note ? `${req.reason} — ${note}` : req.reason).slice(0, 300),
+      // El memo del libro es inmutable: no lleva el motivo, que es texto libre y puede traer datos del
+      // cliente. El motivo queda en la solicitud, donde la supresión lo puede borrar.
+      reason: `Anulación de la venta ${sale.publicId}`,
       createdBy: input.approver.userId,
     });
     await tx
@@ -187,7 +269,15 @@ export async function decideVoid(
     }
     await tx.update(voidRequests).set({ status: "approved", ...decided }).where(eq(voidRequests.id, req.id));
 
-    const warning = await paidOutTipsWarning(tx, input.locationId, sale.id);
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.approver.userId,
+      action: "void.approve",
+      targetKind: "void_request",
+      targetRef: req.id.toString(),
+      summary: `Aprobó la anulación de una venta del ${sale.businessDate}`,
+    });
+    const warning = await voidWarning(tx, input.locationId, sale.id);
     return { status: "approved", warning, created: true };
   });
 }

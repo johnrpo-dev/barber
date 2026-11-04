@@ -3,11 +3,12 @@ import { eq, like } from "drizzle-orm";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createLocation } from "@/db/ledger";
-import { loginThrottles, rateLimitCounters, twoFactor, user } from "@/db/schema";
+import { loginThrottles, rateLimitCounters, session, twoFactor, user } from "@/db/schema";
 import { createStaffUser } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import type { Db } from "@/db/types";
 import { userThrottleSubject } from "@/db/login-throttle";
+import { SESSION_MAX_AGE_S } from "@/domain/security/reauth";
 import { createAuth } from "./auth";
 
 // better-auth real sobre PostgreSQL en memoria: bloqueo por cuenta, límite de intentos en la base
@@ -374,5 +375,26 @@ describe("verificación en dos pasos (TOTP)", () => {
     }
     const [u] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, userId));
     expect(u?.on).toBe(true);
+  });
+});
+
+describe("vida máxima absoluta de la sesión (sprint 5)", () => {
+  it("12 h desde el ingreso; usarla no la alarga", { timeout: 60_000 }, async () => {
+    expect(auth().options.session).toMatchObject({ expiresIn: SESSION_MAX_AGE_S, disableSessionRefresh: true });
+    const { email, userId } = await owner();
+    const signIn = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    const cookies = cookiesFrom(signIn.headers);
+    const [row] = await db.select({ id: session.id, createdAt: session.createdAt, expiresAt: session.expiresAt }).from(session).where(eq(session.userId, userId));
+    expect(row!.expiresAt.getTime() - row!.createdAt.getTime()).toBeLessThanOrEqual(SESSION_MAX_AGE_S * 1000 + 1000);
+    // Como si la sesión tuviera 2 h de uso (más que updateAge = 1 h): con refresco, better-auth
+    // la alargaría otras 12 h; sin refresco, la expiración no se mueve.
+    const twoHoursIn = new Date(Date.now() + SESSION_MAX_AGE_S * 1000 - 2 * 3_600_000);
+    await db.update(session).set({ expiresAt: twoHoursIn }).where(eq(session.id, row!.id));
+    expect(await auth().api.getSession({ headers: cookies })).not.toBeNull();
+    const [after] = await db.select({ expiresAt: session.expiresAt }).from(session).where(eq(session.id, row!.id));
+    expect(after!.expiresAt.getTime()).toBe(twoHoursIn.getTime());
+    // Vencida, ya no hay sesión.
+    await db.update(session).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(session.id, row!.id));
+    expect(await auth().api.getSession({ headers: cookies })).toBeNull();
   });
 });

@@ -25,6 +25,7 @@ export const PERMISSIONS = [
   "appointments.manage.all",
   "appointments.manage.own",
   "clients.view.contact", // teléfono y correo completos
+  "clients.erase", // suprimir los datos personales de un cliente a su solicitud
   "time_off.manage.all", // ausencias y bloqueos de cualquiera, cierres de la sede
   "time_off.manage.own", // el barbero bloquea su propio tiempo
   "settings.manage", // reglas de la sede y reserva en línea
@@ -32,6 +33,8 @@ export const PERMISSIONS = [
   "cash.manage", // abrir y cerrar caja, pagar propinas, consignar
   "expenses.bank", // registrar gastos pagados desde el banco
   "cash.review", // ver el esperado durante el turno y revisar cierres con diferencia (conteo a ciegas)
+  "commissions.settle", // liquidar comisiones, revertir liquidaciones, dar y revertir anticipos
+  "audit.view", // ver la bitácora de auditoría
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

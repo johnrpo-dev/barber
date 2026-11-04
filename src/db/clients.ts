@@ -1,6 +1,8 @@
 import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
 import { assertValidClientName, InvalidClientError, normalizePhone } from "@/domain/clients/client";
-import { clients } from "./schema";
+import { recordAudit } from "./audit";
+import { appointments, clients } from "./schema";
+import { serializable } from "./serializable";
 import type { Db } from "./types";
 
 export interface ClientSummary {
@@ -83,4 +85,71 @@ export async function getClient(db: Db, input: { locationId: bigint; clientId: b
     .from(clients)
     .where(and(eq(clients.locationId, input.locationId), eq(clients.id, input.clientId)));
   return row;
+}
+
+// ─── Supresión a solicitud del titular (Ley 1581; docs/sprint-5-comisiones-informes.md §12.8) ──
+
+/** Citas que todavía pueden avisarle algo o pasar por caja: mientras existan, no se suprime. */
+const activeAppointment = sql`${appointments.status} in ('pending', 'confirmed', 'arrived', 'in_chair')`;
+
+export interface ClientErasePreview {
+  id: bigint;
+  name: string;
+  phoneE164: string | null;
+  email: string | null;
+  appointments: number;
+  activeAppointments: number;
+  sales: number;
+}
+
+/** Lo que el dueño confirma antes de suprimir. null si no existe o ya se suprimió. */
+export async function clientErasePreview(db: Db, input: { locationId: bigint; clientId: bigint }): Promise<ClientErasePreview | null> {
+  const [row] = await db
+    .select({
+      id: clients.id,
+      name: clients.name,
+      phoneE164: clients.phoneE164,
+      email: clients.email,
+      // Con alias y a mano: en un select de una sola tabla, Drizzle quita el nombre de la tabla a sus columnas.
+      appointments: sql<string>`(select count(*) from appointments a where a.location_id = clients.location_id and a.client_id = clients.id)`,
+      activeAppointments: sql<string>`(select count(*) from appointments a where a.location_id = clients.location_id and a.client_id = clients.id and a.status in ('pending', 'confirmed', 'arrived', 'in_chair'))`,
+      sales: sql<string>`(select count(*) from sales s where s.location_id = clients.location_id and s.client_id = clients.id)`,
+    })
+    .from(clients)
+    .where(and(eq(clients.locationId, input.locationId), eq(clients.id, input.clientId), sql`${clients.anonymizedAt} is null`));
+  if (!row) return null;
+  return { ...row, appointments: Number(row.appointments), activeAppointments: Number(row.activeAppointments), sales: Number(row.sales) };
+}
+
+/**
+ * Suprime los datos personales de un cliente en una transacción: la función de la base
+ * (erase_client_personal_data, 0013) anonimiza y borra el texto libre; el libro y las ventas quedan
+ * intactos, con la venta apuntando al cliente anónimo. El evento de la bitácora no lleva ningún dato
+ * de la persona: es también la lista para volver a aplicar la supresión tras restaurar una copia.
+ */
+export async function eraseClient(db: Db, input: { locationId: bigint; clientId: bigint; actor: { userId: string; staffId: bigint } }): Promise<void> {
+  await serializable(db, async (tx) => {
+    const [client] = await tx
+      .select({ anonymizedAt: clients.anonymizedAt })
+      .from(clients)
+      .where(and(eq(clients.locationId, input.locationId), eq(clients.id, input.clientId)))
+      .for("update");
+    if (!client) throw new InvalidClientError("El cliente no existe");
+    if (client.anonymizedAt) throw new InvalidClientError("Los datos de este cliente ya se suprimieron");
+    const [active] = await tx
+      .select({ n: sql<string>`count(*)` })
+      .from(appointments)
+      .where(and(eq(appointments.locationId, input.locationId), eq(appointments.clientId, input.clientId), activeAppointment));
+    if (Number(active!.n) > 0) throw new InvalidClientError("Este cliente tiene citas activas: cancélalas o termínalas primero");
+    await tx.execute(sql`select erase_client_personal_data(${input.locationId}::bigint, ${input.clientId}::bigint)`);
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      actorStaffId: input.actor.staffId,
+      action: "client.erase",
+      targetKind: "client",
+      targetRef: input.clientId.toString(),
+      summary: "Suprimió los datos personales de un cliente a su solicitud",
+    });
+  });
 }

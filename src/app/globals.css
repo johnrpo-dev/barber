@@ -73,3 +73,15 @@ html {
   outline: 3px solid var(--color-cuero);
   outline-offset: 2px;
 }
+
+/* Hoja de impresión (comprobantes): fondo blanco y márgenes cortos, que sirven en A4 y en tirilla
+   de 80 mm. La navegación y los botones se ocultan con `print:hidden` en cada componente. */
+@media print {
+  html,
+  body {
+    background: #fff;
+  }
+  @page {
+    margin: 8mm;
+  }
+}

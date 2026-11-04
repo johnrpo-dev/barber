@@ -62,6 +62,27 @@ export function percentOf(amount: Money, basisPoints: bigint, step: bigint = CEN
   return money(divRoundHalfUp(amount.minor * basisPoints, 10_000n * step) * step, amount.currency);
 }
 
+/** Trunca hacia cero al paso pedido: 1.500.050 centavos con PESO → 1.500.000; −1.550 → −1.500. */
+export function truncateTo(amount: Money, step: bigint): Money {
+  if (step <= 0n) throw new Error("El paso de truncamiento debe ser positivo");
+  // La división de bigint ya trunca hacia cero (también con negativos).
+  return money((amount.minor / step) * step, amount.currency);
+}
+
+export function negate(amount: Money): Money {
+  return money(-amount.minor, amount.currency);
+}
+
+/**
+ * part / whole en puntos básicos (10.000 = 100 %), half-up (simétrico) una sola vez; null si whole = 0.
+ * Solo para mostrar (participaciones, variaciones, márgenes): nunca para calcular otro monto.
+ */
+export function ratioBps(part: Money, whole: Money): bigint | null {
+  assertSameCurrency(part, whole);
+  if (whole.minor === 0n) return null;
+  return divRoundHalfUp(part.minor * 10_000n, whole.minor);
+}
+
 export function isPositive(m: Money): boolean {
   return m.minor > 0n;
 }

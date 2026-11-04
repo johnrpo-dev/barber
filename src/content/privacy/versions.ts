@@ -4,6 +4,8 @@
 // Un test congela el SHA-256 de cada versión publicada.
 // Los datos entre corchetes los completa el dueño con su abogado antes de abrir la reserva.
 
+import { BACKUP_RETENTION_MONTHS, PII_RETENTION_DAYS, READ_AUDIT_RETENTION_DAYS } from "@/domain/clients/retention";
+
 export interface PrivacyVersion {
   version: string;
   /** Fecha de entrada en vigencia (AAAA-MM-DD, hora de Colombia). */
@@ -12,8 +14,8 @@ export interface PrivacyVersion {
   sections: readonly { id: string; heading: string; paragraphs: readonly string[] }[];
 }
 
-export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [
-  {
+/** Primera versión publicada (congelada). */
+const V_2026_11_01: PrivacyVersion = {
     version: "2026-11-01",
     publishedOn: "2026-11-01",
     title: "Política de tratamiento de datos personales",
@@ -101,8 +103,78 @@ export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [
         ],
       },
     ],
-  },
-];
+  };
+
+/**
+ * Sprint 5: dice cuánto guardamos los restos de la reserva en línea y el registro de quién vio tu
+ * celular. Los días salen de src/domain/clients/retention.ts (los mismos que hace cumplir la base,
+ * migración 0012); cambiarlos cambia el texto y obliga a publicar una versión nueva (test FROZEN).
+ * Las finalidades no cambian: no hace falta pedir una autorización nueva.
+ */
+const V_2026_11_02: PrivacyVersion = {
+  ...V_2026_11_01,
+  version: "2026-11-02",
+  publishedOn: "2026-11-02",
+  sections: V_2026_11_01.sections.map((section) => {
+    if (section.id === "conservacion") {
+      return {
+        ...section,
+        paragraphs: [
+          "Las citas y la información contable se conservan durante el tiempo que exijan las normas contables y tributarias.",
+          "Si iniciaste una reserva y nunca confirmaste el código, anonimizamos tus datos a los 7 días.",
+          `La dirección IP, el navegador, el nombre y el correo que escribiste al pedir el código, y el contenido de los mensajes que te enviamos, los borramos a los ${PII_RETENTION_DAYS} días. La prueba de tu autorización (qué aceptaste, cuándo, y desde qué IP y navegador) la conservamos mientras tratemos tus datos.`,
+          `Registramos qué persona de nuestro equipo vio tu número de celular completo y cuándo, para poder responderte si preguntas quién usó tus datos. Ese registro se borra a los ${READ_AUDIT_RETENTION_DAYS} días.`,
+          "Si pides suprimir tus datos, borramos también esos registros de tu reserva en línea, sin esperar esos plazos, salvo un deber legal de guardarlos.",
+          "Lo demás lo conservamos mientras sigas siendo cliente o hasta que pidas suprimirlo, salvo un deber legal de guardarlo.",
+        ],
+      };
+    }
+    if (section.id === "cambios") {
+      return {
+        ...section,
+        paragraphs: [
+          "Esta política rige desde el 2 de noviembre de 2026. La versión anterior (1 de noviembre de 2026) no decía cuánto tiempo guardamos los datos de la reserva en línea ni el registro de consultas; las finalidades no cambiaron.",
+          "Si la cambiamos, publicaremos la versión nueva en esta página con su fecha. Las versiones anteriores siguen disponibles. Si el cambio afecta las finalidades, te pediremos una autorización nueva.",
+        ],
+      };
+    }
+    return section;
+  }),
+};
+
+/**
+ * Auditoría del sprint 5: dice cuánto viven los datos en las copias de seguridad y qué pasa con una
+ * supresión en ellas. Las finalidades no cambian: no hace falta pedir una autorización nueva.
+ */
+const V_2026_11_03: PrivacyVersion = {
+  ...V_2026_11_02,
+  version: "2026-11-03",
+  publishedOn: "2026-11-03",
+  sections: V_2026_11_02.sections.map((section) => {
+    if (section.id === "conservacion") {
+      return {
+        ...section,
+        paragraphs: [
+          ...section.paragraphs,
+          `Guardamos copias de seguridad cifradas, en un proveedor de almacenamiento externo, hasta por ${BACKUP_RETENTION_MONTHS} meses. Solo las usamos para recuperar el servicio si algo falla. Tus datos salen de ellas cuando cada copia vence: no se pueden borrar antes de una copia ya hecha.`,
+          "Si pides suprimir tus datos y luego tenemos que recuperar una copia anterior, volvemos a aplicar tu supresión antes de seguir usándola.",
+        ],
+      };
+    }
+    if (section.id === "cambios") {
+      return {
+        ...section,
+        paragraphs: [
+          "Esta política rige desde el 3 de noviembre de 2026. La versión anterior (2 de noviembre de 2026) no decía cuánto tiempo guardamos las copias de seguridad; las finalidades no cambiaron.",
+          "Si la cambiamos, publicaremos la versión nueva en esta página con su fecha. Las versiones anteriores siguen disponibles. Si el cambio afecta las finalidades, te pediremos una autorización nueva.",
+        ],
+      };
+    }
+    return section;
+  }),
+};
+
+export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [V_2026_11_01, V_2026_11_02, V_2026_11_03];
 
 const LATEST = PRIVACY_VERSIONS[PRIVACY_VERSIONS.length - 1]!;
 

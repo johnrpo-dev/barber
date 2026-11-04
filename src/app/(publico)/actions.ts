@@ -1,6 +1,5 @@
 "use server";
 
-import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { db } from "@/db/client";
@@ -8,6 +7,7 @@ import {
   assertBookableDate,
   cancelByClient,
   hashBrowserCookie,
+  hasLiveHold,
   PUBLIC_MESSAGES,
   type PublicBookingContext,
   type PublicLocation,
@@ -30,6 +30,7 @@ import { BookingError } from "@/domain/booking/appointment";
 import { isDateString, localMinuteToInstant } from "@/domain/booking/clock";
 import { assertValidClientName, InvalidClientError } from "@/domain/clients/client";
 import { assertBookingConsent } from "@/domain/clients/consent";
+import { HOLD_COOKIE, newHoldId, readHoldCookie, signHoldId } from "@/domain/security/hold-cookie";
 import type { NotificationChannel } from "@/domain/notifications/templates";
 import { type ActionResult, runAction } from "@/lib/action";
 import { clientIp, clientUserAgent, hashForBucket, ipBucketKey } from "@/lib/client-ip";
@@ -44,9 +45,6 @@ import { humanVerifier } from "@/lib/turnstile";
 // horizonte antes de consultar: cada una calcula disponibilidad.
 
 const database = () => db() as unknown as Db;
-
-const HOLD_COOKIE = "villa_hold";
-const HOLD_COOKIE_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
 const uuid = z.uuid("Identificador inválido");
 const staffChoice = z.union([z.literal("any"), uuid]);
@@ -108,9 +106,9 @@ async function staffIdOf(scope: Scope, staffId: string): Promise<bigint | "any">
   return staffId === "any" ? "any" : resolveStaffId(database(), scope.location.id, staffId);
 }
 
-async function holdCookie(): Promise<string | null> {
-  const value = (await cookies()).get(HOLD_COOKIE)?.value;
-  return value && HOLD_COOKIE_SHAPE.test(value) ? value : null;
+/** Identificador del navegador si su cookie villa_hold está bien firmada; si no, null. */
+async function holdCookie(scope: Scope): Promise<string | null> {
+  return readHoldCookie(scope.config.otpPepper, (await cookies()).get(HOLD_COOKIE)?.value);
 }
 
 // ─── Horarios ────────────────────────────────────────────────────────────────
@@ -186,7 +184,11 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
     // Los límites de envío (IP, celular y sede) se cuentan dentro de startOnlineBooking, solo si
     // de verdad se va a enviar un código.
 
-    const cookie = (await holdCookie()) ?? randomBytes(32).toString("base64url");
+    // La cookie que trae el navegador se reutiliza solo si está firmada Y tiene una retención viva;
+    // si no, una nueva: un valor plantado (aunque esté firmado) no se vuelve el de esta reserva.
+    const existing = await holdCookie(scope);
+    const cookie =
+      existing && (await hasLiveHold(database(), scope.location.id, hashBrowserCookie(existing), scope.ctx.now)) ? existing : newHoldId();
     const result = await startOnlineBooking(
       database(),
       scope.ctx,
@@ -207,7 +209,7 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
       },
       notifier(),
     );
-    (await cookies()).set(HOLD_COOKIE, cookie, {
+    (await cookies()).set(HOLD_COOKIE, signHoldId(scope.config.otpPepper, cookie), {
       httpOnly: true,
       secure: !allowsDevFallbacks(),
       sameSite: "strict",
@@ -226,7 +228,7 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
 export async function resendCode(): Promise<ActionResult<{ resendAvailableAt: string; sendsLeft: number }>> {
   return runAction(async () => {
     const scope = await bookingScope();
-    const cookie = await holdCookie();
+    const cookie = await holdCookie(scope);
     if (!cookie) throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     const { hash } = await ipSubject(scope);
     const result = await resendBookingCode(database(), scope.ctx, { browserHash: hashBrowserCookie(cookie), ipSubject: hash }, notifier());
@@ -240,7 +242,7 @@ export async function verifyCode(raw: { code: string }): Promise<ActionResult<{ 
   return runAction(async () => {
     const input = verifyInput.parse(raw);
     const scope = await bookingScope();
-    const cookie = await holdCookie();
+    const cookie = await holdCookie(scope);
     if (!cookie) throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     const { hash } = await ipSubject(scope);
     await enforce(database(), "otp_verify", { ip: hash }, scope.ctx.now);

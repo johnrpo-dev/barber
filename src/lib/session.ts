@@ -5,7 +5,7 @@ import { db } from "@/db/client";
 import { sessionAuthInfo } from "@/db/credentials";
 import { membershipsForUser, type StaffMembership } from "@/db/staff";
 import type { Db } from "@/db/types";
-import { isRecentAuth, lastAuthAt, ReauthRequiredError } from "@/domain/security/reauth";
+import { isRecentAuth, lastAuthAt, ReauthRequiredError, sessionPastMaxAge } from "@/domain/security/reauth";
 import { can, type Permission, requiredAccountSetup } from "@/domain/staff/roles";
 import { auth } from "./auth";
 
@@ -44,6 +44,8 @@ export const sessionState = cache(async (): Promise<SessionState> => {
   const sessionId = (session as { session?: { id?: string } }).session?.id ?? null;
   // Se relee de la base en cada petición: desactivar el TOTP o reiniciar la contraseña se nota al instante.
   const info = await sessionAuthInfo(conn, { userId: session.user.id, sessionId });
+  // Vida máxima absoluta (12 h desde el ingreso), aunque la expiración se hubiera alargado.
+  if (sessionPastMaxAge(info.sessionCreatedAt, new Date())) return { status: "anonymous" };
   return {
     status: "staff",
     staff: {

@@ -63,4 +63,12 @@ describe("permisos por rol", () => {
       expect(can("barber", p)).toBe(false);
     }
   });
+
+  it("liquidar y la bitácora son solo del dueño", () => {
+    for (const p of ["commissions.settle", "audit.view", "clients.erase"] as const) {
+      expect(can("owner", p)).toBe(true);
+      expect(can("reception", p)).toBe(false);
+      expect(can("barber", p)).toBe(false);
+    }
+  });
 });

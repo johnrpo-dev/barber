@@ -90,6 +90,18 @@ describe("serializable: mensajes de una carrera (L4)", () => {
     expect((err as Error).message).toBe(message);
   });
 
+  it.each([
+    ["comisiones: el anticipo 3 ya se descontó en una liquidación; revierte esa liquidación primero", /revierte esa liquidación primero/],
+    ["comisiones: lo que debe la persona 3 (1365) quedaría negativo", /quedaría negativo/],
+    ["comisiones: solo se revierte la última liquidación vigente de la persona (la 3 no lo es)", /última liquidación/],
+    ["comisiones: la liquidación 3 dejó comisiones o anulaciones pendientes hasta su corte", /La liquidación cambió/],
+    ["comisiones: la liquidación 3 deja propinas pendientes de $1 o más (o sin recuperar)", /La liquidación cambió/],
+  ])("L-5: el trigger diferido '%s' llega con un mensaje de negocio", (message, expected) => {
+    const err = friendlyConstraintError(Object.assign(new Error("Failed query"), { cause: Object.assign(new Error(message), { code: "23514" }) }));
+    expect(err?.message).toMatch(expected);
+    expect(err?.message).not.toMatch(/comisiones:/);
+  });
+
   it("lo desconocido queda igual", () => {
     expect(friendlyConstraintError(pgErr("23505", "otra_cosa"))).toBeUndefined();
     expect(friendlyConstraintError(pgErr("23514", "cash_sessions_one_open"))).toBeUndefined();

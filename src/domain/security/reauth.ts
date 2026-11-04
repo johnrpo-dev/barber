@@ -29,3 +29,16 @@ export function isRecentAuth(at: Date | null, now: Date, windowMs: number = REAU
   const age = now.getTime() - at.getTime();
   return age >= -60_000 && age < windowMs;
 }
+
+/**
+ * Vida máxima ABSOLUTA de una sesión del personal: un turno largo de barbería (12 h) desde el
+ * ingreso. better-auth no la alarga con el uso (disableSessionRefresh en src/lib/auth.ts) y
+ * sessionState (src/lib/session.ts) la revisa además contra session.created_at.
+ */
+export const SESSION_MAX_AGE_S = 12 * 60 * 60;
+
+/** ¿La sesión pasó su vida máxima? Sin fecha de creación decide la expiración de better-auth. */
+export function sessionPastMaxAge(createdAt: Date | null, now: Date, maxAgeS: number = SESSION_MAX_AGE_S): boolean {
+  if (!createdAt) return false;
+  return now.getTime() - createdAt.getTime() >= maxAgeS * 1000;
+}

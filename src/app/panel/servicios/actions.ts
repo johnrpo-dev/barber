@@ -2,9 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { auditActor, recordConfigChange, serviceSnapshot } from "@/db/audit";
 import { db } from "@/db/client";
 import { createService, serviceOf, setServiceActive, updateService } from "@/db/catalog";
 import type { Db } from "@/db/types";
+import { AUDIT_FIELDS } from "@/domain/audit/events";
 import { InvalidServiceError, percentToBps, type ServiceDraft } from "@/domain/catalog/service";
 import { fromUnits } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
@@ -60,6 +62,14 @@ export async function createServiceAction(raw: unknown): Promise<ActionResult> {
         const t = tx as unknown as Db;
         const created = await createService(t, { locationId: staff.locationId, draft });
         if (!input.active) await setServiceActive(t, { locationId: staff.locationId, serviceId: created.id, active: false });
+        const after = await serviceSnapshot(t, staff.locationId, created.id);
+        await recordConfigChange(
+          t,
+          { ...auditActor(staff), action: "service.create", targetKind: "service", targetRef: created.id.toString(), summary: `Creó el servicio ${draft.name}` },
+          {},
+          after!,
+          AUDIT_FIELDS.service,
+        );
       })
       .catch(duplicateName);
     revalidatePath("/panel/servicios");
@@ -79,9 +89,18 @@ export async function updateServiceAction(raw: unknown): Promise<ActionResult> {
         // Se compara dentro de la transacción, con la fila bloqueada: nadie cambia el precio entre medio.
         const current = await serviceOf(t, { locationId: staff.locationId, serviceId: input.serviceId, forUpdate: true });
         if (!current) throw new InvalidServiceError("El servicio no existe en esta sede");
+        const before = await serviceSnapshot(t, staff.locationId, input.serviceId);
         if (current.price.minor !== draft.price.minor || current.commissionBps !== draft.commissionBps) requireRecentAuth(staff);
         await updateService(t, { locationId: staff.locationId, serviceId: input.serviceId, draft });
         await setServiceActive(t, { locationId: staff.locationId, serviceId: input.serviceId, active: input.active });
+        const after = await serviceSnapshot(t, staff.locationId, input.serviceId);
+        await recordConfigChange(
+          t,
+          { ...auditActor(staff), action: "service.update", targetKind: "service", targetRef: input.serviceId.toString(), summary: `Cambió el servicio ${draft.name}` },
+          before!,
+          after!,
+          AUDIT_FIELDS.service,
+        );
       })
       .catch(duplicateName);
     revalidatePath("/panel/servicios");
@@ -93,10 +112,24 @@ export async function setServiceActiveAction(raw: unknown): Promise<ActionResult
   return runAction(async () => {
     const staff = await requirePermission("services.manage");
     const input = activeSchema.parse(raw);
-    await setServiceActive(db() as unknown as Db, {
-      locationId: staff.locationId,
-      serviceId: input.serviceId,
-      active: input.active,
+    await (db() as unknown as Db).transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = await serviceSnapshot(t, staff.locationId, input.serviceId);
+      if (!before) throw new InvalidServiceError("El servicio no existe en esta sede");
+      await setServiceActive(t, { locationId: staff.locationId, serviceId: input.serviceId, active: input.active });
+      await recordConfigChange(
+        t,
+        {
+          ...auditActor(staff),
+          action: "service.active",
+          targetKind: "service",
+          targetRef: input.serviceId.toString(),
+          summary: `${input.active ? "Activó" : "Desactivó"} el servicio ${String(before.name)}`,
+        },
+        before,
+        { ...before, active: input.active },
+        AUDIT_FIELDS.service,
+      );
     });
     revalidatePath("/panel/servicios");
     return undefined;

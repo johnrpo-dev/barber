@@ -1,0 +1,10 @@
+# El día 5 de cada mes a las 04:00: después del backup del día y lejos del cierre de mes.
+[Unit]
+Description=Villa: prueba mensual de restauración
+
+[Timer]
+OnCalendar=*-*-05 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

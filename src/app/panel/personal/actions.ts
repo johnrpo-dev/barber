@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { auditActor, recordAudit, recordConfigChange, staffSnapshot } from "@/db/audit";
 import { db } from "@/db/client";
 import { resetStaffPassword, revokeStaffSessions } from "@/db/credentials";
 import {
@@ -14,17 +15,30 @@ import {
   updateStaffMember,
 } from "@/db/staff";
 import type { Db } from "@/db/types";
-import { ROLES } from "@/domain/staff/roles";
+import { AUDIT_FIELDS } from "@/domain/audit/events";
+import { type Role, ROLE_LABELS, ROLES } from "@/domain/staff/roles";
 import { parseTime, type Weekday } from "@/domain/staff/schedule";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
-import { requirePermission, requireRecentAuth } from "@/lib/session";
+import { requirePermission, requireRecentAuth, type StaffContext } from "@/lib/session";
 
 // Personal y horarios. Las ausencias, bloqueos y cierres están en ../bloqueos/actions.
 // Cada acción verifica su permiso en el servidor y toma la sede de la sesión, nunca del cliente.
 // Crear o ascender dueños, cambiar roles y poner contraseñas exigen reautenticación reciente.
 
 const conn = () => db() as unknown as Db;
+
+/** Sin correos ni contraseñas: `changes` solo lleva la lista blanca de la persona. */
+async function auditStaffCreated(tx: Db, staff: StaffContext, staffId: bigint, name: string, role: Role) {
+  const after = await staffSnapshot(tx, staff.locationId, staffId);
+  await recordConfigChange(
+    tx,
+    { ...auditActor(staff), action: "staff.create", targetKind: "staff", targetRef: staffId.toString(), summary: `Agregó a ${name} como ${ROLE_LABELS[role]}` },
+    {},
+    after!,
+    AUDIT_FIELDS.staff,
+  );
+}
 
 function revalidateStaff(staffId?: bigint) {
   revalidatePath("/panel/personal");
@@ -64,19 +78,29 @@ export async function createStaffAction(raw: unknown): Promise<ActionResult<{ st
     // Un dueño nuevo tiene acceso total a las cuentas: confirmar identidad antes de crearlo.
     if (input.role === "owner") requireRecentAuth(staff);
     if (!input.withAccess) {
-      const staffId = await addStaffMember(conn(), { locationId: staff.locationId, displayName: input.name, role: input.role });
+      const staffId = await conn().transaction(async (tx) => {
+        const t = tx as unknown as Db;
+        const id = await addStaffMember(t, { locationId: staff.locationId, displayName: input.name, role: input.role });
+        await auditStaffCreated(t, staff, id, input.name, input.role);
+        return id;
+      });
       revalidateStaff();
       return { staffId: staffId.toString() };
     }
     try {
-      const { staffId } = await createStaffUser(conn(), {
-        locationId: staff.locationId,
-        name: input.name,
-        email: input.email,
-        password: input.password,
-        role: input.role,
-        // La eligió el dueño: debe cambiarla en su primer ingreso.
-        mustChangePassword: true,
+      const { staffId } = await conn().transaction(async (tx) => {
+        const t = tx as unknown as Db;
+        const created = await createStaffUser(t, {
+          locationId: staff.locationId,
+          name: input.name,
+          email: input.email,
+          password: input.password,
+          role: input.role,
+          // La eligió el dueño: debe cambiarla en su primer ingreso.
+          mustChangePassword: true,
+        });
+        await auditStaffCreated(t, staff, created.staffId, input.name, input.role);
+        return created;
       });
       revalidateStaff();
       return { staffId: staffId.toString() };
@@ -106,6 +130,7 @@ export async function updateStaffProfileAction(raw: unknown): Promise<ActionResu
     // Retirar a alguien también cierra sus sesiones (setStaffActive), en la misma transacción.
     await conn().transaction(async (tx) => {
       const t = tx as unknown as Db;
+      const before = await staffSnapshot(t, staff.locationId, input.staffId);
       await updateStaffMember(t, {
         locationId: staff.locationId,
         staffId: input.staffId,
@@ -113,6 +138,14 @@ export async function updateStaffProfileAction(raw: unknown): Promise<ActionResu
         role: input.role,
       });
       await setStaffActive(t, { locationId: staff.locationId, staffId: input.staffId, active: input.active });
+      const after = await staffSnapshot(t, staff.locationId, input.staffId);
+      await recordConfigChange(
+        t,
+        { ...auditActor(staff), action: "staff.update", targetKind: "staff", targetRef: input.staffId.toString(), summary: `Cambió los datos de ${input.displayName}` },
+        before!,
+        after!,
+        AUDIT_FIELDS.staff,
+      );
     });
     revalidateStaff(input.staffId);
     return undefined;
@@ -138,9 +171,19 @@ export async function resetStaffPasswordAction(raw: unknown): Promise<ActionResu
     const staff = await requirePermission("staff.manage");
     const input = resetPasswordSchema.parse(raw);
     if (input.staffId === staff.staffId) throw new StaffError("Para cambiar tu propia contraseña usa “Mi cuenta”");
-    await requireMember(staff.locationId, input.staffId);
+    const member = await requireMember(staff.locationId, input.staffId);
     requireRecentAuth(staff);
-    await resetStaffPassword(conn(), { locationId: staff.locationId, staffId: input.staffId, password: input.password });
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      await resetStaffPassword(t, { locationId: staff.locationId, staffId: input.staffId, password: input.password });
+      await recordAudit(t, {
+        ...auditActor(staff),
+        action: "staff.password_reset",
+        targetKind: "staff",
+        targetRef: input.staffId.toString(),
+        summary: `Puso una contraseña temporal a ${member.displayName}`,
+      });
+    });
     revalidateStaff(input.staffId);
     return undefined;
   });
@@ -154,7 +197,19 @@ export async function revokeStaffSessionsAction(raw: unknown): Promise<ActionRes
     const staff = await requirePermission("staff.manage");
     const input = revokeSchema.parse(raw);
     if (input.staffId === staff.staffId) throw new StaffError("Para cerrar tu propia sesión usa “Salir”");
-    const closed = await revokeStaffSessions(conn(), { locationId: staff.locationId, staffId: input.staffId });
+    const member = await requireMember(staff.locationId, input.staffId);
+    const closed = await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const count = await revokeStaffSessions(t, { locationId: staff.locationId, staffId: input.staffId });
+      await recordAudit(t, {
+        ...auditActor(staff),
+        action: "staff.sessions_revoke",
+        targetKind: "staff",
+        targetRef: input.staffId.toString(),
+        summary: `Cerró las sesiones de ${member.displayName}`,
+      });
+      return count;
+    });
     return { closed };
   });
 }
@@ -174,16 +229,26 @@ export async function saveScheduleAction(raw: unknown): Promise<ActionResult> {
   return runAction(async () => {
     const staff = await requirePermission("schedules.manage.all");
     const input = scheduleSchema.parse(raw);
-    await requireMember(staff.locationId, input.staffId);
-    // setWeeklySchedule valida con assertValidWeeklySchedule (cruces, múltiplos de 5) y reemplaza todo en una transacción.
-    await setWeeklySchedule(conn(), {
-      locationId: staff.locationId,
-      staffId: input.staffId,
-      blocks: input.blocks.map((b) => ({
-        weekday: b.weekday as Weekday,
-        startMin: parseTime(b.start),
-        endMin: parseTime(b.end),
-      })),
+    const member = await requireMember(staff.locationId, input.staffId);
+    // setWeeklySchedule valida con assertValidWeeklySchedule (cruces, múltiplos de 5) y reemplaza todo.
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      await setWeeklySchedule(t, {
+        locationId: staff.locationId,
+        staffId: input.staffId,
+        blocks: input.blocks.map((b) => ({
+          weekday: b.weekday as Weekday,
+          startMin: parseTime(b.start),
+          endMin: parseTime(b.end),
+        })),
+      });
+      await recordAudit(t, {
+        ...auditActor(staff),
+        action: "schedule.save",
+        targetKind: "staff",
+        targetRef: input.staffId.toString(),
+        summary: `Cambió el horario semanal de ${member.displayName}`,
+      });
     });
     revalidateStaff(input.staffId);
     return undefined;

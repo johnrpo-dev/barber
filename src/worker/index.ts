@@ -9,6 +9,7 @@ import { describeError } from "@/lib/log";
 import { runExpireHolds } from "./jobs/expire-holds";
 import { runMaintenance } from "./jobs/maintenance";
 import { runScanNotifications } from "./jobs/scan-notifications";
+import { runSecurityAlerts } from "./jobs/security-alerts";
 
 const TZ = "America/Bogota";
 
@@ -16,6 +17,7 @@ const TZ = "America/Bogota";
 const JOBS: { name: string; cron: string; run: (database: Db) => Promise<unknown> }[] = [
   { name: "holds.expire", cron: "* * * * *", run: (database) => runExpireHolds(database) },
   { name: "notifications.scan", cron: "* * * * *", run: (database) => runScanNotifications(database) },
+  { name: "security.alerts", cron: "* * * * *", run: (database) => runSecurityAlerts(database) },
   { name: "maintenance.daily", cron: "0 3 * * *", run: (database) => runMaintenance(database) },
 ];
 

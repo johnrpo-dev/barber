@@ -43,7 +43,9 @@ const MOVEMENT_LABEL: Record<Session["movements"][number]["kind"], string> = {
   tip_payout: "Propinas",
   cash_deposit: "Consignación",
   cash_adjustment: "Ajuste",
-  reversal: "Anulación",
+  reversal: "Reversa",
+  commission_payout: "Liquidación",
+  staff_advance: "Anticipo",
 };
 
 type SheetState =

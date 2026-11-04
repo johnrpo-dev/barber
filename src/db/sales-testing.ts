@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { addDays, localMinuteToInstant } from "@/domain/booking/clock";
 import { businessDate } from "@/domain/ledger/business-date";
-import { fromUnits, type Money } from "@/domain/money";
+import { fromUnits, type Money, money } from "@/domain/money";
 import type { PaymentKind } from "@/domain/sales/checkout";
 import { changeStatus, createAppointment } from "./appointments";
 import { createService } from "./catalog";
@@ -93,25 +93,26 @@ const cop = (pesos: bigint): Money => fromUnits(pesos);
 export function simpleCheckout(
   shop: Shop,
   appointmentId: bigint,
-  opts: { kind?: PaymentKind; tip?: bigint; tendered?: bigint; idempotencyKey?: string } = {},
+  opts: { kind?: PaymentKind; tip?: bigint; tipMinor?: bigint; tendered?: bigint; idempotencyKey?: string } = {},
 ): CheckoutCommand {
-  const tip = opts.tip ?? 0n;
   const kind = opts.kind ?? "card";
+  // `tip` en pesos; `tipMinor` en centavos, para propinas con centavos.
+  const tip = opts.tipMinor ?? fromUnits(opts.tip ?? 0n).minor;
   return {
     locationId: shop.locationId,
     appointmentId,
     extras: [],
     discounts: [],
-    tips: tip > 0n ? [{ staffId: shop.barber, amount: cop(tip) }] : [],
-    payments: [{ methodId: shop.methods[kind], amount: cop(30_000n + tip), tendered: opts.tendered ? cop(opts.tendered) : undefined }],
+    tips: tip > 0n ? [{ staffId: shop.barber, amount: money(tip) }] : [],
+    payments: [{ methodId: shop.methods[kind], amount: money(cop(30_000n).minor + tip), tendered: opts.tendered ? cop(opts.tendered) : undefined }],
     idempotencyKey: opts.idempotencyKey ?? key("sale"),
     actor: shop.reception,
   };
 }
 
 /** Cobra una cita nueva y devuelve la venta. */
-export async function quickSale(db: Db, shop: Shop, opts: { kind?: PaymentKind; tip?: bigint } = {}) {
+export async function quickSale(db: Db, shop: Shop, opts: { kind?: PaymentKind; tip?: bigint; tipMinor?: bigint; now?: Date } = {}) {
   const appointmentId = await chairAppointment(db, shop);
-  const { saleId } = await checkout(db, simpleCheckout(shop, appointmentId, opts));
+  const { saleId } = await checkout(db, { ...simpleCheckout(shop, appointmentId, opts), now: opts.now });
   return { saleId, appointmentId };
 }

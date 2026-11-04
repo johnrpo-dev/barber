@@ -20,7 +20,7 @@ import {
 import { createService } from "./catalog";
 import { findOrCreateClient } from "./clients";
 import { createLocation } from "./ledger";
-import { addStaffMember, setStaffActive, setWeeklySchedule } from "./staff";
+import { addStaffMember, createStaffUser, setStaffActive, setWeeklySchedule, updateStaffMember } from "./staff";
 import { createTestDb, dbError } from "./testing";
 import { addTimeOff } from "./time-off";
 import type { Db } from "./types";
@@ -363,4 +363,18 @@ describe("garantías en la base de datos", () => {
       { numRuns: 25 },
     );
   }, 60_000);
+});
+
+describe("historial de la cita (sprint 5)", () => {
+  it("muestra el nombre que puso el dueño (display_name), no el de la cuenta", { timeout: 60_000 }, async () => {
+    // Valor de prueba: solo existe en esta base en memoria.
+    await addStaffMember(db, { locationId, displayName: "Dueño", role: "owner" }); // la sede nunca queda sin dueño activo
+    const person = await createStaffUser(db, { locationId, name: "Nombre De La Cuenta", email: "recepcion@villa.test", password: "navaja-y-cuero-2026", role: "reception" });
+    await updateStaffMember(db, { locationId, staffId: person.staffId, displayName: "Recepción Mañana", role: "reception" });
+    const actor: StaffActor = { userId: person.userId, role: "reception", staffId: person.staffId };
+    const a = await book("10:00", { createdBy: person.userId });
+    await changeStatus(db, { locationId, appointmentId: a.appointmentId, to: "cancelled", cancelReason: "client", actor, now: NOW });
+    const history = await appointmentHistory(db, { locationId, appointmentId: a.appointmentId });
+    expect(history.map((h) => h.actorName)).toEqual(["Recepción Mañana", "Recepción Mañana"]);
+  });
 });

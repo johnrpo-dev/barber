@@ -14,6 +14,7 @@ import {
 } from "@/db/appointments";
 import { db } from "@/db/client";
 import { findOrCreateClient, searchClients } from "@/db/clients";
+import { recordContactReads } from "@/db/privacy";
 import type { Db } from "@/db/types";
 import { isDateString, localMinuteOf, localMinuteToInstant } from "@/domain/booking/clock";
 import { APPOINTMENT_STATUSES, STATUS_LABELS } from "@/domain/booking/status";
@@ -112,6 +113,11 @@ export async function findClients(query: string): Promise<ActionResult<ClientOpt
     const q = z.string().max(80).parse(query);
     const seeContact = can(staff.role, "clients.view.contact");
     const rows = await searchClients(database(), { locationId: staff.locationId, query: q });
+    // Ley 1581: queda constancia de quién vio el celular completo (src/db/privacy.ts).
+    if (seeContact) {
+      const shown = rows.filter((c) => c.phoneE164).map((c) => c.id);
+      await recordContactReads(database(), { locationId: staff.locationId, staffId: staff.staffId, context: "client_search", clientIds: shown });
+    }
     return rows.map((c) => ({
       id: String(c.id),
       name: c.name,

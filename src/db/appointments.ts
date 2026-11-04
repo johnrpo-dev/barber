@@ -22,7 +22,6 @@ import {
   staffMembers,
   staffSchedules,
   timeOff,
-  user,
 } from "./schema";
 import { extendManageLink, revokeManageLinks } from "./manage-links";
 import { pgError } from "./serializable";
@@ -816,7 +815,9 @@ export async function appointmentHistory(
       kind: appointmentEvents.kind,
       fromStatus: appointmentEvents.fromStatus,
       toStatus: appointmentEvents.toStatus,
-      actorName: user.name,
+      // El nombre que pone el dueño (staff_members.display_name), no el de la cuenta (user.name),
+      // como en las vistas de dinero.
+      actorName: staffMembers.displayName,
       actorKind: appointmentEvents.actorKind,
       reason: appointmentEvents.reason,
       at: appointmentEvents.createdAt,
@@ -826,7 +827,10 @@ export async function appointmentHistory(
       appointments,
       and(eq(appointments.locationId, appointmentEvents.locationId), eq(appointments.id, appointmentEvents.appointmentId)),
     )
-    .leftJoin(user, eq(user.id, appointmentEvents.actorUserId))
+    .leftJoin(
+      staffMembers,
+      and(eq(staffMembers.locationId, appointmentEvents.locationId), eq(staffMembers.userId, appointmentEvents.actorUserId)),
+    )
     .where(
       and(
         eq(appointmentEvents.locationId, input.locationId),

@@ -1,0 +1,14 @@
+# Aviso cuando falla un backup o una prueba de restauración (OnFailure= de esas unidades).
+# Deja una línea en el journal con prioridad "err" y, si hay correo configurado en el VPS
+# (deploy/backup/villa-alert.sh), le escribe al dueño. %i es la unidad que falló.
+[Unit]
+Description=Villa: aviso de falla en %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/villa-alert.sh %i
+EnvironmentFile=-/etc/villa/backup.env
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

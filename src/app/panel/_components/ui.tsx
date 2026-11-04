@@ -163,7 +163,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       <div role="alert" className="sr-only">
         {announced.alert}
       </div>
-      <div className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-6">
+      <div className="pointer-events-none fixed inset-x-0 bottom-20 z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-6 print:hidden">
         {toasts.map((t) => (
           <ToastItem key={t.id} toast={t} onDismiss={dismiss} />
         ))}

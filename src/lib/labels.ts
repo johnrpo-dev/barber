@@ -13,6 +13,9 @@ export const absLabel = (minor: bigint): string => moneyLabel(minor < 0n ? -mino
 /** Con signo explícito: "+$ 2.000", "-$ 500", "$ 0". */
 export const signedLabel = (minor: bigint): string => (minor > 0n ? `+${moneyLabel(minor)}` : moneyLabel(minor));
 
+/** De dónde salió un pago al personal. */
+export const paidFromLabel = (paidFrom: "cash" | "bank"): string => (paidFrom === "cash" ? "Efectivo de la caja" : "Banco");
+
 /** "14:30" en la zona de la sede. */
 export const timeLabel = (at: Date, timeZone: string): string => formatTime(localMinuteOf(at, timeZone));
 

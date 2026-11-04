@@ -21,6 +21,7 @@ import { account, session, twoFactor, user, verification } from "@/db/schema";
 import type { Db } from "@/db/types";
 import { isKnownDevice, KNOWN_DEVICE_COOKIE, KNOWN_DEVICE_MAX_AGE_S, withKnownDevice } from "@/domain/security/known-device";
 import { LOGIN_EMAIL_POLICY } from "@/domain/security/lockout";
+import { SESSION_MAX_AGE_S } from "@/domain/security/reauth";
 import { windowStart } from "@/domain/security/rate-limit";
 
 // Autenticación del personal (dueño, recepción, barberos). No hay registro público:
@@ -107,9 +108,9 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
   const signInTargets = (ctx: HookContext, now: Date): ThrottleTarget[] => {
     const email = typedEmail(ctx.body);
     const ip = getIP(ctx.request ?? ctx.headers ?? new Headers(), ctx.context.options) ?? "sin-ip";
-    const targets: ThrottleTarget[] = [{ subject: loginIpThrottleSubject(opts.secret, email, ip), kind: "login-ip" }];
+    const targets: ThrottleTarget[] = [{ subject: loginIpThrottleSubject(opts.secret, email, ip), kind: "login-ip", account: { email } }];
     if (!isKnownDevice(opts.secret, ctx.getCookie(knownDeviceCookie(ctx).name), email, now)) {
-      targets.push({ subject: throttleSubject(opts.secret, "login", email), kind: "login", policy: LOGIN_EMAIL_POLICY });
+      targets.push({ subject: throttleSubject(opts.secret, "login", email), kind: "login", policy: LOGIN_EMAIL_POLICY, account: { email } });
     }
     return targets;
   };
@@ -141,7 +142,9 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
     if (!current) return; // el endpoint responde 401
     let reservation;
     try {
-      reservation = await reserveAttempt(database, [{ subject: userThrottleSubject("password", current.user.id), kind: "password" }]);
+      reservation = await reserveAttempt(database, [
+        { subject: userThrottleSubject("password", current.user.id), kind: "password", account: { userId: current.user.id } },
+      ]);
     } catch (err) {
       if (err instanceof AccountLockedError) throw lockedError(err);
       throw err;
@@ -168,9 +171,11 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
       minPasswordLength: MIN_PASSWORD_LENGTH,
     },
     session: {
-      // Un turno largo de barbería; después hay que volver a ingresar.
-      expiresIn: 60 * 60 * 12,
+      // Un turno largo de barbería; después hay que volver a ingresar. Vida ABSOLUTA (sprint 5):
+      // usar la sesión no la alarga, así una sesión robada no vive para siempre.
+      expiresIn: SESSION_MAX_AGE_S,
       updateAge: 60 * 60,
+      disableSessionRefresh: true,
     },
     rateLimit: {
       enabled: true,
@@ -214,7 +219,7 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
             const userId = await challengeUserId(ctx);
             if (userId) {
               try {
-                await reserveAttempt(database, [{ subject: userThrottleSubject("totp-login", userId), kind: "totp-login" }]);
+                await reserveAttempt(database, [{ subject: userThrottleSubject("totp-login", userId), kind: "totp-login", account: { userId } }]);
               } catch (err) {
                 if (err instanceof AccountLockedError) throw lockedError(err);
                 throw err;

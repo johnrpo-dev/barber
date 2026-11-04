@@ -21,6 +21,7 @@ export const ENTRY_KINDS = [
   "owner_contribution",
   "owner_withdrawal",
   "reversal",
+  "staff_advance",
 ] as const;
 
 export type EntryKind = (typeof ENTRY_KINDS)[number];

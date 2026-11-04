@@ -32,6 +32,7 @@ import { findByManageToken, issueManageLink, revokeManageLinks } from "./manage-
 import { checkQuotaAlert, enqueueNotification, globalQuotaReached, messageParams, preferredChannel, recordOtpAttempt, recordOtpOutcome } from "./notifications";
 import { enforce } from "./rate-limit";
 import { appointmentEvents, appointments, bookingVerifications, clients, locations, services, staffMembers, staffSchedules } from "./schema";
+import { rowsOf } from "./sql";
 import type { Db } from "./types";
 
 // Reserva pública (sprint-3-reserva-publica.md §1–§4). Las acciones de src/app/(publico) son
@@ -112,11 +113,6 @@ export interface PublicBookingContext {
   caps: { globalPerDay: number };
   /** Aviso al dueño al 80 % de la cuota (ALERT_EMAIL). */
   alert?: (subject: string, text: string, idempotencyKey: string) => Promise<void>;
-}
-
-/** Filas de db.execute sin importar el driver (postgres.js devuelve un arreglo; PGlite, { rows }). */
-function rowsOf<T>(result: unknown): T[] {
-  return (Array.isArray(result) ? result : ((result as { rows?: T[] }).rows ?? [])) as T[];
 }
 
 export function hashBrowserCookie(value: string): string {
@@ -550,6 +546,15 @@ async function liveVerification(db: Db, locationId: bigint, browserHash: string)
 
 const holdAlive = (v: { apptStatus: AppointmentStatus; holdExpiresAt: Date | null }, now: Date) =>
   v.apptStatus === "pending" && v.holdExpiresAt !== null && v.holdExpiresAt.getTime() > now.getTime();
+
+/**
+ * ¿Este navegador tiene una retención viva (código sin usar y cita pendiente sin vencer)? Solo
+ * entonces se reutiliza su cookie villa_hold al iniciar otra reserva (src/domain/security/hold-cookie.ts).
+ */
+export async function hasLiveHold(db: Db, locationId: bigint, browserHash: string, now: Date): Promise<boolean> {
+  const live = await liveVerification(db, locationId, browserHash);
+  return !!live && holdAlive(live, now);
+}
 
 /** Reenvío: 60 s de espera, máximo 3 envíos por retención; la retención no se alarga. */
 export async function resendCode(

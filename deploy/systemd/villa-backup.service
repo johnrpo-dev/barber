@@ -1,0 +1,30 @@
+# Backup diario cifrado de la base (deploy/backup/villa-backup.sh). Lo dispara villa-backup.timer.
+[Unit]
+Description=Villa: backup cifrado de PostgreSQL a almacenamiento externo
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+OnFailure=villa-alert@%n.service
+
+[Service]
+Type=oneshot
+# postgres: pg_dump por socket local con autenticación peer, sin contraseñas en archivos.
+User=postgres
+Group=postgres
+ExecStart=/usr/local/sbin/villa-backup.sh
+# backup.env: destino de rclone. 0600 root (lo lee systemd). Sin llaves privadas aquí.
+EnvironmentFile=/etc/villa/backup.env
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/backups/villa

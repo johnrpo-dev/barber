@@ -17,6 +17,7 @@ import {
 import { db } from "@/db/client";
 import { addExpense } from "@/db/expenses";
 import type { Db } from "@/db/types";
+import { money, sum } from "@/domain/money";
 import { CashError } from "@/domain/sales/cash";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
@@ -58,7 +59,7 @@ export interface CashView {
     byMethod: { label: string; totalLabel: string }[];
     movements: {
       at: string;
-      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal";
+      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal" | "commission_payout" | "staff_advance";
       description: string;
       /** null en el conteo a ciegas: sumados con la base darían el esperado. */
       amountLabel: string | null;
@@ -102,12 +103,13 @@ export interface CashView {
   }[];
 }
 
-const BREAKDOWN: { kind: MovementKind; label: string; sign: "+" | "-" }[] = [
-  { kind: "sale", label: "Ventas en efectivo (neto de cambio)", sign: "+" },
-  { kind: "expense", label: "Gastos de caja", sign: "-" },
-  { kind: "tip_payout", label: "Propinas pagadas en efectivo", sign: "-" },
-  { kind: "cash_deposit", label: "Consignaciones", sign: "-" },
-  { kind: "reversal", label: "Anulaciones", sign: "-" },
+const BREAKDOWN: { kinds: MovementKind[]; label: string; sign: "+" | "-" }[] = [
+  { kinds: ["sale"], label: "Ventas en efectivo (neto de cambio)", sign: "+" },
+  { kinds: ["expense"], label: "Gastos de caja", sign: "-" },
+  { kinds: ["tip_payout"], label: "Propinas pagadas en efectivo", sign: "-" },
+  { kinds: ["commission_payout", "staff_advance"], label: "Pagos al personal (liquidaciones y anticipos)", sign: "-" },
+  { kinds: ["cash_deposit"], label: "Consignaciones", sign: "-" },
+  { kinds: ["reversal"], label: "Anulaciones y reversas", sign: "-" },
 ];
 
 export async function loadCashView(): Promise<ActionResult<CashView>> {
@@ -125,8 +127,8 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
         { label: "Base contada al abrir", amountLabel: moneyLabel(summary.openingCounted), sign: "+" },
       ];
       for (const b of BREAKDOWN) {
-        const net = summary.byKind.get(b.kind) ?? 0n;
-        if (net === 0n && b.kind !== "sale") continue;
+        const net = sum(b.kinds.map((kind) => money(summary.byKind.get(kind) ?? 0n))).minor;
+        if (net === 0n && !b.kinds.includes("sale")) continue;
         // Las ventas suman y lo demás resta; si una anulación o un ajuste va al revés, se muestra con ±.
         const natural = b.sign === "+" ? net >= 0n : net <= 0n;
         breakdown.push(natural ? { label: b.label, amountLabel: absLabel(net), sign: b.sign } : { label: b.label, amountLabel: signedLabel(net), sign: "±" });

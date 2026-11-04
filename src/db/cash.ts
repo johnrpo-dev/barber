@@ -5,6 +5,7 @@ import { cashAdjustmentEntry, cashDepositEntry, CashError, tipPayoutEntry } from
 import { format, type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { can, type Role } from "@/domain/staff/roles";
+import { recordAudit } from "./audit";
 import { accountBalance, closeDay, isDayClosed, postEntry, reopenDay } from "./ledger";
 import {
   accounts,
@@ -160,6 +161,14 @@ export async function openCashSession(
         openRequestHash: hash,
       })
       .returning({ id: cashSessions.id });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "cash.open",
+      targetKind: "cash_session",
+      targetRef: row!.id.toString(),
+      summary: `Abrió la caja con ${format(input.counted)} contados (diferencia ${format(money(input.counted.minor - expected))})`,
+    });
     return { sessionId: row!.id, expected, difference: input.counted.minor - expected, created: true };
   });
 }
@@ -237,6 +246,14 @@ export async function closeCashSession(
       })
       .where(and(eq(cashSessions.id, session.id), isNull(cashSessions.closedAt)))
       .returning({ needsReview: cashSessions.needsReview });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "cash.close",
+      targetKind: "cash_session",
+      targetRef: session.id.toString(),
+      summary: `Cerró la caja con ${format(input.counted)} contados (diferencia ${format(money(difference))})`,
+    });
     return { sessionId: session.id, expected, counted: input.counted.minor, difference, needsReview: closed?.needsReview ?? false, created: true };
   });
 }
@@ -266,6 +283,14 @@ export async function markSessionReviewed(db: Db, input: { locationId: bigint; s
       .update(cashSessions)
       .set({ reviewedBy: input.actor.userId })
       .where(and(eq(cashSessions.locationId, input.locationId), eq(cashSessions.id, input.sessionId)));
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "cash.review",
+      targetKind: "cash_session",
+      targetRef: input.sessionId.toString(),
+      summary: "Dio por revisado un turno de caja marcado",
+    });
   });
 }
 
@@ -317,19 +342,25 @@ async function movementReplay(tx: Db, locationId: bigint, key: string, hash: str
 }
 
 /**
- * Propinas por pagar a cada persona: lo causado en ventas pagadas menos lo pagado en efectivo, en
- * UNA expresión SQL (L7): una sola lectura, sin sumar en el cliente.
+ * Toma la fila de la persona FOR UPDATE: todo lo que mueve sus saldos (liquidar, revertir, anticipos,
+ * pagar propinas) se hace en fila (docs/sprint-5-comisiones-informes.md §5).
+ */
+export async function lockStaff(tx: Db, locationId: bigint, staffId: bigint): Promise<{ name: string; active: boolean }> {
+  const [person] = await tx
+    .select({ name: staffMembers.displayName, active: staffMembers.active })
+    .from(staffMembers)
+    .where(and(eq(staffMembers.locationId, locationId), eq(staffMembers.id, staffId)))
+    .for("update");
+  if (!person) throw new CashError("Esa persona no existe en la sede");
+  return person;
+}
+
+/**
+ * Propinas por pagar a cada persona: la definición es staff_tips_owed (0013), así que Caja ve también
+ * lo pagado en liquidaciones. UNA expresión SQL (L7): una sola lectura, sin sumar en el cliente.
  */
 export async function tipsOwed(db: Db, locationId: bigint): Promise<{ staffId: bigint; name: string; owed: bigint }[]> {
-  const owed = sql`(
-    coalesce((select sum(t.payable) from sale_tips t
-                join sales s on s.location_id = t.location_id and s.id = t.sale_id
-               where t.location_id = ${staffMembers.locationId} and t.staff_id = ${staffMembers.id} and s.status = 'paid'), 0)
-    - coalesce((select sum(l.debit) from cash_movements m
-                  join journal_lines l on l.location_id = m.location_id and l.entry_id = m.journal_entry_id
-                  join accounts a on a.location_id = l.location_id and a.id = l.account_id
-                 where m.location_id = ${staffMembers.locationId} and m.staff_id = ${staffMembers.id}
-                   and m.kind = 'tip_payout' and a.code = ${ACCOUNTS.tipsPayable.code}), 0))`;
+  const owed = sql`staff_tips_owed(${staffMembers.locationId}, ${staffMembers.id})`;
   return db
     .select({
       staffId: staffMembers.id,
@@ -350,13 +381,10 @@ export async function payTips(
   return serializable(db, async (tx) => {
     const replay = await movementReplay(tx, input.locationId, input.idempotencyKey, hash);
     if (replay !== undefined) return { movementId: replay, created: false };
+    // Primero la persona (mismo orden que liquidar): un pago de propinas y una liquidación van en fila.
+    const person = await lockStaff(tx, input.locationId, input.staffId);
     const session = await requireOpenSession(tx, input.locationId, "Abre la caja para pagar propinas en efectivo");
     const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new CashError(m));
-    const [person] = await tx
-      .select({ name: staffMembers.displayName })
-      .from(staffMembers)
-      .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)));
-    if (!person) throw new CashError("Esa persona no existe en la sede");
     const owed = (await tipsOwed(tx, input.locationId)).find((t) => t.staffId === input.staffId)?.owed ?? 0n;
     if (input.amount.minor > owed) throw new CashError(`El pago supera las propinas que se le deben a ${person.name} (${format(money(owed))})`);
     if (input.amount.minor > (await ledgerCash(tx, input.locationId))) throw cashShortError(input.actor);
@@ -377,6 +405,14 @@ export async function payTips(
         requestHash: hash,
       })
       .returning({ id: cashMovements.id });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "tips.pay",
+      targetKind: "cash_movement",
+      targetRef: row!.id.toString(),
+      summary: `Pagó ${format(input.amount)} de propinas a ${person.name}`,
+    });
     return { movementId: row!.id, created: true };
   });
 }
@@ -409,6 +445,14 @@ export async function cashDeposit(
         requestHash: hash,
       })
       .returning({ id: cashMovements.id });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "cash.deposit",
+      targetKind: "cash_movement",
+      targetRef: row!.id.toString(),
+      summary: `Consignó ${format(input.amount)} al banco`,
+    });
     return { movementId: row!.id, created: true };
   });
 }
@@ -443,6 +487,14 @@ export async function closeBusinessDay(db: Db, input: { locationId: bigint; busi
     if (await isDayClosed(tx, input.locationId, input.businessDate)) throw new CashError("El día ya está cerrado");
     await readDayEntries(tx, input.locationId, input.businessDate);
     await closeDay(tx, { locationId: input.locationId, businessDate: input.businessDate, createdBy: input.actor.userId });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "day.close",
+      targetKind: "business_day",
+      targetRef: input.businessDate,
+      summary: `Cerró el día ${input.businessDate}`,
+    });
   });
 }
 
@@ -458,12 +510,20 @@ export async function reopenBusinessDay(
     if (!(await isDayClosed(tx, input.locationId, input.businessDate))) throw new CashError("El día no está cerrado");
     await readDayEntries(tx, input.locationId, input.businessDate);
     await reopenDay(tx, { locationId: input.locationId, businessDate: input.businessDate, reason, createdBy: input.actor.userId });
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "day.reopen",
+      targetKind: "business_day",
+      targetRef: input.businessDate,
+      summary: `Reabrió el día ${input.businessDate}`,
+    });
   });
 }
 
 // ─── Lecturas para la pantalla de caja ───────────────────────────────────────
 
-export type MovementKind = "sale" | "expense" | "tip_payout" | "cash_deposit" | "reversal";
+export type MovementKind = "sale" | "expense" | "tip_payout" | "cash_deposit" | "reversal" | "commission_payout" | "staff_advance";
 
 export interface SessionSummary {
   id: bigint;

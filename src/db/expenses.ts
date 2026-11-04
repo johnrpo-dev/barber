@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { CashError, expenseEntry } from "@/domain/sales/cash";
-import type { Money } from "@/domain/money";
+import { format, type Money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { can, type Role } from "@/domain/staff/roles";
+import { recordAudit } from "./audit";
 import { type ActorRef, cashShortError, ledgerCash, requireOpenDay, requireOpenSession } from "./cash";
 import { postEntry } from "./ledger";
 import { cashMovements, expenseCategories, expenses } from "./schema";
@@ -97,6 +98,15 @@ export async function addExpense(
         createdBy: input.actor.userId,
       });
     }
+    // La categoría y el monto; la descripción es texto libre y no entra a la bitácora.
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "expense.add",
+      targetKind: "expense",
+      targetRef: row!.id.toString(),
+      summary: `Registró un gasto de ${format(input.amount)} en ${category.name}, pagado ${input.paidFrom === "cash" ? "de la caja" : "del banco"}`,
+    });
     return { expenseId: row!.id, created: true };
   });
 }

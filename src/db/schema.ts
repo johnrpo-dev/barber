@@ -18,6 +18,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { AUDIT_ACTIONS, AUDIT_CATEGORY, AUDIT_CATEGORIES } from "@/domain/audit/events";
 import { tstzrange } from "./tstzrange";
 
 // Convenciones (ver docs/arquitectura.md):
@@ -120,7 +121,7 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_kind_check",
-      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal')`,
+      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal','staff_advance')`,
     ),
     check("journal_entries_reversal_check", sql`(${t.kind} = 'reversal') = (${t.reversesEntryId} is not null)`),
     index("journal_entries_location_date_idx").on(t.locationId, t.businessDate),
@@ -442,6 +443,8 @@ export const appointments = pgTable(
       "appointments_during_check",
       sql`not isempty(${t.during}) and lower_inc(${t.during}) and not upper_inc(${t.during}) and not lower_inf(${t.during}) and not upper_inf(${t.during})`,
     ),
+    // Informe de inasistencias por rango (sprint 5): citas por su inicio.
+    index("appointments_location_start_idx").on(t.locationId, sql`lower(${t.during})`),
   ],
 );
 
@@ -977,6 +980,10 @@ export const saleLines = pgTable(
     check("sale_lines_commission_check", sql`${t.commission} <= ${t.unitPrice}`),
     check("sale_lines_discount_reason_check", sql`${t.discount} = 0 or length(trim(${t.discountReason})) > 0`),
     index("sale_lines_staff_idx").on(t.locationId, t.staffId),
+    // Los saldos por persona (0013) solo miran líneas con comisión.
+    index("sale_lines_staff_commission_idx").on(t.locationId, t.staffId).where(sql`${t.commission} > 0`),
+    // Para las FK compuestas de las líneas de liquidación (sprint 5).
+    unique("sale_lines_location_id_id_key").on(t.locationId, t.id),
   ],
 );
 
@@ -1058,9 +1065,9 @@ export const cashMovements = pgTable(
     id: id(),
     locationId: locationId(),
     cashSessionId: bigint("cash_session_id", { mode: "bigint" }).notNull(),
-    kind: text("kind", { enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal"] }).notNull(),
+    kind: text("kind", { enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal", "commission_payout", "staff_advance"] }).notNull(),
     journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
-    /** Solo pago de propinas: a quién. */
+    /** Pago de propinas, liquidación o anticipo: a quién. */
     staffId: bigint("staff_id", { mode: "bigint" }),
     description: text("description").notNull(),
     createdBy: text("created_by").notNull(),
@@ -1087,8 +1094,14 @@ export const cashMovements = pgTable(
       columns: [t.locationId, t.staffId],
       foreignColumns: [staffMembers.locationId, staffMembers.id],
     }),
-    check("cash_movements_kind_check", sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal')`),
-    check("cash_movements_staff_check", sql`(${t.kind} = 'tip_payout') = (${t.staffId} is not null)`),
+    check(
+      "cash_movements_kind_check",
+      sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal','commission_payout','staff_advance')`,
+    ),
+    check(
+      "cash_movements_staff_check",
+      sql`(${t.kind} in ('tip_payout','commission_payout','staff_advance')) = (${t.staffId} is not null)`,
+    ),
     check(
       "cash_movements_hash_check",
       sql`(${t.idempotencyKey} is null) = (${t.requestHash} is null) and (${t.requestHash} is null or ${t.requestHash} ~ '^[0-9a-f]{64}$')`,
@@ -1207,5 +1220,361 @@ export const voidRequests = pgTable(
     ),
     check("void_requests_request_hash_check", hexCheck(t.requestHash)),
     index("void_requests_location_status_idx").on(t.locationId, t.status, t.id),
+  ],
+);
+
+// ─── Seguridad y datos personales (sprint 5, migración 0012) ─────────────────
+
+/**
+ * Bandeja de avisos de seguridad para el dueño (hoy: se disparó un bloqueo por intentos fallidos).
+ * Infraestructura, como login_throttles: sin location_id (las cuentas del personal no son de una
+ * sede). Sin datos personales: ni correo escrito, ni IP, ni sujeto; solo el id interno del usuario
+ * cuando el bloqueo es de una cuenta que existe. El worker la entrega con alertSender().
+ */
+export const securityAlerts = pgTable(
+  "security_alerts",
+  {
+    id: id(),
+    kind: text("kind", { enum: ["login_lock"] }).notNull(),
+    throttleKind: text("throttle_kind", { enum: ["login", "login-ip", "reauth", "password", "totp-login"] }).notNull(),
+    /** Cuenta del personal afectada, si existe. El correo escrito nunca se guarda. */
+    userId: text("user_id").references(() => user.id, { onDelete: "set null" }),
+    failures: integer("failures").notNull(),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }).notNull(),
+    /** Ventana de 15 minutos: una sola fila pendiente por (tipo, cuenta o "sin cuenta", ventana). */
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    /** Cuántos bloqueos resume esta fila. Un ataque suma aquí; no llena la tabla. */
+    occurrences: integer("occurrences").notNull().default(1),
+    createdAt: createdAt(),
+    notifiedAt: timestamp("notified_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("security_alerts_kind_check", sql`${t.kind} in ('login_lock')`),
+    check("security_alerts_throttle_kind_check", sql`${t.throttleKind} in ('login','login-ip','reauth','password','totp-login')`),
+    check("security_alerts_failures_check", sql`${t.failures} >= 1`),
+    check("security_alerts_occurrences_check", sql`${t.occurrences} >= 1`),
+    index("security_alerts_pending_idx").on(t.id).where(sql`${t.notifiedAt} is null`),
+    uniqueIndex("security_alerts_window_key")
+      .on(t.throttleKind, sql`coalesce(${t.userId}, '')`, t.windowStart)
+      .where(sql`${t.notifiedAt} is null`),
+  ],
+);
+
+/**
+ * Auditoría de lecturas de datos de contacto de clientes (Ley 1581): quién vio el celular completo
+ * de qué clientes, dónde y cuándo. Solo-inserción (trigger). Una fila por (persona, pantalla,
+ * conjunto de clientes, ventana de 10 minutos): recargar la agenda no la llena.
+ */
+export const personalDataReads = pgTable(
+  "personal_data_reads",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    context: text("context", { enum: ["agenda_day", "client_search"] }).notNull(),
+    clientIds: bigint("client_ids", { mode: "bigint" }).array().notNull(),
+    /** SHA-256 de la lista ordenada de clientes: deduplica dentro de la ventana. */
+    clientsHash: text("clients_hash").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ name: "personal_data_reads_staff_fk", columns: [t.locationId, t.staffId], foreignColumns: [staffMembers.locationId, staffMembers.id] }),
+    unique("personal_data_reads_window_key").on(t.locationId, t.staffId, t.context, t.clientsHash, t.windowStart),
+    check("personal_data_reads_context_check", sql`${t.context} in ('agenda_day','client_search')`),
+    check("personal_data_reads_clients_check", sql`cardinality(${t.clientIds}) between 1 and 500`),
+    check("personal_data_reads_hash_check", hexCheck(t.clientsHash)),
+    index("personal_data_reads_client_idx").using("gin", t.clientIds),
+    index("personal_data_reads_created_idx").on(t.locationId, t.createdAt),
+  ],
+);
+
+// ─── Comisiones, anticipos y auditoría (sprint 5, migración 0013) ────────────
+// docs/sprint-5-comisiones-informes.md §2 y §8. Solo-inserción salvo el paso único a "revertida"
+// (y `reversed` en las líneas), que controlan los triggers de la parte escrita a mano de 0013, junto
+// con el número consecutivo, las reglas de cada línea, los totales = líneas = asiento y la
+// completitud de la liquidación (al hacer COMMIT).
+
+const wholePesos = (column: unknown) => sql`${column} % 100 = 0`;
+const reasonCheck = (column: unknown) => sql`length(trim(${column})) between 3 and 300`;
+
+/** Liquidación de comisiones de una persona hasta una fecha de corte. */
+export const commissionSettlements = pgTable(
+  "commission_settlements",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    publicId: text("public_id").notNull(),
+    /** Consecutivo por sede (serie de liquidaciones). Lo pone un trigger; la app manda 0. */
+    number: bigint("number", { mode: "bigint" }).notNull().default(sql`0`),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    /** Informativo: la fecha de la comisión más antigua incluida, o el corte si no hay ninguna. */
+    periodFrom: date("period_from", { mode: "string" }).notNull(),
+    cutoffDate: date("cutoff_date", { mode: "string" }).notNull(),
+    /** Día contable del pago. */
+    businessDate: date("business_date", { mode: "string" }).notNull(),
+    status: text("status", { enum: ["settled", "reversed"] }).notNull().default("settled"),
+    paidFrom: text("paid_from", { enum: ["cash", "bank"] }),
+    cashSessionId: bigint("cash_session_id", { mode: "bigint" }),
+    commissionTotal: amount("commission_total").notNull(),
+    clawbackTotal: amount("clawback_total").notNull(),
+    tipsTotal: amount("tips_total").notNull(),
+    adjustmentsTotal: amount("adjustments_total").notNull(),
+    advanceDeduction: amount("advance_deduction").notNull(),
+    carryOver: amount("carry_over").notNull(),
+    payout: amount("payout").notNull(),
+    journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
+    reversalEntryId: bigint("reversal_entry_id", { mode: "bigint" }),
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversedBy: text("reversed_by"),
+    reversalReason: text("reversal_reason"),
+    note: text("note"),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    reversalIdempotencyKey: text("reversal_idempotency_key"),
+    reversalRequestHash: text("reversal_request_hash"),
+  },
+  (t) => [
+    unique("commission_settlements_location_id_id_key").on(t.locationId, t.id),
+    unique("commission_settlements_public_id_key").on(t.publicId),
+    unique("commission_settlements_number_key").on(t.locationId, t.number),
+    unique("commission_settlements_idempotency_key").on(t.locationId, t.idempotencyKey),
+    unique("commission_settlements_reversal_idempotency_key").on(t.locationId, t.reversalIdempotencyKey),
+    unique("commission_settlements_journal_entry_key").on(t.journalEntryId),
+    unique("commission_settlements_reversal_entry_key").on(t.reversalEntryId),
+    foreignKey({
+      name: "commission_settlements_staff_fk",
+      columns: [t.locationId, t.staffId],
+      foreignColumns: [staffMembers.locationId, staffMembers.id],
+    }),
+    foreignKey({
+      name: "commission_settlements_session_fk",
+      columns: [t.locationId, t.cashSessionId],
+      foreignColumns: [cashSessions.locationId, cashSessions.id],
+    }),
+    foreignKey({
+      name: "commission_settlements_entry_fk",
+      columns: [t.locationId, t.journalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    foreignKey({
+      name: "commission_settlements_reversal_entry_fk",
+      columns: [t.locationId, t.reversalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    check("commission_settlements_number_check", sql`${t.number} > 0`),
+    check("commission_settlements_status_check", sql`${t.status} in ('settled','reversed')`),
+    check(
+      "commission_settlements_payout_check",
+      sql`${t.payout} = ${t.commissionTotal} - ${t.clawbackTotal} + ${t.tipsTotal} + ${t.adjustmentsTotal} - ${t.advanceDeduction} + ${t.carryOver}
+        and ${t.payout} >= 0 and ${t.commissionTotal} >= 0 and ${t.clawbackTotal} >= 0 and ${t.advanceDeduction} >= 0 and ${t.carryOver} >= 0
+        and not (${t.advanceDeduction} > 0 and ${t.carryOver} > 0) and (${t.carryOver} = 0 or ${t.payout} = 0)
+        and ${t.payout} <= 10000000000000`,
+    ),
+    check(
+      "commission_settlements_whole_pesos_check",
+      sql`${wholePesos(t.commissionTotal)} and ${wholePesos(t.clawbackTotal)} and ${wholePesos(t.tipsTotal)} and ${wholePesos(t.adjustmentsTotal)}
+        and ${wholePesos(t.advanceDeduction)} and ${wholePesos(t.carryOver)} and ${wholePesos(t.payout)}`,
+    ),
+    check(
+      "commission_settlements_paid_from_check",
+      sql`(${t.paidFrom} is null) = (${t.payout} = 0) and (${t.paidFrom} is null or ${t.paidFrom} in ('cash','bank'))
+        and (${t.cashSessionId} is not null) = (${t.paidFrom} is not distinct from 'cash')`,
+    ),
+    check("commission_settlements_dates_check", sql`${t.periodFrom} <= ${t.cutoffDate} and ${t.cutoffDate} <= ${t.businessDate}`),
+    check(
+      "commission_settlements_reversed_check",
+      sql`(${t.status} = 'reversed') = (${t.reversalEntryId} is not null)
+        and (${t.status} = 'reversed') = (${t.reversedAt} is not null)
+        and (${t.status} = 'reversed') = (${t.reversedBy} is not null)
+        and (${t.status} = 'reversed') = (${t.reversalIdempotencyKey} is not null)
+        and (${t.status} = 'reversed') = (${t.reversalRequestHash} is not null)
+        and (${t.status} <> 'reversed' or ${reasonCheck(t.reversalReason)})`,
+    ),
+    check("commission_settlements_note_check", sql`${t.note} is null or length(trim(${t.note})) between 1 and 300`),
+    check(
+      "commission_settlements_hash_check",
+      sql`${hexCheck(t.requestHash)} and (${t.reversalRequestHash} is null or ${hexCheck(t.reversalRequestHash)})`,
+    ),
+    index("commission_settlements_staff_idx").on(t.locationId, t.staffId, t.number),
+    index("commission_settlements_location_date_idx").on(t.locationId, t.businessDate),
+  ],
+);
+
+/** Detalle de la liquidación. `amount` lleva signo: su efecto sobre el pago (payout = Σ amount). */
+export const commissionSettlementLines = pgTable(
+  "commission_settlement_lines",
+  {
+    id: id(),
+    locationId: locationId(),
+    settlementId: bigint("settlement_id", { mode: "bigint" }).notNull(),
+    kind: text("kind", { enum: ["commission", "clawback", "tips", "adjustment", "advance_deduction", "carry_over"] }).notNull(),
+    saleLineId: bigint("sale_line_id", { mode: "bigint" }),
+    amount: amount("amount").notNull(),
+    reason: text("reason"),
+    /** Solo pasa de false a true, una vez, cuando su liquidación se revierte (trigger). */
+    reversed: boolean("reversed").notNull().default(false),
+  },
+  (t) => [
+    foreignKey({
+      name: "commission_settlement_lines_settlement_fk",
+      columns: [t.locationId, t.settlementId],
+      foreignColumns: [commissionSettlements.locationId, commissionSettlements.id],
+    }),
+    foreignKey({
+      name: "commission_settlement_lines_sale_line_fk",
+      columns: [t.locationId, t.saleLineId],
+      foreignColumns: [saleLines.locationId, saleLines.id],
+    }),
+    check(
+      "commission_settlement_lines_kind_check",
+      sql`${t.kind} in ('commission','clawback','tips','adjustment','advance_deduction','carry_over')`,
+    ),
+    check(
+      "commission_settlement_lines_shape_check",
+      sql`(${t.kind} in ('commission','clawback')) = (${t.saleLineId} is not null)
+        and (${t.kind} = 'adjustment') = (${t.reason} is not null)
+        and (${t.reason} is null or ${reasonCheck(t.reason)})`,
+    ),
+    check(
+      "commission_settlement_lines_amount_check",
+      sql`${t.amount} <> 0 and ${wholePesos(t.amount)} and abs(${t.amount}) <= 10000000000000
+        and (${t.kind} not in ('commission','carry_over') or ${t.amount} > 0)
+        and (${t.kind} not in ('clawback','advance_deduction') or ${t.amount} < 0)`,
+    ),
+    uniqueIndex("commission_settlement_lines_commission_once")
+      .on(t.locationId, t.saleLineId)
+      .where(sql`${t.kind} = 'commission' and not ${t.reversed}`),
+    uniqueIndex("commission_settlement_lines_clawback_once")
+      .on(t.locationId, t.saleLineId)
+      .where(sql`${t.kind} = 'clawback' and not ${t.reversed}`),
+    uniqueIndex("commission_settlement_lines_single_kind")
+      .on(t.settlementId, t.kind)
+      .where(sql`${t.kind} in ('tips','advance_deduction','carry_over')`),
+    index("commission_settlement_lines_settlement_idx").on(t.settlementId),
+    index("commission_settlement_lines_sale_line_idx").on(t.locationId, t.saleLineId),
+  ],
+);
+
+/** Anticipo a una persona, desde la caja o el banco (1365 contra 1105 o 1110). */
+export const staffAdvances = pgTable(
+  "staff_advances",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    publicId: text("public_id").notNull(),
+    /** Consecutivo por sede (serie de anticipos). Lo pone un trigger; la app manda 0. */
+    number: bigint("number", { mode: "bigint" }).notNull().default(sql`0`),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    amount: amount("amount").notNull(),
+    paidFrom: text("paid_from", { enum: ["cash", "bank"] }).notNull(),
+    cashSessionId: bigint("cash_session_id", { mode: "bigint" }),
+    businessDate: date("business_date", { mode: "string" }).notNull(),
+    reason: text("reason").notNull(),
+    journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
+    status: text("status", { enum: ["active", "reversed"] }).notNull().default("active"),
+    reversalEntryId: bigint("reversal_entry_id", { mode: "bigint" }),
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversedBy: text("reversed_by"),
+    reversalReason: text("reversal_reason"),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    reversalIdempotencyKey: text("reversal_idempotency_key"),
+    reversalRequestHash: text("reversal_request_hash"),
+  },
+  (t) => [
+    unique("staff_advances_public_id_key").on(t.publicId),
+    unique("staff_advances_number_key").on(t.locationId, t.number),
+    unique("staff_advances_idempotency_key").on(t.locationId, t.idempotencyKey),
+    unique("staff_advances_reversal_idempotency_key").on(t.locationId, t.reversalIdempotencyKey),
+    unique("staff_advances_journal_entry_key").on(t.journalEntryId),
+    unique("staff_advances_reversal_entry_key").on(t.reversalEntryId),
+    foreignKey({ name: "staff_advances_staff_fk", columns: [t.locationId, t.staffId], foreignColumns: [staffMembers.locationId, staffMembers.id] }),
+    foreignKey({
+      name: "staff_advances_session_fk",
+      columns: [t.locationId, t.cashSessionId],
+      foreignColumns: [cashSessions.locationId, cashSessions.id],
+    }),
+    foreignKey({
+      name: "staff_advances_entry_fk",
+      columns: [t.locationId, t.journalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    foreignKey({
+      name: "staff_advances_reversal_entry_fk",
+      columns: [t.locationId, t.reversalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    check("staff_advances_number_check", sql`${t.number} > 0`),
+    check("staff_advances_amount_check", sql`${t.amount} > 0 and ${wholePesos(t.amount)} and ${t.amount} <= 10000000000000`),
+    check(
+      "staff_advances_paid_from_check",
+      sql`${t.paidFrom} in ('cash','bank') and (${t.paidFrom} = 'cash') = (${t.cashSessionId} is not null)`,
+    ),
+    check("staff_advances_reason_check", reasonCheck(t.reason)),
+    check("staff_advances_status_check", sql`${t.status} in ('active','reversed')`),
+    check(
+      "staff_advances_reversed_check",
+      sql`(${t.status} = 'reversed') = (${t.reversalEntryId} is not null)
+        and (${t.status} = 'reversed') = (${t.reversedAt} is not null)
+        and (${t.status} = 'reversed') = (${t.reversedBy} is not null)
+        and (${t.status} = 'reversed') = (${t.reversalIdempotencyKey} is not null)
+        and (${t.status} = 'reversed') = (${t.reversalRequestHash} is not null)
+        and (${t.status} <> 'reversed' or ${reasonCheck(t.reversalReason)})`,
+    ),
+    check(
+      "staff_advances_hash_check",
+      sql`${hexCheck(t.requestHash)} and (${t.reversalRequestHash} is null or ${hexCheck(t.reversalRequestHash)})`,
+    ),
+    index("staff_advances_staff_idx").on(t.locationId, t.staffId, t.number),
+  ],
+);
+
+/**
+ * Bitácora de auditoría (§8): acciones financieras, de configuración, de personal y exportaciones.
+ * Solo-inserción; la hora la pone la base. Sin datos personales de clientes. Se guarda indefinidamente.
+ */
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    actorUserId: text("actor_user_id").notNull(),
+    actorStaffId: bigint("actor_staff_id", { mode: "bigint" }),
+    action: text("action").notNull(),
+    category: text("category", { enum: AUDIT_CATEGORIES }).notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetRef: text("target_ref"),
+    summary: text("summary").notNull(),
+    changes: jsonb("changes"),
+  },
+  (t) => [
+    foreignKey({
+      name: "audit_events_actor_staff_fk",
+      columns: [t.locationId, t.actorStaffId],
+      foreignColumns: [staffMembers.locationId, staffMembers.id],
+    }),
+    check("audit_events_action_check", sql`${t.action} in (${sql.raw(AUDIT_ACTIONS.map((a) => `'${a}'`).join(","))})`),
+    check(
+      "audit_events_action_category_check",
+      sql`(${t.action}, ${t.category}) in (${sql.raw(AUDIT_ACTIONS.map((a) => `('${a}','${AUDIT_CATEGORY[a]}')`).join(","))})`,
+    ),
+    check("audit_events_category_check", sql`${t.category} in (${sql.raw(AUDIT_CATEGORIES.map((c) => `'${c}'`).join(","))})`),
+    check("audit_events_summary_check", sql`length(${t.summary}) between 1 and 300 and strpos(${t.summary}, chr(10)) = 0 and strpos(${t.summary}, chr(13)) = 0`),
+    check(
+      "audit_events_target_check",
+      sql`length(${t.targetKind}) between 1 and 40 and (${t.targetRef} is null or length(${t.targetRef}) between 1 and 80)`,
+    ),
+    check(
+      "audit_events_changes_check",
+      sql`${t.changes} is null or (jsonb_typeof(${t.changes}) = 'array' and octet_length(${t.changes}::text) <= 4096)`,
+    ),
+    index("audit_events_location_id_idx").on(t.locationId, t.id.desc()),
+    index("audit_events_location_occurred_idx").on(t.locationId, t.occurredAt),
   ],
 );

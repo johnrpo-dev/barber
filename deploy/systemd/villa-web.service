@@ -1,0 +1,64 @@
+# Villa: servidor web (Next.js standalone). Ver docs/despliegue.md.
+# Se instala con deploy/scripts/install-kit.sh, desde la copia de root.
+[Unit]
+Description=Villa web (Next.js)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=villa
+Group=villa
+# /srv/villa/current es un enlace a la versión activa (deploy/scripts/deploy-release.sh).
+WorkingDirectory=/srv/villa/current/.next/standalone
+ExecStart=/usr/bin/node server.js
+# Secretos fuera del repositorio: archivo de root con permisos 0600 (systemd lo lee antes de
+# soltar privilegios; el proceso no puede leer el archivo, solo sus variables).
+EnvironmentFile=/etc/villa/villa.env
+# Requisitos de seguridad (docs/arquitectura.md): producción, y SOLO en 127.0.0.1. Si alguien
+# llegara directo a Next, podría inventarse X-Forwarded-For y saltarse los límites por IP.
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+Environment=NEXT_TELEMETRY_DISABLED=1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+# Caché de Next (ISR/imágenes): el único lugar donde escribe. deploy-release.sh enlaza
+# .next/standalone/.next/cache -> /var/cache/villa/next.
+CacheDirectory=villa
+CacheDirectoryMode=0700
+UMask=0077
+
+# Endurecimiento
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Node (V8) necesita memoria escribible y ejecutable para el JIT: NO se pone MemoryDenyWriteExecute.
+ReadWritePaths=/var/cache/villa
+
+[Install]
+WantedBy=multi-user.target

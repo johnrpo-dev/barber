@@ -2,6 +2,7 @@
 
 import { headers } from "next/headers";
 import { z } from "zod";
+import { auditActor, recordAudit } from "@/db/audit";
 import { db } from "@/db/client";
 import { changeOwnPassword, markReauthenticated, verifyUserPassword } from "@/db/credentials";
 import { clearReservation, releaseAttempt, reserveAttempt, userThrottleSubject } from "@/db/login-throttle";
@@ -17,6 +18,15 @@ import { requireSignedInStaff, requireStaff, type StaffContext } from "@/lib/ses
 // verificar la credencial (src/db/login-throttle.ts).
 
 const conn = () => db() as unknown as Db;
+
+/**
+ * Cambio de seguridad de la propia cuenta en la bitácora. Va después de que el cambio ocurrió (la
+ * contraseña y el TOTP los confirma better-auth en su propia transacción): si esto falla la persona
+ * ve el error, pero no se registra un cambio que no pasó. Sin claves, códigos ni datos personales.
+ */
+async function auditOwnAccount(staff: StaffContext, action: "account.password_change" | "account.two_factor_disable" | "account.backup_codes", summary: string): Promise<void> {
+  await recordAudit(conn(), { ...auditActor(staff), action, targetKind: "staff", targetRef: staff.staffId.toString(), summary });
+}
 
 const passwordSchema = z
   .string()
@@ -35,7 +45,7 @@ export async function changeOwnPasswordAction(raw: unknown): Promise<ActionResul
     const input = changePasswordSchema.parse(raw);
     if (!staff.sessionId) throw new StaffError("Tu sesión terminó. Vuelve a ingresar.");
     // El intento se reserva ANTES de verificar: N peticiones en paralelo no prueban más de 5 claves.
-    const reservation = await reserveAttempt(conn(), [{ subject: userThrottleSubject("password", staff.userId), kind: "password" }]);
+    const reservation = await reserveAttempt(conn(), [{ subject: userThrottleSubject("password", staff.userId), kind: "password", account: { userId: staff.userId } }]);
     let ok: boolean;
     try {
       ok = await changeOwnPassword(conn(), {
@@ -51,6 +61,7 @@ export async function changeOwnPasswordAction(raw: unknown): Promise<ActionResul
     }
     if (!ok) throw new StaffError("La contraseña actual no es correcta.");
     await clearReservation(conn(), reservation);
+    await auditOwnAccount(staff, "account.password_change", "Cambió su contraseña");
     // Acaba de demostrar su contraseña: cuenta como reautenticación, salvo con el TOTP activo (ahí
     // solo confirma el código; la contraseña sola no basta).
     if (!staff.twoFactorEnabled) await markReauthenticated(conn(), { userId: staff.userId, sessionId: staff.sessionId });
@@ -81,7 +92,7 @@ export async function reauthenticateAction(raw: unknown): Promise<ActionResult> 
     if (!staff.twoFactorEnabled && input.method !== "password") {
       throw new StaffError("No tienes la verificación en dos pasos activa. Usa tu contraseña.");
     }
-    const reservation = await reserveAttempt(conn(), [{ subject: userThrottleSubject("reauth", staff.userId), kind: "reauth" }]);
+    const reservation = await reserveAttempt(conn(), [{ subject: userThrottleSubject("reauth", staff.userId), kind: "reauth", account: { userId: staff.userId } }]);
 
     const ok = input.method === "password" ? await verifyUserPassword(conn(), staff.userId, input.password) : await verifyCode(input.method, input.code);
     if (!ok) throw new StaffError(input.method === "password" ? "La contraseña no es correcta." : wrongCodeMessage(input.method));
@@ -124,11 +135,11 @@ const twoFactorChangeSchema = z.object({
  */
 async function confirmPasswordAndCode(staff: StaffContext, input: z.infer<typeof twoFactorChangeSchema>): Promise<void> {
   if (!staff.twoFactorEnabled) throw new StaffError("No tienes la verificación en dos pasos activa.");
-  const password = await reserveAttempt(conn(), [{ subject: userThrottleSubject("password", staff.userId), kind: "password" }]);
+  const password = await reserveAttempt(conn(), [{ subject: userThrottleSubject("password", staff.userId), kind: "password", account: { userId: staff.userId } }]);
   if (!(await verifyUserPassword(conn(), staff.userId, input.password))) throw new StaffError("La contraseña no es correcta.");
   await clearReservation(conn(), password);
   const method = /^[0-9]{6}$/.test(input.code) ? "totp" : "backup";
-  const code = await reserveAttempt(conn(), [{ subject: userThrottleSubject("reauth", staff.userId), kind: "reauth" }]);
+  const code = await reserveAttempt(conn(), [{ subject: userThrottleSubject("reauth", staff.userId), kind: "reauth", account: { userId: staff.userId } }]);
   if (!(await verifyCode(method, input.code))) throw new StaffError(wrongCodeMessage(method));
   await clearReservation(conn(), code);
 }
@@ -141,6 +152,7 @@ export async function regenerateBackupCodesAction(raw: unknown): Promise<ActionR
     await confirmPasswordAndCode(staff, input);
     // Desde el servidor: el hook vuelve a pasar la contraseña por su bloqueo (src/lib/auth.ts).
     const res = await (await auth()).api.generateBackupCodes({ body: { password: input.password }, headers: await headers() });
+    await auditOwnAccount(staff, "account.backup_codes", "Generó códigos de respaldo nuevos");
     return { backupCodes: res.backupCodes };
   });
 }
@@ -152,6 +164,7 @@ export async function disableTwoFactorAction(raw: unknown): Promise<ActionResult
     const input = twoFactorChangeSchema.parse(raw);
     await confirmPasswordAndCode(staff, input);
     await (await auth()).api.disableTwoFactor({ body: { password: input.password }, headers: await headers() });
+    await auditOwnAccount(staff, "account.two_factor_disable", "Desactivó su verificación en dos pasos");
     return undefined;
   });
 }

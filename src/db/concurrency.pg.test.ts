@@ -7,12 +7,14 @@ import { addDays } from "@/domain/booking/clock";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
 import { businessDate } from "@/domain/ledger/business-date";
 import { fromUnits } from "@/domain/money";
-import { closeBusinessDay, closeCashSession, ledgerCash, openCashSession } from "./cash";
-import { postEntry } from "./ledger";
+import { closeBusinessDay, closeCashSession, ledgerCash, openCashSession, payTips } from "./cash";
+import { commissionBalances, previewSettlement, reverseSettlement, type SettlementOptions, settleCommissions } from "./commissions";
+import { postEntry, trialBalance } from "./ledger";
 import { checkout } from "./sales";
-import { chairAppointment, key, setupShop, simpleCheckout, TZ } from "./sales-testing";
+import { chairAppointment, key, quickSale, type Shop, setupShop, simpleCheckout, TZ } from "./sales-testing";
 import * as schema from "./schema";
 import type { Db } from "./types";
+import { decideVoid, requestVoid } from "./voids";
 
 // Concurrencia sobre un PostgreSQL de verdad (M3). PGlite tiene una sola conexión y no puede
 // cruzar transacciones; aquí dos conexiones de postgres.js chocan de verdad bajo SERIALIZABLE.
@@ -124,5 +126,112 @@ describe.skipIf(!url)("concurrencia en PostgreSQL real (TEST_PG_URL)", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason)).toMatch(/1105|quedaría negativo|Failed query/);
     expect(await ledgerCash(a, shop.locationId)).toBe(1_000_000n);
+  });
+
+  // ─── Comisiones (sprint 5): la persona se bloquea primero; en SERIALIZABLE el que pierde repite ───
+
+  const settleOptions = (shop: Shop, over: Partial<SettlementOptions> = {}): SettlementOptions => ({
+    locationId: shop.locationId,
+    staffId: shop.barber,
+    cutoffDate: businessDate(new Date(), TZ),
+    includeTips: true,
+    advanceDeduction: "max",
+    adjustments: [],
+    paidFrom: "bank",
+    note: null,
+    ...over,
+  });
+
+  /** Los tres Σ de §11: lo que dicen las funciones de saldos es lo que dice el libro. */
+  async function expectInvariants(shop: Shop): Promise<void> {
+    const balances = await commissionBalances(a, shop.locationId);
+    const rows = await trialBalance(a, { locationId: shop.locationId });
+    const net = (code: string) => {
+      const r = rows.find((x) => x.code === code);
+      return r ? r.debits - r.credits : 0n;
+    };
+    const sum = (f: (b: (typeof balances)[number]) => bigint) => balances.reduce((acc, b) => acc + f(b), 0n);
+    expect(sum((b) => b.commissionOwed)).toBe(-net(ACCOUNTS.commissionsPayable.code));
+    expect(sum((b) => b.tipsOwed)).toBe(-net(ACCOUNTS.tipsPayable.code));
+    expect(sum((b) => b.receivable)).toBe(net(ACCOUNTS.staffReceivable.code));
+  }
+
+  const FRIENDLY = /liquidaci[oó]n|liquidar|comisi[oó]n|propina|revertid|Abre la caja|anulaci[oó]n/i;
+  const rejectedMessage = (r: PromiseSettledResult<unknown>) => ((r as PromiseRejectedResult).reason as Error).message;
+
+  it("dos liquidaciones de la misma persona con claves distintas: una gana y la otra lo dice", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    await quickSale(a, shop);
+    const options = settleOptions(shop);
+    const { previewToken } = await previewSettlement(a, options);
+    const results = await Promise.allSettled([
+      settleCommissions(a, { ...options, previewToken, idempotencyKey: key("a"), actor: shop.owner }),
+      settleCommissions(b, { ...options, previewToken, idempotencyKey: key("b"), actor: shop.owner }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(rejectedMessage(results.find((r) => r.status === "rejected")!)).toMatch(FRIENDLY);
+    await expectInvariants(shop);
+  });
+
+  it("dos liquidaciones de personas distintas: las dos entran, cada una con su número", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    await quickSale(a, shop);
+    await quickSale(a, { ...shop, barber: shop.barber2, slot: 100 });
+    const one = settleOptions(shop);
+    const two = settleOptions(shop, { staffId: shop.barber2 });
+    const [p1, p2] = [await previewSettlement(a, one), await previewSettlement(a, two)];
+    const results = await Promise.all([
+      settleCommissions(a, { ...one, previewToken: p1.previewToken, idempotencyKey: key("a"), actor: shop.owner }),
+      settleCommissions(b, { ...two, previewToken: p2.previewToken, idempotencyKey: key("b"), actor: shop.owner }),
+    ]);
+    expect(new Set(results.map((r) => r.number.toString())).size).toBe(2);
+    await expectInvariants(shop);
+  });
+
+  it("liquidar contra aprobar una anulación de esa venta: un ganador y los saldos cuadran", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    const { saleId } = await quickSale(a, shop);
+    await quickSale(a, shop);
+    const { requestId } = await requestVoid(a, { locationId: shop.locationId, saleId, reason: "Se cobró dos veces", idempotencyKey: key("void"), actor: shop.reception });
+    const options = settleOptions(shop);
+    const { previewToken } = await previewSettlement(a, options);
+    const [settled, approved] = await Promise.allSettled([
+      settleCommissions(a, { ...options, previewToken, idempotencyKey: key("s"), actor: shop.owner }),
+      decideVoid(b, { locationId: shop.locationId, requestId, approve: true, note: "", idempotencyKey: key("d"), approver: shop.owner }),
+    ]);
+    // La venta estaba excluida por la solicitud pendiente: la anulación siempre puede entrar.
+    expect(approved.status).toBe("fulfilled");
+    if (settled.status === "rejected") expect(settled.reason.message).toMatch(FRIENDLY);
+    await expectInvariants(shop);
+  });
+
+  it("liquidar contra pagar propinas: nunca se paga dos veces la misma propina", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    await openCashSession(a, { locationId: shop.locationId, counted: cop(0n), idempotencyKey: key(), actor: shop.owner });
+    await quickSale(a, shop, { kind: "cash", tip: 5_000n });
+    const options = settleOptions(shop);
+    const { previewToken } = await previewSettlement(a, options);
+    const [settled, paid] = await Promise.allSettled([
+      settleCommissions(a, { ...options, previewToken, idempotencyKey: key("s"), actor: shop.owner }),
+      payTips(b, { locationId: shop.locationId, staffId: shop.barber, amount: cop(5_000n), idempotencyKey: key("t"), actor: shop.owner }),
+    ]);
+    expect([settled, paid].filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(rejectedMessage([settled, paid].find((r) => r.status === "rejected")!)).toMatch(FRIENDLY);
+    await expectInvariants(shop);
+    const [balance] = await commissionBalances(a, shop.locationId, { staffId: shop.barber });
+    expect(balance!.tipsOwed).toBe(0n);
+  });
+
+  it("dos reversas de la misma liquidación con claves distintas: una gana y la otra dice que ya está revertida", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    await quickSale(a, shop);
+    const options = settleOptions(shop);
+    const { previewToken } = await previewSettlement(a, options);
+    const done = await settleCommissions(a, { ...options, previewToken, idempotencyKey: key("s"), actor: shop.owner });
+    const undo = (conn: Db) => reverseSettlement(conn, { locationId: shop.locationId, publicId: done.publicId, reason: "Se liquidó de más", idempotencyKey: key("u"), actor: shop.owner });
+    const results = await Promise.allSettled([undo(a), undo(b)]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(rejectedMessage(results.find((r) => r.status === "rejected")!)).toMatch(/revertida/);
+    await expectInvariants(shop);
   });
 });

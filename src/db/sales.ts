@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { businessDate } from "@/domain/ledger/business-date";
-import { type Money, money } from "@/domain/money";
+import { format, type Money, money } from "@/domain/money";
 import {
   type CheckoutLineInput,
   CheckoutError,
@@ -12,6 +12,7 @@ import {
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { canDiscount, type Role } from "@/domain/staff/roles";
 import { changeStatus } from "./appointments";
+import { recordAudit } from "./audit";
 import { openSession, requireOpenSession } from "./cash";
 import { checkoutRulesOf } from "./checkout-settings";
 import { findOrCreateClient } from "./clients";
@@ -337,6 +338,16 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
         createdBy: cmd.actor.userId,
       });
     }
+    // Sin cliente: la bitácora no guarda datos personales de clientes.
+    await recordAudit(tx, {
+      locationId: cmd.locationId,
+      actorUserId: cmd.actor.userId,
+      actorStaffId: cmd.actor.staffId,
+      action: "sale.checkout",
+      targetKind: "sale",
+      targetRef: publicId,
+      summary: `Cobró una venta de ${format(money(priced.totalDue.minor))}`,
+    });
     return { saleId, created: true };
   });
 }

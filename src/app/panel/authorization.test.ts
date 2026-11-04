@@ -7,8 +7,9 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { changeStatus, createAppointment } from "@/db/appointments";
 import { closeBusinessDay, closeCashSession, ledgerCash, openCashSession, openSession as openCash } from "@/db/cash";
+import { giveAdvance, previewSettlement, reverseSettlement, settleCommissions } from "@/db/commissions";
 import { checkout } from "@/db/sales";
-import { requestVoid } from "@/db/voids";
+import { decideVoid, requestVoid } from "@/db/voids";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
@@ -20,6 +21,8 @@ import type { Db } from "@/db/types";
 import { addDays, localMinuteToInstant } from "@/domain/booking/clock";
 import { businessDate } from "@/domain/ledger/business-date";
 import { format, fromUnits, money } from "@/domain/money";
+import type { AuditAction } from "@/domain/audit/events";
+import { CSV_REPORTS } from "@/domain/reports/csv";
 import type { PaymentKind } from "@/domain/sales/checkout";
 import type { Role } from "@/domain/staff/roles";
 
@@ -43,6 +46,10 @@ vi.mock("next/navigation", () => ({
   redirect: (url: string) => {
     // Igual que Next: un error con digest NEXT_REDIRECT que runAction debe dejar pasar.
     throw Object.assign(new Error(`redirect ${url}`), { url, digest: `NEXT_REDIRECT;replace;${url};307;` });
+  },
+  // Igual que Next: runAction lo deja pasar y la página responde 404.
+  notFound: () => {
+    throw Object.assign(new Error("not found"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
   },
 }));
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
@@ -91,6 +98,13 @@ const cuenta = await import("../cuenta/actions");
 const cobro = await import("./cobro/actions");
 const caja = await import("./caja/actions");
 const anulaciones = await import("./anulaciones/actions");
+const comisiones = await import("./comisiones/actions");
+const comprobantes = await import("./comprobantes/actions");
+const misComisiones = await import("./mis-comisiones/actions");
+const informes = await import("./informes/actions");
+const inicio = await import("./inicio/actions");
+const auditoria = await import("./auditoria/actions");
+const clientes = await import("./clientes/actions");
 const panelRoot = await import("./actions");
 
 const TZ = "America/Bogota";
@@ -214,6 +228,63 @@ async function drawerWithCash(tip = 0n): Promise<void> {
   await seedSale({ kind: "cash", tip });
 }
 
+// ─── Comisiones: estado de partida para cada intento ────────────────────────
+
+/** La entrada de una liquidación por banco de lo pendiente del barbero de la sede A. */
+function settlementInput(staffId = A.users.barber.staffId) {
+  return {
+    staffId: String(staffId),
+    cutoffDate: businessDate(new Date(), TZ),
+    includeTips: true,
+    adjustments: [],
+    paidFrom: "bank" as const,
+  };
+}
+
+const settlementOptions = () => ({
+  locationId: A.location,
+  staffId: A.users.barber.staffId,
+  cutoffDate: businessDate(new Date(), TZ),
+  includeTips: true,
+  advanceDeduction: "max" as const,
+  adjustments: [],
+  paidFrom: "bank" as const,
+  note: null,
+});
+
+/** Algo por liquidar y su token de vista previa. */
+async function pendingSettlement(): Promise<string> {
+  await seedSale();
+  return (await previewSettlement(db, settlementOptions())).previewToken;
+}
+
+/** Una liquidación ya hecha del barbero de la sede A (la última, así que se puede revertir). */
+async function seedSettlement(): Promise<string> {
+  const previewToken = await pendingSettlement();
+  const done = await settleCommissions(db, { ...settlementOptions(), previewToken, idempotencyKey: `seed-settle-${uniq()}`, actor: SEED_ACTOR() });
+  return done.publicId;
+}
+
+/** Un anticipo por banco del barbero de la sede A. */
+/** Un cliente sin citas, solo para suprimirlo. */
+async function seedClient(): Promise<string> {
+  const c = await findOrCreateClient(db, { locationId: A.location, name: `Cliente ${uniq()}`, phone: `31${uniq()}` });
+  return c.id.toString();
+}
+
+async function seedAdvance(): Promise<string> {
+  const done = await giveAdvance(db, {
+    locationId: A.location,
+    staffId: A.users.barber.staffId,
+    amount: fromUnits(1_000n),
+    paidFrom: "bank",
+    reason: "Adelanto de prueba",
+    idempotencyKey: `seed-adv-${uniq()}`,
+    actor: SEED_ACTOR(),
+  });
+  return done.publicId;
+}
+
 /** Un día pasado distinto en cada llamada, para cerrarlo o reabrirlo. */
 const pastDay = () => addDays(businessDate(new Date(), TZ), -10 - Number(uniq()));
 
@@ -291,6 +362,13 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select count(*) from cash_movements where ${loc}::bigint is null or location_id = ${loc}) as cash_movements,
       (select count(*) from expenses where ${loc}::bigint is null or location_id = ${loc}) as expenses,
       (select coalesce(string_agg(id || ':' || status, ',' order by id), '')
+         from commission_settlements where ${loc}::bigint is null or location_id = ${loc}) as settlements,
+      (select coalesce(string_agg(id || ':' || reversed, ',' order by id), '')
+         from commission_settlement_lines where ${loc}::bigint is null or location_id = ${loc}) as settlement_lines,
+      (select coalesce(string_agg(id || ':' || status, ',' order by id), '')
+         from staff_advances where ${loc}::bigint is null or location_id = ${loc}) as advances,
+      (select count(*) from audit_events where ${loc}::bigint is null or location_id = ${loc}) as audit,
+      (select coalesce(string_agg(id || ':' || status, ',' order by id), '')
          from void_requests where ${loc}::bigint is null or location_id = ${loc}) as void_requests,
       (select coalesce(string_agg(id || ':' || label || ':' || fee_bps || ':' || active, ',' order by id), '')
          from payment_methods where ${loc}::bigint is null or location_id = ${loc}) as payment_methods,
@@ -358,6 +436,30 @@ interface Case {
 }
 
 const CASES: Case[] = [
+  {
+    name: "clientes · buscar para suprimir",
+    action: "loadClientsToErase",
+    allowed: ["owner"],
+    prepare: async () => () => clientes.loadClientsToErase("Juan"),
+  },
+  {
+    name: "clientes · vista previa de la supresión",
+    action: "loadClientErasePreview",
+    allowed: ["owner"],
+    prepare: async () => {
+      const clientId = await seedClient();
+      return () => clientes.loadClientErasePreview({ clientId });
+    },
+  },
+  {
+    name: "clientes · suprimir los datos",
+    action: "eraseClientAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const clientId = await seedClient();
+      return () => clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" });
+    },
+  },
   {
     name: "agenda · ver horarios libres",
     action: "loadSlots",
@@ -920,6 +1022,114 @@ const CASES: Case[] = [
         });
     },
   },
+
+  // ─── Comisiones, comprobantes, informes, tablero y bitácora (sprint 5) ──
+  {
+    name: "comisiones · resumen de todos",
+    action: "loadCommissionsOverview",
+    allowed: ["owner"],
+    prepare: async () => () => comisiones.loadCommissionsOverview(),
+  },
+  {
+    name: "comisiones · detalle de una persona",
+    action: "loadStaffCommissions",
+    allowed: ["owner"],
+    prepare: async () => () => comisiones.loadStaffCommissions({ staffId: String(A.users.barber.staffId) }),
+  },
+  {
+    name: "comisiones · vista previa",
+    action: "loadSettlementPreview",
+    allowed: ["owner"],
+    prepare: async () => {
+      await seedSale();
+      return () => comisiones.loadSettlementPreview(settlementInput());
+    },
+  },
+  {
+    name: "comisiones · liquidar",
+    action: "settleCommissionsAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const previewToken = await pendingSettlement();
+      return () => comisiones.settleCommissionsAction({ ...settlementInput(), previewToken, idempotencyKey: `settle-${uniq()}` });
+    },
+  },
+  {
+    name: "comisiones · revertir una liquidación",
+    action: "reverseSettlementAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const publicId = await seedSettlement();
+      return () => comisiones.reverseSettlementAction({ publicId, reason: "Se liquidó de más", idempotencyKey: `undo-${uniq()}` });
+    },
+  },
+  {
+    name: "comisiones · dar un anticipo",
+    action: "giveAdvanceAction",
+    allowed: ["owner"],
+    prepare: async () => () =>
+      comisiones.giveAdvanceAction({
+        staffId: String(A.users.barber.staffId),
+        amountUnits: "1000",
+        paidFrom: "bank",
+        reason: "Adelanto",
+        idempotencyKey: `adv-${uniq()}`,
+      }),
+  },
+  {
+    name: "comisiones · revertir un anticipo",
+    action: "reverseAdvanceAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const publicId = await seedAdvance();
+      return () => comisiones.reverseAdvanceAction({ publicId, reason: "No se entregó", idempotencyKey: `undo-${uniq()}` });
+    },
+  },
+  {
+    name: "comprobantes · el comprobante propio",
+    action: "loadReceipt",
+    allowed: ["owner", "barber"],
+    prepare: async () => {
+      const publicId = await seedSettlement();
+      return () => comprobantes.loadReceipt({ publicId });
+    },
+  },
+  {
+    name: "mis comisiones",
+    action: "loadMyCommissions",
+    allowed: ["owner", "barber"],
+    prepare: async () => () => misComisiones.loadMyCommissions(),
+  },
+  {
+    name: "informes · ver",
+    action: "loadReport",
+    allowed: ["owner"],
+    prepare: async () => {
+      const day = businessDate(new Date(), TZ);
+      return () => informes.loadReport({ from: day, to: day });
+    },
+  },
+  {
+    name: "informes · exportar",
+    action: "exportReportCsvAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const day = businessDate(new Date(), TZ);
+      return () => informes.exportReportCsvAction({ report: "journal", from: day, to: day });
+    },
+  },
+  {
+    name: "tablero del dueño",
+    action: "loadDashboard",
+    allowed: ["owner"],
+    prepare: async () => () => inicio.loadDashboard(),
+  },
+  {
+    name: "bitácora de auditoría",
+    action: "loadAuditLog",
+    allowed: ["owner"],
+    prepare: async () => () => auditoria.loadAuditLog({}),
+  },
 ];
 
 const ROLES: Role[] = ["owner", "reception", "barber"];
@@ -971,6 +1181,13 @@ describe("barbero frente a la cita de otro barbero", () => {
 // ─── Aislamiento entre sedes (IDOR) ──────────────────────────────────────────
 
 const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
+  {
+    name: "suprimir los datos de un cliente",
+    prepare: async () => {
+      const clientId = await seedClient();
+      return () => clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" });
+    },
+  },
   {
     name: "cancelar una cita",
     prepare: async () => {
@@ -1162,6 +1379,43 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     prepare: async () => {
       const id = await flaggedSession();
       return () => caja.markCashSessionReviewedAction({ sessionId: String(id) });
+    },
+  },
+  {
+    name: "ver las comisiones de una persona",
+    prepare: async () => () => comisiones.loadStaffCommissions({ staffId: String(A.users.barber.staffId) }),
+  },
+  {
+    name: "abrir la vista previa de una liquidación",
+    prepare: async () => {
+      await seedSale();
+      return () => comisiones.loadSettlementPreview(settlementInput());
+    },
+  },
+  {
+    name: "liquidar a una persona",
+    prepare: async () => {
+      const previewToken = await pendingSettlement();
+      return () => comisiones.settleCommissionsAction({ ...settlementInput(), previewToken, idempotencyKey: `settle-${uniq()}` });
+    },
+  },
+  {
+    name: "revertir una liquidación",
+    prepare: async () => {
+      const publicId = await seedSettlement();
+      return () => comisiones.reverseSettlementAction({ publicId, reason: "Se liquidó de más", idempotencyKey: `undo-${uniq()}` });
+    },
+  },
+  {
+    name: "dar un anticipo",
+    prepare: async () => () =>
+      comisiones.giveAdvanceAction({ staffId: String(A.users.barber.staffId), amountUnits: "1000", paidFrom: "bank", reason: "Adelanto", idempotencyKey: `adv-${uniq()}` }),
+  },
+  {
+    name: "revertir un anticipo",
+    prepare: async () => {
+      const publicId = await seedAdvance();
+      return () => comisiones.reverseAdvanceAction({ publicId, reason: "No se entregó", idempotencyKey: `undo-${uniq()}` });
     },
   },
 ];
@@ -1381,7 +1635,55 @@ describe("cuenta sin terminar de configurar", () => {
 
 // ─── Conteo a ciegas (sprint 4, MEDIUM-3) ────────────────────────────────────
 
+describe("suprimir datos de un cliente", () => {
+  it("con una sesión vieja pide confirmar identidad y sin escribir SUPRIMIR no hace nada", async () => {
+    const clientId = await seedClient();
+    await signInAs(A.users.owner, { stale: true });
+    expect(await clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" })).toMatchObject({ ok: false, code: "reauth_required" });
+    await signInAs(A.users.owner);
+    expect(await clientes.eraseClientAction({ clientId, confirmation: "si" as never })).toMatchObject({ ok: false });
+    const { rows } = await client.query<{ name: string }>(`select name from clients where id = $1`, [clientId]);
+    expect(rows[0]!.name).not.toBe("Anónimo");
+  });
+
+  it("el evento no lleva el nombre ni el celular", async () => {
+    const clientId = await seedClient();
+    const { rows: before } = await client.query<{ name: string; phone: string }>(`select name, phone_e164 as phone from clients where id = $1`, [clientId]);
+    await signInAs(A.users.owner);
+    expect(await clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" })).toMatchObject({ ok: true });
+    const { rows } = await client.query<{ row: string; target: string }>(`select row(a.*)::text as row, target_ref as target from audit_events a where action = 'client.erase' order by id desc limit 1`);
+    expect(rows[0]!.target).toBe(clientId);
+    expect(rows[0]!.row).not.toContain(before[0]!.name);
+    expect(rows[0]!.row).not.toContain(before[0]!.phone);
+  });
+});
+
 describe("conteo a ciegas", () => {
+  it("recepción no ve el monto de una liquidación ni de un anticipo pagados de la caja", async () => {
+    await drawerWithCash();
+    await drawerWithCash();
+    await giveAdvance(db, {
+      locationId: A.location,
+      staffId: A.users.barber.staffId,
+      amount: fromUnits(1_000n),
+      paidFrom: "cash",
+      reason: "Adelanto de prueba",
+      idempotencyKey: `seed-adv-${uniq()}`,
+      actor: SEED_ACTOR(),
+    });
+    const options = { ...settlementOptions(), paidFrom: "cash" as const, advanceDeduction: fromUnits(0n) };
+    const { previewToken } = await previewSettlement(db, options);
+    await settleCommissions(db, { ...options, previewToken, idempotencyKey: `seed-settle-${uniq()}`, actor: SEED_ACTOR() });
+
+    await signInAs(A.users.reception);
+    const blind = await caja.loadCashView();
+    if (!blind.ok) throw new Error(blind.error);
+    const movements = blind.data.session!.movements;
+    expect(movements.some((m) => m.kind === "commission_payout")).toBe(true);
+    expect(movements.some((m) => m.kind === "staff_advance")).toBe(true);
+    expect(movements.every((m) => m.amountLabel === null)).toBe(true);
+  });
+
   it("con la caja abierta, solo el dueño recibe el esperado, el desglose y los montos de los movimientos", async () => {
     await drawerWithCash();
     await signInAs(A.users.reception);
@@ -1504,6 +1806,13 @@ describe("con el TOTP activo, la contraseña sola no basta", () => {
 /** Los módulos "use server" de src/app que cubre la matriz (ruta relativa a src/app). */
 const STAFF_MODULES: Record<string, Record<string, unknown>> = {
   "panel/actions.ts": panelRoot,
+  "panel/clientes/actions.ts": clientes,
+  "panel/comisiones/actions.ts": comisiones,
+  "panel/comprobantes/actions.ts": comprobantes,
+  "panel/mis-comisiones/actions.ts": misComisiones,
+  "panel/informes/actions.ts": informes,
+  "panel/inicio/actions.ts": inicio,
+  "panel/auditoria/actions.ts": auditoria,
   "panel/agenda/actions.ts": agenda,
   "panel/servicios/actions.ts": servicios,
   "panel/personal/actions.ts": personal,
@@ -1566,5 +1875,285 @@ describe("guarda de completitud", () => {
       const exported = [...source.matchAll(/^export\s+(?:async\s+)?(?:function\*?|const|let)\s+([A-Za-z_$][\w$]*)/gm)].map((m) => m[1]);
       expect(exported.sort(), file).toEqual([...names].sort());
     }
+  });
+});
+
+// ─── Auditoría de lecturas de contactos (Ley 1581, sprint 5) ─────────────────
+
+describe("auditoría de lecturas de contactos", () => {
+  it("buscar clientes con el celular completo deja constancia de quién los vio; recargar no la repite", async () => {
+    const reads = async () =>
+      (
+        await client.query<{ staff: string; context: string; clients: string }>(
+          `select staff_id::text as staff, context, array_to_string(client_ids, ',') as clients from personal_data_reads
+            where location_id = $1 and staff_id = $2 and context = 'client_search' order by id`,
+          [String(A.location), String(A.users.reception.staffId)],
+        )
+      ).rows;
+    // Un cliente propio de esta prueba: otras ya buscaron a "Juan" en esta misma ventana de 10
+    // minutos, y esa lectura no se repite.
+    const seen = await findOrCreateClient(db, { locationId: A.location, name: "Zoila Auditoría", phone: "300 765 4321" });
+    const before = (await reads()).length;
+    await signInAs(A.users.reception);
+    const found = await agenda.findClients("Zoila");
+    expect(found.ok).toBe(true);
+    await agenda.findClients("Zoila");
+    const after = await reads();
+    expect(after.length).toBe(before + 1);
+    expect(after.at(-1)!.clients.split(",")).toEqual([String(seen.id)]);
+  });
+});
+
+// ─── Comprobantes: un 404 igual para todo lo ajeno (sprint 5) ────────────────
+
+const NOT_FOUND = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+
+describe("comprobantes", () => {
+  it("el barbero abre el suyo y recibe 404 con el de otro, igual que si no existiera", async () => {
+    const publicId = await seedSettlement();
+    await signInAs(A.users.barber);
+    expect(await comprobantes.loadReceipt({ publicId })).toMatchObject({ ok: true, data: { kind: "settlement", numberLabel: expect.stringMatching(/^N\.º /) } });
+
+    const other = await personWithSession("barber", A.location);
+    await signInAs(other);
+    await expect(comprobantes.loadReceipt({ publicId })).rejects.toMatchObject(NOT_FOUND);
+    await expect(comprobantes.loadReceipt({ publicId: "no-es-un-ulid" })).rejects.toMatchObject(NOT_FOUND);
+    await expect(comprobantes.loadReceipt({ publicId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" })).rejects.toMatchObject(NOT_FOUND);
+  });
+
+  it("el dueño de otra sede recibe 404 con el comprobante de esta; también con un anticipo", async () => {
+    const settlement = await seedSettlement();
+    const advance = await seedAdvance();
+    await signInAs(B.owner);
+    await expect(comprobantes.loadReceipt({ publicId: settlement })).rejects.toMatchObject(NOT_FOUND);
+    await expect(comprobantes.loadReceipt({ publicId: advance })).rejects.toMatchObject(NOT_FOUND);
+  });
+
+  it("no lleva datos del cliente", async () => {
+    const publicId = await seedSettlement();
+    await signInAs(A.users.owner);
+    expect(JSON.stringify(await comprobantes.loadReceipt({ publicId }))).not.toMatch(/Juan|Pérez|300 123/);
+  });
+});
+
+describe("mis comisiones", () => {
+  it("solo trae lo de quien tiene la sesión, aunque otra persona tenga más pendiente", async () => {
+    await seedAdvance();
+    const other = await personWithSession("barber", A.location);
+    await signInAs(other);
+    expect(await misComisiones.loadMyCommissions()).toMatchObject({ ok: true, data: { pending: { totalMinor: "0", lines: [] }, settlements: [], advances: [], clawbacks: [] } });
+  });
+});
+
+describe("liquidar con una sesión vieja", () => {
+  it("liquidar, revertir y cualquier anticipo piden confirmar identidad", async () => {
+    const previewToken = await pendingSettlement();
+    const settled = await seedSettlementAfterPending();
+    const advance = await seedAdvance();
+    await signInAs(A.users.owner, { stale: true });
+    await cashDrawer(true);
+    await seedSale({ kind: "cash" });
+    const before = await fingerprint();
+    for (const attempt of [
+      () => comisiones.settleCommissionsAction({ ...settlementInput(), previewToken, idempotencyKey: `settle-${uniq()}` }),
+      () => comisiones.reverseSettlementAction({ publicId: settled, reason: "Se liquidó de más", idempotencyKey: `undo-${uniq()}` }),
+      () => comisiones.reverseAdvanceAction({ publicId: advance, reason: "No se entregó", idempotencyKey: `undo-${uniq()}` }),
+      () => comisiones.giveAdvanceAction({ staffId: String(A.users.barber.staffId), amountUnits: "1000", paidFrom: "bank", reason: "Adelanto", idempotencyKey: `adv-${uniq()}` }),
+      () => comisiones.giveAdvanceAction({ staffId: String(A.users.barber.staffId), amountUnits: "1000", paidFrom: "cash", reason: "Adelanto", idempotencyKey: `adv-${uniq()}` }),
+    ]) {
+      expect(await attempt()).toMatchObject({ ok: false, code: "reauth_required" });
+    }
+    expect(await fingerprint()).toBe(before);
+  });
+});
+
+/** Una liquidación ya hecha, sin tocar lo pendiente de otro token (la del caso anterior ya lo calculó). */
+async function seedSettlementAfterPending(): Promise<string> {
+  const previewToken = (await previewSettlement(db, settlementOptions())).previewToken;
+  const done = await settleCommissions(db, { ...settlementOptions(), previewToken, idempotencyKey: `seed-settle-${uniq()}`, actor: SEED_ACTOR() });
+  await seedSale();
+  return done.publicId;
+}
+
+// ─── Exportación CSV ─────────────────────────────────────────────────────────
+
+describe("exportar informes", () => {
+  it("cada informe sale con BOM, punto y coma y su evento de auditoría; las fórmulas no se ejecutan", async () => {
+    await signInAs(A.users.owner);
+    const name = `=HYPERLINK("x") ${uniq()}`;
+    expect(await servicios.createServiceAction({ name, priceUnits: "20000", durationMin: 30, bufferMin: 5, commission: "40", active: true })).toMatchObject({ ok: true });
+    const [created] = await db.select({ id: services.id }).from(services).where(eq(services.name, name));
+    const appointmentId = await chairAppointment();
+    await checkout(db, {
+      locationId: A.location,
+      appointmentId,
+      extras: [{ serviceId: created!.id, staffId: A.users.barber.staffId }],
+      discounts: [],
+      tips: [],
+      payments: [{ methodId: A.methods.card, amount: money((await servicePrice()) + fromUnits(20_000n).minor) }],
+      idempotencyKey: `seed-sale-${uniq()}`,
+      actor: SEED_ACTOR(),
+    });
+    const day = businessDate(new Date(), TZ);
+    for (const report of CSV_REPORTS) {
+      const result = await informes.exportReportCsvAction({ report, from: day, to: day });
+      if (!result.ok) throw new Error(result.error);
+      expect(result.data.filename).toMatch(new RegExp(`^villa-.+-${day}-a-${day}\\.csv$`));
+      expect(result.data.csv.startsWith("\uFEFF")).toBe(true);
+    }
+    const byService = await informes.exportReportCsvAction({ report: "by_service", from: day, to: day });
+    if (!byService.ok) throw new Error(byService.error);
+    expect(byService.data.csv).toContain(`"'=HYPERLINK(""x"") `);
+    expect(byService.data.csv).not.toMatch(/(^|;|\r\n)=/);
+  });
+
+  it("M-2: el nombre de un cliente en un motivo o una nota libre no llega a ningún CSV", async () => {
+    const secret = "Rodrigo Quintero, cel 301 555 0199";
+    await cashDrawer(true);
+    const saleId = await seedSale({ kind: "cash" });
+    const { requestId } = await requestVoid(db, { locationId: A.location, saleId, reason: `Lo pidió ${secret}`, idempotencyKey: `void-${uniq()}`, actor: { userId: "seed" } });
+    await decideVoid(db, { locationId: A.location, requestId, approve: true, note: secret, idempotencyKey: `decide-${uniq()}`, approver: { userId: A.users.owner.id, role: "owner" } });
+    // Una diferencia de caja con nota libre.
+    const counted = money((await ledgerCash(db, A.location)) + 100n);
+    await closeCashSession(db, { locationId: A.location, counted, note: `Sobró, se lo dejó ${secret}`, idempotencyKey: `close-${uniq()}`, actor: { userId: "seed" } });
+    await signInAs(A.users.owner);
+    const day = businessDate(new Date(), TZ);
+    for (const report of CSV_REPORTS) {
+      const result = await informes.exportReportCsvAction({ report, from: day, to: day });
+      if (!result.ok) throw new Error(result.error);
+      expect(result.data.csv, report).not.toContain("Rodrigo");
+      expect(result.data.csv, report).not.toContain("301 555");
+    }
+    const journal = await informes.exportReportCsvAction({ report: "journal", from: day, to: day });
+    expect(journal.ok && journal.data.csv).toContain("Reversa");
+    // La nota sigue en la pantalla de diferencias: solo se quita del archivo.
+    const view = await informes.loadReport({ from: day, to: day });
+    expect(view.ok && view.data.cashDifferences.items.some((i) => i.note?.includes("Rodrigo"))).toBe(true);
+    await cashDrawer(true);
+  });
+
+  it("un periodo inválido no exporta ni deja evento", async () => {
+    await signInAs(A.users.owner);
+    const before = await fingerprint();
+    expect(await informes.exportReportCsvAction({ report: "pnl", from: "2026-01-02", to: "2026-01-01" })).toMatchObject({ ok: false });
+    expect(await fingerprint()).toBe(before);
+  });
+});
+
+// ─── Auditoría: cada escritura deja exactamente un evento (sprint 5) ─────────
+
+/** Toda acción de escritura del dinero, la configuración y el personal, con su evento. */
+const AUDITED: Record<string, AuditAction> = {
+  eraseClientAction: "client.erase",
+  checkoutAction: "sale.checkout",
+  requestVoidAction: "void.request",
+  decideVoidAction: "void.approve",
+  openCashSessionAction: "cash.open",
+  closeCashSessionAction: "cash.close",
+  markCashSessionReviewedAction: "cash.review",
+  addExpenseAction: "expense.add",
+  payTipsAction: "tips.pay",
+  cashDepositAction: "cash.deposit",
+  closeDayAction: "day.close",
+  reopenDayAction: "day.reopen",
+  settleCommissionsAction: "settlement.create",
+  reverseSettlementAction: "settlement.reverse",
+  giveAdvanceAction: "advance.create",
+  reverseAdvanceAction: "advance.reverse",
+  createServiceAction: "service.create",
+  updateServiceAction: "service.update",
+  setServiceActiveAction: "service.active",
+  updateBookingSettingsAction: "settings.booking",
+  updateCheckoutRulesAction: "settings.checkout_rules",
+  savePaymentMethodAction: "payment_method.save",
+  saveExpenseCategoryAction: "expense_category.save",
+  setStaffBookableAction: "staff.bookable",
+  createStaffAction: "staff.create",
+  updateStaffProfileAction: "staff.update",
+  resetStaffPasswordAction: "staff.password_reset",
+  revokeStaffSessionsAction: "staff.sessions_revoke",
+  saveScheduleAction: "schedule.save",
+  exportReportCsvAction: "report.export",
+};
+
+/** Los módulos con historial propio (citas y bloqueos, §8) o de la cuenta de cada quien. */
+const NOT_AUDITED_MODULES = ["panel/actions.ts", "panel/agenda/actions.ts", "panel/bloqueos/actions.ts", "cuenta/actions.ts"];
+const isRead = (name: string) => /^load/.test(name);
+
+describe("cada acción de escritura deja exactamente un evento", () => {
+  it("toda acción de los módulos auditados es una lectura o está en AUDITED", () => {
+    const missing = Object.entries(STAFF_MODULES)
+      .filter(([file]) => !NOT_AUDITED_MODULES.includes(file))
+      .flatMap(([file, m]) =>
+        Object.entries(m)
+          .filter(([name, v]) => typeof v === "function" && !isRead(name) && !(name in AUDITED))
+          .map(([name]) => `${file}: ${name}`),
+      );
+    expect(missing).toEqual([]);
+  });
+
+  const auditCases = CASES.filter((c) => c.action in AUDITED);
+
+  it("hay una prueba para cada acción de AUDITED", () => {
+    expect([...new Set(auditCases.map((c) => c.action))].sort()).toEqual(Object.keys(AUDITED).sort());
+  });
+
+  it.each(auditCases)("$name", async (c) => {
+    const count = async () => {
+      const [row] = (await client.query<{ n: string }>(`select count(*)::text as n from audit_events where action = $1`, [AUDITED[c.action]!])).rows;
+      return Number(row!.n);
+    };
+    const attempt = await c.prepare();
+    const before = await count();
+    const role = c.allowed.includes("owner") ? "owner" : c.allowed[0]!;
+    await signInAs(A.users[role]);
+    const result = await attempt();
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    // decideVoidAction de la matriz puede aprobar o rechazar: se cuenta el evento que corresponda.
+    if (c.action === "decideVoidAction" && (await count()) === before) {
+      const { rows } = await client.query<{ n: string }>(`select count(*)::text as n from audit_events where action = 'void.reject'`);
+      expect(Number(rows[0]!.n)).toBeGreaterThan(0);
+      return;
+    }
+    expect(await count()).toBe(before + 1);
+  });
+
+  it("los cambios de configuración guardan el antes y el después, sin datos sensibles", async () => {
+    await signInAs(A.users.owner);
+    const price = String(40_000 + Number(uniq()));
+    expect(
+      await servicios.updateServiceAction({ serviceId: String(A.service), name: "Corte", priceUnits: price, durationMin: 30, bufferMin: 10, commission: "40", active: true }),
+    ).toMatchObject({ ok: true });
+    const log = await auditoria.loadAuditLog({ category: "configuracion" });
+    if (!log.ok) throw new Error(log.error);
+    const event = log.data.events.find((e) => e.actionLabel && e.changes.some((ch) => ch.field === "Precio"));
+    expect(event?.changes.find((ch) => ch.field === "Precio")?.after).toMatch(/^\$\s/);
+
+    const k = uniq();
+    expect(
+      await personal.createStaffAction({ withAccess: true, name: `Nueva ${k}`, role: "barber", email: `nueva${k}@villa.test`, password: TEMP_PASSWORD }),
+    ).toMatchObject({ ok: true });
+    const { rows } = await client.query<{ row: string }>(`select row(a.*)::text as row from audit_events a where a.action in ('staff.create', 'staff.password_reset')`);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r.row).not.toContain(TEMP_PASSWORD);
+      expect(r.row).not.toContain(PASSWORD);
+      expect(r.row).not.toContain("@villa.test");
+    }
+  });
+
+  it("la bitácora pagina con cursor y no cruza sedes", async () => {
+    await signInAs(B.owner);
+    const other = await auditoria.loadAuditLog({});
+    if (!other.ok) throw new Error(other.error);
+    expect(other.data.events.every((e) => !/Corte$/.test(e.summary))).toBe(true);
+    await signInAs(A.users.owner);
+    const first = await auditoria.loadAuditLog({});
+    if (!first.ok) throw new Error(first.error);
+    expect(first.data.events).toHaveLength(50);
+    expect(first.data.nextCursor).not.toBeNull();
+    const second = await auditoria.loadAuditLog({ before: first.data.nextCursor! });
+    if (!second.ok) throw new Error(second.error);
+    expect(BigInt(second.data.events[0]!.id)).toBeLessThan(BigInt(first.data.nextCursor!));
   });
 });

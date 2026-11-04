@@ -3,6 +3,8 @@ import { BookingError } from "@/domain/booking/appointment";
 import { TransitionError } from "@/domain/booking/status";
 import { InvalidServiceError } from "@/domain/catalog/service";
 import { InvalidClientError } from "@/domain/clients/client";
+import { SettlementError } from "@/domain/commissions/settlement";
+import { ReportError } from "@/domain/reports/period";
 import { CashError } from "@/domain/sales/cash";
 import { CheckoutError } from "@/domain/sales/checkout";
 import { VoidError } from "@/domain/sales/void";
@@ -43,6 +45,8 @@ const BUSINESS_ERRORS = [
   CheckoutError,
   CashError,
   VoidError,
+  SettlementError,
+  ReportError,
 ];
 
 export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {

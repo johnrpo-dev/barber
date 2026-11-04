@@ -88,7 +88,15 @@ export function VoidQueue({ initial, canDecide }: { initial: Queue; canDecide: b
             <TriangleAlert size={20} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
             <div className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
               <p className="font-semibold text-alerta">Atención</p>
-              <p className="text-tinta/80">{warning}</p>
+              {/* Puede traer varios avisos, uno por línea: propina ya pagada y comisión ya liquidada (sprint 5 §3.4). */}
+              {warning
+                .split("\n")
+                .filter((line) => line.trim())
+                .map((line, i) => (
+                  <p key={i} className="text-tinta/80">
+                    {line}
+                  </p>
+                ))}
             </div>
             <Btn variant="ghost" size="sm" className="h-11 w-11 shrink-0 px-0" aria-label="Cerrar aviso" onPress={() => setWarning(null)}>
               <X size={16} aria-hidden />
@@ -224,7 +232,8 @@ function DecideForm({
     <Form onSubmit={onSubmit} validationBehavior="aria" className="flex flex-col gap-4">
       {approve ? (
         <p className="text-sm text-tinta/80">
-          Se registra un asiento de reversa de la venta: se deshacen el ingreso, la comisión y la propina por pagar. Si la propina ya se pagó en efectivo, ese pago no se devuelve.
+          Se registra un asiento de reversa de la venta: se deshacen el ingreso, la comisión y la propina por pagar. Si la propina ya se pagó en efectivo, ese pago no se devuelve. Si la
+          comisión ya se le pagó al barbero en una liquidación, se le descuenta en la próxima.
         </p>
       ) : (
         <p className="text-sm text-tinta/80">La venta queda como está y quien la pidió ve el rechazo con tu nota.</p>

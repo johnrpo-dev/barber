@@ -1,0 +1,115 @@
+# Caddy delante de Villa (docs/despliegue.md). Copiar a /etc/caddy/Caddyfile y cambiar:
+#   reservas.TU-DOMINIO.co  → el dominio real (registro A/AAAA apuntando al VPS)
+#   tu-correo@ejemplo.com   → correo para avisos de Let's Encrypt
+# Validar: sudo caddy validate --config /etc/caddy/Caddyfile
+# La primera vez, o si cambias la línea "admin": sudo systemctl restart caddy.
+# Después, para otros cambios: sudo systemctl reload caddy.
+{
+	email tu-correo@ejemplo.com
+
+	# API de administración por socket, no por TCP: ningún proceso local (ni un SSRF desde la app)
+	# puede cambiar la configuración de Caddy. La carpeta la crea deploy/caddy/caddy-runtime.conf.
+	admin unix//run/caddy/admin.sock|0600
+
+	# Registro general de Caddy (incluye http.log.error): también trae la petición, así que lleva
+	# los mismos filtros que el registro de acceso.
+	log {
+		format filter {
+			wrap console
+			fields {
+				request>uri regexp "(?i)(/cita/)[^/?]+|[?].*$" "$1"
+				request>remote_ip ip_mask 24 48
+				request>client_ip ip_mask 24 48
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>Referer delete
+				request>headers>X-Forwarded-For delete
+				request>headers>Cf-Connecting-Ip delete
+			}
+		}
+	}
+
+	servers {
+		# ── Solo si pones Cloudflare (nube naranja) delante ──────────────────────────────
+		# Rangos de https://www.cloudflare.com/ips/ (revisarlos cada tanto). Con esto Caddy toma la
+		# IP real de CF-Connecting-IP SOLO si la conexión viene de Cloudflare. Sin Cloudflare,
+		# deja estas dos líneas comentadas.
+		# trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		# client_ip_headers CF-Connecting-IP
+	}
+}
+
+reservas.TU-DOMINIO.co {
+	# TLS automático (Let's Encrypt). Con Cloudflare: SSL/TLS en "Full (strict)".
+
+	encode zstd gzip
+
+	# Las rutas de /api reciben poco (reportes CSP, ingreso): nadie sube 1 GB para agotar la memoria.
+	request_body /api/* {
+		max_size 64KB
+	}
+
+	header {
+		# Caddy manda la última palabra en estas (defer): Next ya pone la mayoría.
+		defer
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		-Server
+		-X-Powered-By
+	}
+
+	# Estáticos con hash en el nombre: caché de un año.
+	@static path /_next/static/*
+	header @static Cache-Control "public, max-age=31536000, immutable"
+
+	# La página de gestión de una cita lleva un token que permite cancelar y reprogramar: nunca se
+	# guarda en cachés intermedias ni se manda como referer.
+	@cita path /cita/*
+	header @cita {
+		Cache-Control "no-store"
+		Referrer-Policy "no-referrer"
+		X-Robots-Tag "noindex, nofollow"
+	}
+
+	reverse_proxy 127.0.0.1:3000 {
+		# La app toma la IP del cliente de X-Forwarded-For (primer salto que no es 127.0.0.1).
+		# Se REEMPLAZA con la IP que Caddy ya validó ({client_ip}: la del socket o, detrás de
+		# Cloudflare, la de CF-Connecting-IP solo si vino de sus rangos). Así nadie la inventa.
+		header_up X-Forwarded-For {client_ip}
+		header_up -CF-Connecting-IP
+	}
+
+	log {
+		output file /var/log/caddy/villa-access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+		format filter {
+			wrap json
+			fields {
+				# Una sola expresión con el filtro regexp: borra el token de /cita/<token> en cualquier
+				# parte de la ruta, y la consulta (correos, celulares). /cita/abc?x=1 queda /cita/.
+				request>uri regexp "(?i)(/cita/)[^/?]+|[?].*$" "$1"
+				# IP recortada (Ley 1581: minimización). El diagnóstico de abuso usa los contadores de la app.
+				request>remote_ip ip_mask 24 48
+				request>client_ip ip_mask 24 48
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>headers>Referer delete
+				request>headers>X-Forwarded-For delete
+				request>headers>Cf-Connecting-Ip delete
+				resp_headers>Set-Cookie delete
+			}
+		}
+	}
+}
+
+# Sin "www": redirige al dominio principal (opcional; requiere el registro DNS de www).
+# www.reservas.TU-DOMINIO.co {
+# 	redir https://reservas.TU-DOMINIO.co{uri} permanent
+# }

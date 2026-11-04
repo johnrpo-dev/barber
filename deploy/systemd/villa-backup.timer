@@ -1,0 +1,12 @@
+# Todos los días a las 02:30 (hora del VPS; ponlo en America/Bogota con timedatectl), antes del
+# mantenimiento del worker (03:00). Persistent: si el VPS estaba apagado, corre al encender.
+[Unit]
+Description=Villa: backup diario
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

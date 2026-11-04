@@ -1,6 +1,7 @@
 import { dayAgenda, locationRules } from "@/db/appointments";
 import { listServices } from "@/db/catalog";
 import { db } from "@/db/client";
+import { recordContactReads } from "@/db/privacy";
 import type { Db } from "@/db/types";
 import { addDays, isDateString, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { type AppointmentStatus, availableTransitions } from "@/domain/booking/status";
@@ -98,6 +99,12 @@ export async function loadAgenda(
     dayAgenda(database, { locationId: staff.locationId, date, staffId: manageAll && !options.ownOnly ? undefined : staff.staffId }),
     listServices(database, { locationId: staff.locationId }),
   ]);
+
+  // Ley 1581: queda constancia de quién vio el celular completo de qué clientes (src/db/privacy.ts).
+  if (seeContact) {
+    const shown = agenda.appointments.flatMap((a) => (a.clientPhone && a.clientId !== null ? [a.clientId] : []));
+    await recordContactReads(database, { locationId: staff.locationId, staffId: staff.staffId, context: "agenda_day", clientIds: shown, now });
+  }
 
   const dayStart = localMinuteToInstant(date, 0, rules.timeZone).getTime();
   const dayEnd = localMinuteToInstant(addDays(date, 1), 0, rules.timeZone).getTime();

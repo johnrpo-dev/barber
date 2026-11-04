@@ -18,6 +18,7 @@ import { addDays, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock
 import { localParts } from "@/domain/booking/public-labels";
 import { businessDate } from "@/domain/ledger/business-date";
 import { fromUnits } from "@/domain/money";
+import { newHoldId, readHoldCookie, signHoldId } from "@/domain/security/hold-cookie";
 import { MemoryNotifier } from "@/lib/notify/memory";
 import { ipBucketKey } from "@/lib/client-ip";
 import { bucketHash, DEV_ONLY_MANAGE_LINK_SECRET, DEV_ONLY_OTP_PEPPER } from "@/lib/public-readiness";
@@ -312,6 +313,29 @@ const CASES: Case[] = [
       const [row] = await db.select({ name: clients.name }).from(clients).where(eq(clients.phoneE164, e164(existing)));
       expect(row!.name).toBe("Pedro Original");
       expect(state.cookieOptions).toMatchObject({ httpOnly: true, sameSite: "strict", path: "/reservar" });
+    },
+  },
+  {
+    action: "startBooking",
+    name: "villa_hold va firmada; una plantada sin retención viva se reemplaza (sprint 5)",
+    run: async () => {
+      newIp();
+      newBrowser();
+      // Valor firmado con la llave real pero sin retención viva (p. ej. sacado de otro navegador).
+      const planted = signHoldId(DEV_ONLY_OTP_PEPPER, newHoldId());
+      state.jar.set("villa_hold", planted);
+      const phone = newPhone();
+      expect((await actions.startBooking(startInput(phone))).ok).toBe(true);
+      const issued = state.jar.get("villa_hold")!;
+      expect(issued).not.toBe(planted);
+      expect(readHoldCookie(DEV_ONLY_OTP_PEPPER, issued)).not.toBeNull();
+      // Con retención viva, el mismo navegador conserva su cookie al pedir otra reserva.
+      expect((await actions.startBooking(startInput(newPhone()))).ok).toBe(true);
+      expect(state.jar.get("villa_hold")).toBe(issued);
+      // Una firma alterada no sirve para verificar.
+      const code = notifier.lastCode(e164(phone))!;
+      state.jar.set("villa_hold", `${issued.slice(0, -1)}${issued.endsWith("A") ? "B" : "A"}`);
+      expect(await actions.verifyCode({ code })).toEqual({ ok: false, error: PUBLIC_MESSAGES.holdExpired });
     },
   },
   {

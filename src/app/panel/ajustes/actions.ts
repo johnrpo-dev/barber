@@ -3,6 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import {
+  auditActor,
+  bookingSettingsSnapshot,
+  checkoutRulesSnapshot,
+  expenseCategorySnapshot,
+  paymentMethodSnapshot,
+  recordConfigChange,
+  staffSnapshot,
+} from "@/db/audit";
+import {
   checkoutRulesOf,
   listExpenseCategories,
   listPaymentMethods,
@@ -12,7 +21,9 @@ import {
 } from "@/db/checkout-settings";
 import { db } from "@/db/client";
 import { setStaffBookableOnline, updateLocationSettings } from "@/db/locations";
+import { StaffError } from "@/db/staff";
 import type { Db } from "@/db/types";
+import { AUDIT_FIELDS } from "@/domain/audit/events";
 import { InvalidClientError, normalizePhone } from "@/domain/clients/client";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { bpsSchema, unitsSchema } from "@/lib/action-schemas";
@@ -62,7 +73,20 @@ export async function updateBookingSettingsAction(raw: unknown): Promise<ActionR
     if (input.publicBookingEnabled && !publicPhone && !input.address) {
       throw new InvalidClientError("Para abrir la reserva en línea, escribe al menos el teléfono o la dirección de la sede");
     }
-    await updateLocationSettings(conn(), staff.locationId, { ...input, publicPhone });
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = await bookingSettingsSnapshot(t, staff.locationId);
+      await updateLocationSettings(t, staff.locationId, { ...input, publicPhone });
+      const after = await bookingSettingsSnapshot(t, staff.locationId);
+      // El teléfono público nunca entra a la bitácora: no está en la lista blanca.
+      await recordConfigChange(
+        t,
+        { ...auditActor(staff), action: "settings.booking", targetKind: "location", targetRef: staff.locationId.toString(), summary: "Cambió los ajustes de la reserva en línea" },
+        before,
+        after,
+        AUDIT_FIELDS.bookingSettings,
+      );
+    });
     revalidatePath("/panel/ajustes");
     revalidatePath("/", "layout");
     return undefined;
@@ -75,7 +99,25 @@ export async function setStaffBookableAction(raw: unknown): Promise<ActionResult
   return runAction(async () => {
     const staff = await requirePermission("settings.manage");
     const input = bookableSchema.parse(raw);
-    await setStaffBookableOnline(conn(), { locationId: staff.locationId, staffId: input.staffId, bookable: input.bookable });
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = await staffSnapshot(t, staff.locationId, input.staffId);
+      if (!before) throw new StaffError("La persona no existe en esta sede");
+      await setStaffBookableOnline(t, { locationId: staff.locationId, staffId: input.staffId, bookable: input.bookable });
+      await recordConfigChange(
+        t,
+        {
+          ...auditActor(staff),
+          action: "staff.bookable",
+          targetKind: "staff",
+          targetRef: input.staffId.toString(),
+          summary: `${input.bookable ? "Abrió" : "Cerró"} la reserva en línea de ${String(before.displayName)}`,
+        },
+        before,
+        { ...before, bookableOnline: input.bookable },
+        AUDIT_FIELDS.staff,
+      );
+    });
     revalidatePath("/panel/ajustes");
     return undefined;
   });
@@ -133,7 +175,26 @@ export async function savePaymentMethodAction(raw: z.input<typeof methodSchema>)
     // Cambia cuánto se descuenta de cada cobro: confirmar identidad.
     requireRecentAuth(staff);
     const input = methodSchema.parse(raw);
-    const id = await savePaymentMethod(conn(), { ...input, locationId: staff.locationId });
+    const id = await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = input.id === undefined ? null : await paymentMethodSnapshot(t, staff.locationId, input.id);
+      const saved = await savePaymentMethod(t, { ...input, locationId: staff.locationId });
+      const after = await paymentMethodSnapshot(t, staff.locationId, saved);
+      await recordConfigChange(
+        t,
+        {
+          ...auditActor(staff),
+          action: "payment_method.save",
+          targetKind: "payment_method",
+          targetRef: saved.toString(),
+          summary: `${before ? "Cambió" : "Creó"} el medio de pago ${input.label.trim()}`,
+        },
+        before ?? {},
+        after!,
+        AUDIT_FIELDS.paymentMethod,
+      );
+      return saved;
+    });
     revalidatePath("/panel/ajustes");
     return { id: id.toString() };
   });
@@ -152,7 +213,26 @@ export async function saveExpenseCategoryAction(raw: z.input<typeof categorySche
     // Decide a qué cuenta del libro van los gastos: confirmar identidad.
     requireRecentAuth(staff);
     const input = categorySchema.parse(raw);
-    const id = await saveExpenseCategory(conn(), { ...input, locationId: staff.locationId });
+    const id = await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = input.id === undefined ? null : await expenseCategorySnapshot(t, staff.locationId, input.id);
+      const saved = await saveExpenseCategory(t, { ...input, locationId: staff.locationId });
+      const after = await expenseCategorySnapshot(t, staff.locationId, saved);
+      await recordConfigChange(
+        t,
+        {
+          ...auditActor(staff),
+          action: "expense_category.save",
+          targetKind: "expense_category",
+          targetRef: saved.toString(),
+          summary: `${before ? "Cambió" : "Creó"} la categoría de gasto ${input.name.trim()}`,
+        },
+        before ?? {},
+        after!,
+        AUDIT_FIELDS.expenseCategory,
+      );
+      return saved;
+    });
     revalidatePath("/panel/ajustes");
     revalidatePath("/panel/caja");
     return { id: id.toString() };
@@ -175,7 +255,19 @@ export async function updateCheckoutRulesAction(raw: z.input<typeof rulesSchema>
     requireRecentAuth(staff);
     const input = rulesSchema.parse(raw);
     const { cashReviewThresholdUnits, ...rules } = input;
-    await updateCheckoutRules(conn(), staff.locationId, { ...rules, cashReviewThreshold: cashReviewThresholdUnits });
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const before = await checkoutRulesSnapshot(t, staff.locationId);
+      await updateCheckoutRules(t, staff.locationId, { ...rules, cashReviewThreshold: cashReviewThresholdUnits });
+      const after = await checkoutRulesSnapshot(t, staff.locationId);
+      await recordConfigChange(
+        t,
+        { ...auditActor(staff), action: "settings.checkout_rules", targetKind: "location", targetRef: staff.locationId.toString(), summary: "Cambió las reglas de cobro" },
+        before,
+        after,
+        AUDIT_FIELDS.checkoutRules,
+      );
+    });
     revalidatePath("/panel/ajustes");
     return undefined;
   });

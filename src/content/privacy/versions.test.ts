@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { PII_RETENTION_DAYS, READ_AUDIT_RETENTION_DAYS } from "@/domain/clients/retention";
 import { CURRENT_PRIVACY, CURRENT_PRIVACY_VERSION, PRIVACY_VERSIONS, privacyVersion } from "./versions";
 
 /** SHA-256 de JSON.stringify de cada versión publicada. Solo se AGREGAN líneas. */
 const FROZEN: Record<string, string> = {
   "2026-11-01": "3fffb583876d66b7785506b89cc926028547f7a4fe94ac15a761ea027d26cf65",
+  "2026-11-02": "cff2321f7abb0ea1e7cb13bda0257b9ef43602d86acd7df2a40a5c0cbae5db92",
+  "2026-11-03": "a6f50ef64b79c2545a3baa8ed85365715ca8bc1a8a16f3775cd31ece8947131b",
 };
 
 describe("política de privacidad versionada", () => {
@@ -50,5 +53,11 @@ describe("política de privacidad versionada", () => {
     const published = new Set(PRIVACY_VERSIONS.map((v) => v.version));
     fc.assert(fc.property(fc.string(), (v) => (privacyVersion(v) !== undefined) === published.has(v)));
     expect(privacyVersion(CURRENT_PRIVACY_VERSION)).toBe(CURRENT_PRIVACY);
+  });
+
+  it("la vigente dice cuánto se guardan los restos de la reserva y el registro de consultas (sprint 5)", () => {
+    const keep = CURRENT_PRIVACY.sections.find((sec) => sec.id === "conservacion")!.paragraphs.join(" ");
+    expect(keep).toContain(`a los ${PII_RETENTION_DAYS} días`);
+    expect(keep).toContain(`a los ${READ_AUDIT_RETENTION_DAYS} días`);
   });
 });

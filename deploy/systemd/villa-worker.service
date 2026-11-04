@@ -1,0 +1,54 @@
+# Villa: worker de pg-boss (vencer retenciones, avisos, avisos de seguridad, mantenimiento diario
+# con la purga de datos personales). Ver docs/despliegue.md.
+[Unit]
+Description=Villa worker (pg-boss)
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=villa
+Group=villa
+WorkingDirectory=/srv/villa/current
+# tsx (dependencia del proyecto) carga TypeScript y los alias de tsconfig ("@/...").
+ExecStart=/srv/villa/current/node_modules/.bin/tsx src/worker/index.ts
+# Los mismos secretos de la app, más QUEUE_DATABASE_URL (rol villa_queue) en un archivo aparte
+# que el servidor web no recibe. Ambos 0600 de root.
+EnvironmentFile=/etc/villa/villa.env
+EnvironmentFile=/etc/villa/worker.env
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+# Endurecimiento (tsx escribe su caché en /tmp, que es privado)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Sin ReadWritePaths: el worker no escribe en disco (solo /tmp privado).
+
+[Install]
+WantedBy=multi-user.target

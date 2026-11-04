@@ -8,6 +8,7 @@ import {
   lockedMessage,
 } from "@/domain/security/lockout";
 import { loginThrottles, twoFactor, user } from "./schema";
+import { enqueueLockAlert, type LockAccount } from "./security-alerts";
 import type { Db } from "./types";
 
 // Bloqueo por cuenta tras intentos fallidos, guardado en Postgres (sobrevive a reinicios y vale
@@ -36,6 +37,11 @@ export interface ThrottleTarget {
   subject: string;
   kind: ThrottleKind;
   policy?: LockoutPolicy;
+  /**
+   * De quién es el intento, para el aviso al dueño si se dispara el bloqueo (sprint 5). El correo
+   * solo sirve para buscar la cuenta del personal; nunca se guarda.
+   */
+  account?: LockAccount;
 }
 
 /** Intento reservado: se cierra con clearFailures/releaseAttempt según cómo terminó. */
@@ -120,10 +126,14 @@ export async function reserveAttempt(db: Db, targets: readonly ThrottleTarget[],
         .insert(loginThrottles)
         .values({ subject: target.subject, failures, lastFailureAt: now, lockedUntil })
         .onConflictDoUpdate({ target: loginThrottles.subject, set: { failures, lastFailureAt: now, lockedUntil } });
-      if (ms > 0) fired.push({ kind: target.kind, failures, minutes: Math.ceil(ms / 60_000) });
+      if (ms > 0) {
+        fired.push({ kind: target.kind, failures, minutes: Math.ceil(ms / 60_000) });
+        // Aviso al dueño en la misma transacción: si el bloqueo queda, el aviso también.
+        await enqueueLockAlert(t, { kind: target.kind, account: target.account, failures, lockedUntil: lockedUntil!, now });
+      }
     }
   });
-  // Sin datos personales: ni correo, ni IP, ni sujeto. El aviso al dueño llega en el sprint 5.
+  // Sin datos personales: ni correo, ni IP, ni sujeto. El aviso al dueño va por security_alerts.
   for (const f of fired) console.warn("[seguridad] bloqueo por intentos fallidos", f);
   return { targets };
 }

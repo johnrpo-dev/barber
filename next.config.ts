@@ -3,8 +3,10 @@ import type { NextConfig } from "next";
 const isProd = process.env.NODE_ENV === "production";
 
 // Cabeceras de seguridad para todas las rutas (docs/00-descubrimiento.md §9, P0 #1).
-// La CSP de scripts con nonce llega aparte; esta ya cierra el enmarcado (clickjacking),
-// las bases y formularios hacia otros dominios y los plugins.
+// La CSP de scripts con nonce la pone src/proxy.ts en cada página (src/lib/csp.ts), primero en modo
+// reporte. Esta otra ya bloquea, también en /api y en los estáticos: cierra el enmarcado
+// (clickjacking), las bases y formularios hacia otros dominios y los plugins. Con CSP_ENFORCE=true,
+// en las páginas la reemplaza la del proxy, que trae estas mismas directivas.
 const securityHeaders = [
   {
     key: "Content-Security-Policy",

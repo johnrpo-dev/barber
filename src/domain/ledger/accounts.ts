@@ -15,6 +15,8 @@ export interface AccountDefinition {
 export const ACCOUNTS = {
   cash: { code: "1105", name: "Caja (efectivo)", type: "asset" },
   bank: { code: "1110", name: "Bancos y billeteras (tarjeta, transferencia)", type: "asset" },
+  // Anticipos a barberos y lo que quedan debiendo tras una liquidación (sprint 5) [confirmar código con el contador: 1365 o 1330].
+  staffReceivable: { code: "1365", name: "Cuentas por cobrar a trabajadores (anticipos)", type: "asset" },
   commissionsPayable: { code: "2335", name: "Comisiones por pagar a barberos", type: "liability" },
   tipsPayable: { code: "2380", name: "Propinas por pagar a barberos", type: "liability" },
   ownerEquity: { code: "3105", name: "Capital del dueño", type: "equity" },

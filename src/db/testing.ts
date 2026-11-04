@@ -20,6 +20,8 @@ export async function createTestDb(
      * sprint 4) o "app" (la instalación vieja, para la prueba de regresión de HIGH-1).
      */
     pgbossOwner?: "queue" | "app";
+    /** Con role: "app", deja la sesión como administrador: revisa los permisos desde afuera. */
+    keepAdminSession?: boolean;
   } = {},
 ): Promise<{ db: Db; client: PGlite }> {
   const client = new PGlite({ extensions: { btree_gist } });
@@ -31,7 +33,7 @@ export async function createTestDb(
     await migrate(db, { migrationsFolder });
     await client.exec(`RESET ROLE; CREATE SCHEMA pgboss AUTHORIZATION ${opts.pgbossOwner === "app" ? "villa_app" : "villa_queue"}`);
     // SESSION AUTHORIZATION y no SET ROLE: como en el VPS, la sesión ES villa_app y no puede volver atrás.
-    await client.exec("RESET ROLE; SET SESSION AUTHORIZATION villa_app");
+    if (!opts.keepAdminSession) await client.exec("RESET ROLE; SET SESSION AUTHORIZATION villa_app");
   } else {
     await migrate(db, { migrationsFolder });
   }
