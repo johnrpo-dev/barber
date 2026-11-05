@@ -120,6 +120,13 @@
       "when": 1793853691779,
       "tag": "0016_client_devices",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793856624450,
+      "tag": "0017_client_devices_no_revive",
+      "breakpoints": true
     }
   ]
 }

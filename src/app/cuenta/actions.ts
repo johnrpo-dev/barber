@@ -2,14 +2,14 @@
 
 import { headers } from "next/headers";
 import { z } from "zod";
-import { auditActor, recordAudit } from "@/db/audit";
+import { type AuditEventInput, auditActor } from "@/db/audit";
 import { db } from "@/db/client";
-import { changeOwnPassword, markReauthenticated, verifyUserPassword } from "@/db/credentials";
+import { changeOwnPassword, disableOwnTwoFactor, markReauthenticated, replaceBackupCodes, verifyUserPassword } from "@/db/credentials";
 import { clearReservation, releaseAttempt, reserveAttempt, userThrottleSubject } from "@/db/login-throttle";
 import { StaffError } from "@/db/staff";
 import type { Db } from "@/db/types";
 import { type ActionResult, runAction } from "@/lib/action";
-import { auth, MIN_PASSWORD_LENGTH } from "@/lib/auth";
+import { auth, authSecret, MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { requireSignedInStaff, requireStaff, type StaffContext } from "@/lib/session";
 
 // Cuenta propia: cambiar la contraseña (también la temporal del primer ingreso) y confirmar
@@ -20,12 +20,12 @@ import { requireSignedInStaff, requireStaff, type StaffContext } from "@/lib/ses
 const conn = () => db() as unknown as Db;
 
 /**
- * Cambio de seguridad de la propia cuenta en la bitácora. Va después de que el cambio ocurrió (la
- * contraseña y el TOTP los confirma better-auth en su propia transacción): si esto falla la persona
- * ve el error, pero no se registra un cambio que no pasó. Sin claves, códigos ni datos personales.
+ * Evento de bitácora de un cambio de seguridad de la propia cuenta. Se escribe en la MISMA
+ * transacción del cambio (src/db/credentials.ts, L11): no queda un cambio sin evento ni un evento
+ * sin cambio. Sin claves, códigos ni datos personales.
  */
-async function auditOwnAccount(staff: StaffContext, action: "account.password_change" | "account.two_factor_disable" | "account.backup_codes", summary: string): Promise<void> {
-  await recordAudit(conn(), { ...auditActor(staff), action, targetKind: "staff", targetRef: staff.staffId.toString(), summary });
+function ownAccountEvent(staff: StaffContext, action: "account.password_change" | "account.two_factor_disable" | "account.backup_codes", summary: string): AuditEventInput {
+  return { ...auditActor(staff), action, targetKind: "staff", targetRef: staff.staffId.toString(), summary };
 }
 
 const passwordSchema = z
@@ -53,6 +53,7 @@ export async function changeOwnPasswordAction(raw: unknown): Promise<ActionResul
         sessionId: staff.sessionId,
         currentPassword: input.currentPassword,
         newPassword: input.newPassword,
+        audit: ownAccountEvent(staff, "account.password_change", "Cambió su contraseña"),
       });
     } catch (err) {
       // La nueva no sirve (igual a la actual): no se probó ninguna contraseña, el intento se devuelve.
@@ -61,7 +62,6 @@ export async function changeOwnPasswordAction(raw: unknown): Promise<ActionResul
     }
     if (!ok) throw new StaffError("La contraseña actual no es correcta.");
     await clearReservation(conn(), reservation);
-    await auditOwnAccount(staff, "account.password_change", "Cambió su contraseña");
     // Acaba de demostrar su contraseña: cuenta como reautenticación, salvo con el TOTP activo (ahí
     // solo confirma el código; la contraseña sola no basta).
     if (!staff.twoFactorEnabled) await markReauthenticated(conn(), { userId: staff.userId, sessionId: staff.sessionId });
@@ -150,10 +150,13 @@ export async function regenerateBackupCodesAction(raw: unknown): Promise<ActionR
     const staff = await requireStaff();
     const input = twoFactorChangeSchema.parse(raw);
     await confirmPasswordAndCode(staff, input);
-    // Desde el servidor: el hook vuelve a pasar la contraseña por su bloqueo (src/lib/auth.ts).
-    const res = await (await auth()).api.generateBackupCodes({ body: { password: input.password }, headers: await headers() });
-    await auditOwnAccount(staff, "account.backup_codes", "Generó códigos de respaldo nuevos");
-    return { backupCodes: res.backupCodes };
+    // Contraseña y código ya verificados (con su bloqueo). Los códigos y su evento, en una transacción.
+    const backupCodes = await replaceBackupCodes(conn(), {
+      userId: staff.userId,
+      secret: authSecret(),
+      audit: ownAccountEvent(staff, "account.backup_codes", "Generó códigos de respaldo nuevos"),
+    });
+    return { backupCodes };
   });
 }
 
@@ -163,8 +166,10 @@ export async function disableTwoFactorAction(raw: unknown): Promise<ActionResult
     const staff = await requireStaff();
     const input = twoFactorChangeSchema.parse(raw);
     await confirmPasswordAndCode(staff, input);
-    await (await auth()).api.disableTwoFactor({ body: { password: input.password }, headers: await headers() });
-    await auditOwnAccount(staff, "account.two_factor_disable", "Desactivó su verificación en dos pasos");
+    await disableOwnTwoFactor(conn(), {
+      userId: staff.userId,
+      audit: ownAccountEvent(staff, "account.two_factor_disable", "Desactivó su verificación en dos pasos"),
+    });
     return undefined;
   });
 }

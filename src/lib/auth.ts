@@ -315,6 +315,11 @@ const authEnvSchema = z.object({
 
 let cached: Auth | undefined;
 
+/** Secreto de better-auth: con él se cifran los códigos de respaldo que la app genera (src/db/credentials.ts). */
+export function authSecret(): string {
+  return authEnvSchema.parse(process.env).BETTER_AUTH_SECRET;
+}
+
 /** Instancia de la app. Perezosa para que `next build` no exija las variables de entorno. */
 export async function auth(): Promise<Auth> {
   if (!cached) {

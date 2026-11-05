@@ -1,9 +1,10 @@
 import type { PGlite } from "@electric-sql/pglite";
-import { eq, like } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { symmetricDecrypt } from "better-auth/crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { disableOwnTwoFactor, replaceBackupCodes } from "@/db/credentials";
 import { createLocation } from "@/db/ledger";
-import { loginThrottles, rateLimitCounters, session, twoFactor, user } from "@/db/schema";
+import { auditEvents, loginThrottles, rateLimitCounters, session, twoFactor, user } from "@/db/schema";
 import { createStaffUser } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import type { Db } from "@/db/types";
@@ -396,5 +397,58 @@ describe("vida máxima absoluta de la sesión (sprint 5)", () => {
     // Vencida, ya no hay sesión.
     await db.update(session).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(session.id, row!.id));
     expect(await auth().api.getSession({ headers: cookies })).toBeNull();
+  });
+});
+
+describe("cambios del TOTP con su evento en una transacción (L11)", () => {
+  const event = (userId: string, action: "account.two_factor_disable" | "account.backup_codes", loc = locationId) => ({
+    locationId: loc,
+    actorUserId: userId,
+    action,
+    targetKind: "staff",
+    targetRef: null,
+    summary: action === "account.backup_codes" ? "Generó códigos de respaldo nuevos" : "Desactivó su verificación en dos pasos",
+  });
+  const eventsOf = async (userId: string, action: string) =>
+    (await db.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.actorUserId, userId), eq(auditEvents.action, action)))).length;
+
+  it("los códigos de respaldo nuevos los acepta better-auth y los viejos dejan de servir", { timeout: 120_000 }, async () => {
+    const { email, userId } = await owner();
+    const old = await enroll(email, userId);
+
+    // Si el evento no se puede escribir, los códigos viejos siguen siendo los válidos.
+    await expect(replaceBackupCodes(db, { userId, secret: SECRET, audit: event(userId, "account.backup_codes", 999_999n) })).rejects.toThrow();
+    expect(await eventsOf(userId, "account.backup_codes")).toBe(0);
+
+    const fresh = await replaceBackupCodes(db, { userId, secret: SECRET, audit: event(userId, "account.backup_codes") });
+    expect(fresh).toHaveLength(10);
+    expect(new Set(fresh).size).toBe(10);
+    expect(fresh.every((c) => /^[A-Za-z0-9]{5}-[A-Za-z0-9]{5}$/.test(c))).toBe(true);
+    expect(await eventsOf(userId, "account.backup_codes")).toBe(1);
+
+    const a = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    expect((await failure(auth().api.verifyBackupCode({ body: { code: old[0]! }, headers: cookiesFrom(a.headers) }))).status).toBe(401);
+    const b = await auth().api.signInEmail({ body: { email, password: PASSWORD }, returnHeaders: true });
+    expect((await auth().api.verifyBackupCode({ body: { code: fresh[3]! }, headers: cookiesFrom(b.headers) })).token).toBeTruthy();
+  });
+
+  it("desactivar el TOTP: la contraseña sola vuelve a abrir sesión; sin evento no se desactiva", { timeout: 120_000 }, async () => {
+    const { email, userId } = await owner();
+    await enroll(email, userId);
+
+    await expect(disableOwnTwoFactor(db, { userId, audit: event(userId, "account.two_factor_disable", 999_999n) })).rejects.toThrow();
+    const [still] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, userId));
+    expect(still?.on).toBe(true);
+    expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, userId))).toHaveLength(1);
+
+    await disableOwnTwoFactor(db, { userId, audit: event(userId, "account.two_factor_disable") });
+    expect(await eventsOf(userId, "account.two_factor_disable")).toBe(1);
+    expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, userId))).toHaveLength(0);
+    const signIn = await auth().api.signInEmail({ body: { email, password: PASSWORD } });
+    expect("token" in signIn && signIn.token).toBeTruthy();
+
+    // Ya desactivado: otra vez no hace nada y no deja un segundo evento.
+    await expect(disableOwnTwoFactor(db, { userId, audit: event(userId, "account.two_factor_disable") })).rejects.toThrow(/no tienes/i);
+    expect(await eventsOf(userId, "account.two_factor_disable")).toBe(1);
   });
 });

@@ -3,7 +3,7 @@
 // aquí solo se decide la cubeta, la ventana y si el golpe número N todavía pasa.
 // El sujeto llega ya como HMAC de la IP o del teléfono: nunca en claro.
 
-export type RateAction = "booking_start" | "otp_send" | "otp_verify" | "manage_action" | "browse";
+export type RateAction = "booking_start" | "booking_known" | "otp_send" | "otp_verify" | "manage_action" | "browse";
 /** `location`: un tope global por sede (sin IP ni contacto) contra el bombeo de costos. */
 export type RateScope = "ip" | "contact" | "location";
 
@@ -23,6 +23,22 @@ export const RATE_POLICIES: Record<RateAction, Partial<Record<RateScope, readonl
       { windowSec: DAY, limit: 30 },
     ],
     contact: [{ windowSec: HOUR, limit: 5 }],
+  },
+  /**
+   * Reserva sin código desde un navegador recordado (auditoría del sprint 6, M1). `contact` es el
+   * dispositivo (no el celular: así nadie le agota el cupo a otro con solo saber su número) y
+   * `location` es el tope de la sede: aunque alguien junte muchos dispositivos verificados, no
+   * acapara la agenda. Un doble toque cuenta dos.
+   */
+  booking_known: {
+    contact: [
+      { windowSec: HOUR, limit: 5 },
+      { windowSec: DAY, limit: 10 },
+    ],
+    location: [
+      { windowSec: HOUR, limit: 40 },
+      { windowSec: DAY, limit: 200 },
+    ],
   },
   otp_send: {
     ip: [{ windowSec: DAY, limit: 20 }],

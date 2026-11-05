@@ -37,7 +37,7 @@ import type { NotificationChannel } from "@/domain/notifications/templates";
 import { type ActionResult, runAction } from "@/lib/action";
 import { clientIp, clientUserAgent, hashForBucket, ipBucketKey } from "@/lib/client-ip";
 import { alertSender, notifier } from "@/lib/notify";
-import { allowsDevFallbacks, type PublicConfig, publicConfig, PublicBookingUnavailableError } from "@/lib/public-readiness";
+import { allowsDevFallbacks, type PublicConfig, publicConfig, PublicBookingUnavailableError, revealsCodeOnScreen } from "@/lib/public-readiness";
 import { humanVerifier } from "@/lib/turnstile";
 
 // Acciones del portal público (contrato de sprint-3-reserva-publica.md §10). Delgadas: validan
@@ -73,9 +73,8 @@ function scopeOf(location: PublicLocation, config: PublicConfig): Scope {
       hash: (value) => hashForBucket(value, config.otpPepper),
       caps: config.caps,
       alert: alertSender(),
-      // Desarrollo sin WhatsApp: el código vuelve a la pantalla para poder probar. En producción
-      // allowsDevFallbacks() es falso y esto nunca se activa.
-      revealCodeForTesting: allowsDevFallbacks() && !config.whatsapp,
+      // Desarrollo sin WhatsApp: el código vuelve a la pantalla para poder probar. Nunca en producción.
+      revealCodeForTesting: revealsCodeOnScreen(config),
     },
   };
 }

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PGlite } from "@electric-sql/pglite";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LOCKOUT_POLICY } from "@/domain/security/lockout";
@@ -26,7 +26,7 @@ import {
   unlockAccount,
   userThrottleSubject,
 } from "./login-throttle";
-import { loginThrottles, session, user, verification } from "./schema";
+import { auditEvents, loginThrottles, session, user, verification } from "./schema";
 import { addStaffMember, createStaffUser, setStaffActive, StaffError } from "./staff";
 import { createTestDb } from "./testing";
 import type { Db } from "./types";
@@ -89,6 +89,35 @@ describe("contraseña temporal y cambio de contraseña", () => {
     expect((await sessionAuthInfo(db, { userId, sessionId: mine })).mustChangePassword).toBe(false);
     expect(await verifyUserPassword(db, userId, NEW_PASSWORD)).toBe(true);
     expect(await verifyUserPassword(db, userId, PASSWORD)).toBe(false);
+  });
+
+  it("L11: el cambio y su evento van juntos; si el evento falla, la contraseña no cambia", { timeout: 30_000 }, async () => {
+    const { userId, staffId } = await person();
+    const s = await openSession(userId);
+    const event = (loc: bigint) => ({
+      locationId: loc,
+      actorUserId: userId,
+      actorStaffId: staffId,
+      action: "account.password_change" as const,
+      targetKind: "staff",
+      targetRef: staffId.toString(),
+      summary: "Cambió su contraseña",
+    });
+    const eventsOf = async () =>
+      (await db.select({ id: auditEvents.id }).from(auditEvents).where(and(eq(auditEvents.actorUserId, userId), eq(auditEvents.action, "account.password_change")))).length;
+
+    // Sede inexistente: el evento no se puede escribir y arrastra al cambio.
+    await expect(changeOwnPassword(db, { userId, sessionId: s, currentPassword: PASSWORD, newPassword: NEW_PASSWORD, audit: event(999_999n) })).rejects.toThrow();
+    expect(await verifyUserPassword(db, userId, PASSWORD)).toBe(true);
+    expect(await eventsOf()).toBe(0);
+
+    // Clave equivocada: ni cambio ni evento.
+    expect(await changeOwnPassword(db, { userId, sessionId: s, currentPassword: "otra-cosa-larga", newPassword: NEW_PASSWORD, audit: event(locationId) })).toBe(false);
+    expect(await eventsOf()).toBe(0);
+
+    expect(await changeOwnPassword(db, { userId, sessionId: s, currentPassword: PASSWORD, newPassword: NEW_PASSWORD, audit: event(locationId) })).toBe(true);
+    expect(await verifyUserPassword(db, userId, NEW_PASSWORD)).toBe(true);
+    expect(await eventsOf()).toBe(1);
   });
 
   it("la nueva debe ser distinta y tener al menos 12 caracteres", async () => {

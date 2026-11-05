@@ -13,7 +13,7 @@ import { decideVoid, requestVoid } from "@/db/voids";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
-import { expenseCategories, paymentMethods, sales, services, session, staffMembers, user } from "@/db/schema";
+import { auditEvents, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -62,6 +62,8 @@ vi.mock("react", async (importOriginal) => ({
 vi.mock("@/db/client", () => ({ db: () => state.db }));
 vi.mock("@/lib/auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/auth")>()),
+  // Valor de prueba: con él se cifran los códigos de respaldo que genera la app.
+  authSecret: () => "s".repeat(32),
   auth: async () => ({
     api: {
       getSession: async () => state.session,
@@ -312,8 +314,15 @@ async function personWithSession(role: Role, locationId: bigint, opts: { mustCha
     role,
     mustChangePassword: opts.mustChangePassword,
   });
-  if (role === "owner") await db.update(user).set({ twoFactorEnabled: true }).where(eq(user.id, userId));
+  if (role === "owner") await enableTotp(userId);
   return { id: userId, staffId, sessionId: await openSession(userId) };
+}
+
+/** TOTP activo, como queda tras inscribirse (la fila de two_factor la escriben ahora también las acciones de cuenta). */
+async function enableTotp(userId: string): Promise<void> {
+  await db.update(user).set({ twoFactorEnabled: true }).where(eq(user.id, userId));
+  await db.delete(twoFactor).where(eq(twoFactor.userId, userId));
+  await db.insert(twoFactor).values({ id: randomUUID(), secret: "secreto-de-prueba", backupCodes: "codigos-de-prueba", userId, verified: true });
 }
 
 /**
@@ -789,7 +798,12 @@ const CASES: Case[] = [
     action: "disableTwoFactorAction",
     allowed: ["owner", "reception", "barber"],
     lenient: true,
-    prepare: async () => () => cuenta.disableTwoFactorAction({ password: PASSWORD, code: state.totpCode }),
+    // Desactiva de verdad en la base: se vuelve a activar para no dejar sin TOTP al dueño compartido.
+    prepare: async () => async () => {
+      const result = await cuenta.disableTwoFactorAction({ password: PASSWORD, code: state.totpCode });
+      if (result.ok && state.session) await enableTotp(state.session.user.id);
+      return result;
+    },
   },
   {
     name: "sesión · salir",
@@ -1779,11 +1793,19 @@ describe("con el TOTP activo, la contraseña sola no basta", () => {
       error: "La contraseña no es correcta.",
     });
     expect(state.apiCalls).toEqual([]);
-    expect(await cuenta.regenerateBackupCodesAction({ password: PASSWORD, code: state.totpCode })).toEqual({
-      ok: true,
-      data: { backupCodes: ["nuevo-00001", "nuevo-00002"] },
-    });
-    expect(state.apiCalls).toEqual(["generateBackupCodes"]);
+    const events = async () => (await db.select({ id: auditEvents.id }).from(auditEvents).where(sql`${auditEvents.actorUserId} = ${owner.id} and ${auditEvents.action} = 'account.backup_codes'`)).length;
+    const [before] = await db.select({ codes: twoFactor.backupCodes }).from(twoFactor).where(eq(twoFactor.userId, owner.id));
+    expect(await events()).toBe(0);
+    const r = await cuenta.regenerateBackupCodesAction({ password: PASSWORD, code: state.totpCode });
+    expect(r.ok, JSON.stringify(r)).toBe(true);
+    const codes = (r as { ok: true; data: { backupCodes: string[] } }).data.backupCodes;
+    expect(codes).toHaveLength(10);
+    expect(codes.every((c) => /^[A-Za-z0-9]{5}-[A-Za-z0-9]{5}$/.test(c))).toBe(true);
+    // Los códigos y su evento, juntos (L11); nada pasa por la API de better-auth.
+    const [after] = await db.select({ codes: twoFactor.backupCodes }).from(twoFactor).where(eq(twoFactor.userId, owner.id));
+    expect(after!.codes).not.toBe(before!.codes);
+    expect(await events()).toBe(1);
+    expect(state.apiCalls).toEqual([]);
   });
 
   it("desactivarla: sin código, con uno malo o con la contraseña mala no se desactiva; con ambos, sí", async () => {
@@ -1798,7 +1820,12 @@ describe("con el TOTP activo, la contraseña sola no basta", () => {
     });
     expect(state.apiCalls).toEqual([]);
     expect(await cuenta.disableTwoFactorAction({ password: PASSWORD, code: state.backupCode })).toEqual({ ok: true, data: undefined });
-    expect(state.apiCalls).toEqual(["disableTwoFactor"]);
+    const [u] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, owner.id));
+    expect(u?.on).toBe(false);
+    expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, owner.id))).toHaveLength(0);
+    const events = await db.select({ id: auditEvents.id }).from(auditEvents).where(sql`${auditEvents.actorUserId} = ${owner.id} and ${auditEvents.action} = 'account.two_factor_disable'`);
+    expect(events).toHaveLength(1);
+    expect(state.apiCalls).toEqual([]);
   });
 
   it("sin TOTP activo no hay nada que desactivar ni regenerar", async () => {

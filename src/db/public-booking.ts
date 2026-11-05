@@ -872,7 +872,7 @@ export async function bookAsKnownClient(
   assertBookableDate(location, localParts(input.start, location.timeZone).date, now);
   const consents = await latestConsents(db, { locationId: location.id, clientId });
   if (!consents.data_processing) throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
-  await enforce(db, "booking_start", { contact: ctx.hash(input.device.phoneE164) }, now);
+  await enforce(db, "booking_known", { contact: ctx.hash(`device:${input.device.deviceId}`), location: `location:${location.id}` }, now);
   // Doble toque o reintento por red: si este formulario ya creó la cita, ese horario ya no figura
   // como libre (lo ocupa ella misma); se salta la comprobación y la transacción devuelve la misma.
   const [replay] = await db

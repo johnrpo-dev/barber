@@ -22,6 +22,13 @@ export const isProduction = () => process.env.NODE_ENV === "production";
  */
 export const allowsDevFallbacks = () => process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
 
+/**
+ * El código de verificación sale en la pantalla de la reserva SOLO en desarrollo o tests y sin
+ * WhatsApp configurado. Con cualquier otro NODE_ENV (también sin definir) es falso: si esto se
+ * activara en producción, verificar el celular no valdría nada (test en public-surface.test.ts).
+ */
+export const revealsCodeOnScreen = (config: { whatsapp: unknown }) => allowsDevFallbacks() && !config.whatsapp;
+
 export interface PublicConfig {
   otpPepper: string;
   manageLinkSecret: string;

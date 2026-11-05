@@ -1,7 +1,9 @@
+import { randomInt } from "node:crypto";
 import { and, eq, ne } from "drizzle-orm";
-import { hashPassword, verifyPassword } from "better-auth/crypto";
+import { hashPassword, symmetricEncrypt, verifyPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
-import { account, session, staffMembers, user } from "./schema";
+import { type AuditEventInput, recordAudit } from "./audit";
+import { account, session, staffMembers, twoFactor, user } from "./schema";
 import { revokeTrustedDevices, StaffError } from "./staff";
 import type { Db } from "./types";
 
@@ -74,7 +76,7 @@ function assertNewPassword(password: string) {
  */
 export async function changeOwnPassword(
   db: Db,
-  input: { userId: string; sessionId: string; currentPassword: string; newPassword: string },
+  input: { userId: string; sessionId: string; currentPassword: string; newPassword: string; audit?: AuditEventInput },
 ): Promise<boolean> {
   assertNewPassword(input.newPassword);
   if (input.newPassword === input.currentPassword) throw new StaffError("La contraseña nueva debe ser distinta de la actual");
@@ -88,8 +90,61 @@ export async function changeOwnPassword(
     await tx.update(user).set({ mustChangePassword: false, updatedAt: new Date() }).where(eq(user.id, input.userId));
     await tx.delete(session).where(and(eq(session.userId, input.userId), ne(session.id, input.sessionId)));
     await revokeTrustedDevices(tx as unknown as Db, input.userId);
+    // En la misma transacción (L11): no hay cambio de contraseña sin su evento, ni evento sin cambio.
+    if (input.audit) await recordAudit(tx as unknown as Db, input.audit);
   });
   return true;
+}
+
+/**
+ * Desactiva la verificación en dos pasos propia y lo deja en la bitácora en UNA transacción (L11).
+ * Hace lo mismo que /two-factor/disable de better-auth (marca del usuario, fila del TOTP y
+ * "dispositivos de confianza"), pero sin confirmar el cambio aparte del evento. El llamador ya
+ * verificó contraseña y código. La sesión actual sigue: better-auth no guarda el estado en la cookie.
+ */
+export async function disableOwnTwoFactor(db: Db, input: { userId: string; audit: AuditEventInput }): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(user)
+      .set({ twoFactorEnabled: false, updatedAt: new Date() })
+      .where(and(eq(user.id, input.userId), eq(user.twoFactorEnabled, true)))
+      .returning({ id: user.id });
+    if (!row) throw new StaffError("No tienes la verificación en dos pasos activa.");
+    await tx.delete(twoFactor).where(eq(twoFactor.userId, input.userId));
+    await revokeTrustedDevices(tx as unknown as Db, input.userId);
+    await recordAudit(tx as unknown as Db, input.audit);
+  });
+}
+
+/** Mismo alfabeto, largo y forma que los de better-auth ("abcde-12345"), con un generador criptográfico. */
+const BACKUP_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+export const BACKUP_CODE_COUNT = 10;
+
+function newBackupCode(): string {
+  let raw = "";
+  for (let i = 0; i < 10; i++) raw += BACKUP_ALPHABET[randomInt(BACKUP_ALPHABET.length)];
+  return `${raw.slice(0, 5)}-${raw.slice(5)}`;
+}
+
+/**
+ * Códigos de respaldo nuevos (los anteriores dejan de servir) y su evento, en UNA transacción
+ * (L11). Se guardan como los guarda better-auth con storeBackupCodes "encrypted": el JSON de la
+ * lista cifrado con el secreto de la app; así /two-factor/verify-backup-code los sigue aceptando
+ * (test en src/lib/auth.test.ts). Devuelve los códigos en claro para mostrarlos una sola vez.
+ */
+export async function replaceBackupCodes(db: Db, input: { userId: string; secret: string; audit: AuditEventInput }): Promise<string[]> {
+  const codes = Array.from({ length: BACKUP_CODE_COUNT }, newBackupCode);
+  const encrypted = await symmetricEncrypt({ key: input.secret, data: JSON.stringify(codes) });
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(twoFactor)
+      .set({ backupCodes: encrypted })
+      .where(and(eq(twoFactor.userId, input.userId), eq(twoFactor.verified, true)))
+      .returning({ id: twoFactor.id });
+    if (!row) throw new StaffError("No tienes la verificación en dos pasos activa.");
+    await recordAudit(tx as unknown as Db, input.audit);
+  });
+  return codes;
 }
 
 /** Usuario (con acceso a la app) de una persona de la sede; error si no existe o no tiene acceso. */

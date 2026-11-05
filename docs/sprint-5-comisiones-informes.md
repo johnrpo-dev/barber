@@ -927,7 +927,7 @@ Lo que se construyó distinto de lo anterior, ya acordado con la interfaz:
 - **CSV sin texto libre (M-2).** El libro diario sale con una etiqueta fija por tipo de asiento (Venta, Reversa, Anticipo…), sin memo. Diferencias de caja sale sin la nota. En pantalla la nota se sigue viendo. Desde este sprint, la reversa de una anulación lleva como memo "Anulación de la venta <ULID>", sin el motivo.
 - **Datáfono y propinas (M-4).** Con "las propinas asumen el datáfono", el informe agrega la fila "Parte absorbida por las propinas" (Σ `sale_tips.fee_share` de las ventas pagadas del rango), así que Σ medios − esa fila = 5305.
 - **CSV (L1):** la fórmula se busca en el primer carácter después de quitar espacios Unicode, controles e invisibles (`\p{Z}\p{Cc}\p{Cf}`).
-- **Bitácora:** un CHECK ata cada acción a su categoría (L-6). Hay eventos nuevos para cambiar la contraseña propia, desactivar el TOTP y generar códigos de respaldo (L11). Se registran después del cambio, que better-auth confirma en su propia transacción.
+- **Bitácora:** un CHECK ata cada acción a su categoría (L-6). Hay eventos nuevos para cambiar la contraseña propia, desactivar el TOTP y generar códigos de respaldo (L11). Se registran después del cambio, que better-auth confirma en su propia transacción. *(Sprint 6: ya van en la misma transacción que el cambio; ver arquitectura.md.)*
 - **Anticipos (L8):** todo anticipo pide reautenticación, también el de caja.
 - **Tablero (L7):** el esperado de la caja abierta solo sale para quien tiene `cash.review`.
 

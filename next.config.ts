@@ -1,3 +1,4 @@
+import { networkInterfaces } from "node:os";
 import type { NextConfig } from "next";
 
 const isProd = process.env.NODE_ENV === "production";
@@ -20,7 +21,18 @@ const securityHeaders = [
   ...(isProd ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" }] : []),
 ];
 
+// Solo en desarrollo: Next 16 responde 403 a sus propios scripts y a la recarga en vivo cuando la
+// página se abre desde otro origen que localhost. Se permiten las IP privadas de este PC para probar
+// desde el celular en la misma wifi (http://<IP del PC>:3000). En producción Next ignora esta lista.
+const lanAddresses = isProd
+  ? []
+  : Object.values(networkInterfaces())
+      .flat()
+      .filter((a) => a?.family === "IPv4" && !a.internal && /^(10|192\.168|172\.(1[6-9]|2\d|3[01]))\./.test(a.address))
+      .map((a) => a!.address);
+
 const nextConfig: NextConfig = {
+  allowedDevOrigins: lanAddresses,
   // Build autocontenido para correr con systemd en el VPS (ver docs/arquitectura.md).
   output: "standalone",
   // Fija la raíz del proyecto: hay un package-lock.json suelto en la carpeta del usuario.

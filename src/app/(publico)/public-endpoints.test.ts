@@ -10,6 +10,7 @@ import { createLocation } from "@/db/ledger";
 import { issueManageLink } from "@/db/manage-links";
 import { MAX_PENDING_HOLDS, PUBLIC_MESSAGES } from "@/db/public-booking";
 import { enforce } from "@/db/rate-limit";
+import { RATE_POLICIES } from "@/domain/security/rate-limit";
 import { appointmentLinks, appointments, bookingVerifications, clientConsents, clientDevices, clients, locations, notificationEvents, notifications, services, staffMembers } from "@/db/schema";
 import { addStaffMember, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
@@ -843,6 +844,23 @@ const CASES: Case[] = [
     },
   },
   {
+    action: "bookAsKnown",
+    name: "tiene su propio tope por navegador recordado (no por celular): lleno, frena aunque el resto esté libre",
+    run: async () => {
+      newIp();
+      const phone = newPhone();
+      await bookAndVerify(phone);
+      const c = await clientRow(phone);
+      const [device] = await db.select({ id: clientDevices.id }).from(clientDevices).where(eq(clientDevices.clientId, c.id));
+      const subject = bucketHash(`device:${device!.id}`, DEV_ONLY_OTP_PEPPER);
+      const limit = RATE_POLICIES.booking_known.contact![0]!.limit;
+      for (let i = 0; i < limit; i++) await enforce(db, "booking_known", { contact: subject });
+      const r = await actions.bookAsKnown({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
+      expect(r.ok).toBe(false);
+      expect((r as { error: string }).error).toMatch(/rápido/);
+    },
+  },
+  {
     action: "forgetDevice",
     name: "\"No soy yo\" revoca el navegador: la cookie vieja ya no sirve aunque vuelva",
     run: async () => {
@@ -855,6 +873,9 @@ const CASES: Case[] = [
       expect(await data.loadKnownClient()).toBeNull();
       const r = await actions.bookAsKnown({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
       expect(r).toEqual({ ok: false, error: PUBLIC_MESSAGES.deviceUnknown });
+      // Revocar es definitivo: ni la base deja reactivarlo (0017).
+      const [revoked] = await db.select({ id: clientDevices.id }).from(clientDevices).where(sql`${clientDevices.revokedAt} is not null`).orderBy(sql`${clientDevices.id} desc`).limit(1);
+      await expect(db.update(clientDevices).set({ revokedAt: null }).where(eq(clientDevices.id, revoked!.id))).rejects.toThrow();
       // Sin cookie tampoco falla.
       newBrowser();
       expect((await actions.forgetDevice()).ok).toBe(true);

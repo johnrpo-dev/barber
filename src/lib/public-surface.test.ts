@@ -5,7 +5,14 @@ import { dayPeriod, formatClock, formatDateLabel, initials, ticketCode } from "@
 import { ipBucketKey, ipFromHeaders } from "./client-ip";
 import { ConsoleNotifier } from "./notify/console";
 import { publicEnv } from "./env";
-import { allowsDevFallbacks, DEV_ONLY_MANAGE_LINK_SECRET, DEV_ONLY_OTP_PEPPER, publicBookingReadiness, publicConfig } from "./public-readiness";
+import {
+  allowsDevFallbacks,
+  DEV_ONLY_MANAGE_LINK_SECRET,
+  DEV_ONLY_OTP_PEPPER,
+  publicBookingReadiness,
+  publicConfig,
+  revealsCodeOnScreen,
+} from "./public-readiness";
 import { FakeVerifier, TurnstileVerifier } from "./turnstile";
 
 // Piezas del lado público sin base de datos: configuración y degradación, IP real, Turnstile,
@@ -101,6 +108,9 @@ describe("configuración pública", () => {
       clearPublicEnv();
       vi.stubEnv("NODE_ENV", env);
       expect(allowsDevFallbacks()).toBe(false);
+      // El código de verificación nunca sale en pantalla fuera de desarrollo, con o sin WhatsApp.
+      expect(revealsCodeOnScreen({ whatsapp: null })).toBe(false);
+      expect(revealsCodeOnScreen({ whatsapp: { token: "t", phoneNumberId: "1" } })).toBe(false);
       expect(publicBookingReadiness()).toMatchObject({ ready: false, devFallbacks: false, channels: [] });
       expect(() => publicConfig()).toThrow(/no está disponible/);
       expect(() => new FakeVerifier()).toThrow();
@@ -113,6 +123,8 @@ describe("configuración pública", () => {
     for (const env of ["development", "test"]) {
       vi.stubEnv("NODE_ENV", env);
       expect(allowsDevFallbacks()).toBe(true);
+      expect(revealsCodeOnScreen({ whatsapp: null })).toBe(true);
+      expect(revealsCodeOnScreen({ whatsapp: { token: "t", phoneNumberId: "1" } })).toBe(false);
       expect(ipFromHeaders(new Headers())).toBe("127.0.0.1");
     }
   });
