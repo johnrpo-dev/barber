@@ -1,10 +1,13 @@
-// Datos de prueba para recorrer la app en local: servicios, diez barberos con horario, teléfono de
+// Datos de prueba para recorrer la app en local: servicios, barberos con horario (inventados o, si
+// existe seed-demo.equipo.local.json, los del equipo real), teléfono de
 // la sede, reserva en línea abierta y dos cuentas de prueba (recepción y barbero) para ver el panel
 // como cada rol. Se puede ejecutar varias veces: no duplica (busca por nombre).
 // No toca el libro contable. Se niega a correr en producción.
 // Uso: npm run db:seed-demo
 import { randomBytes } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Role } from "@/domain/staff/roles";
 import { fromUnits } from "@/domain/money";
 import type { ScheduleBlock, Weekday } from "@/domain/staff/schedule";
@@ -13,7 +16,7 @@ import { createService } from "./catalog";
 import { db } from "./client";
 import { locationSettings, updateLocationSettings } from "./locations";
 import { locations, services, staffMembers, user } from "./schema";
-import { addStaffMember, createStaffUser, setWeeklySchedule } from "./staff";
+import { addStaffMember, createStaffUser, setStaffActive, setWeeklySchedule } from "./staff";
 import type { Db } from "./types";
 
 const LOCATION_NAME = "Barbería Villa";
@@ -53,20 +56,55 @@ function week(start: number, lunch: number, end: number, sunday = false): Schedu
   return blocks;
 }
 
-// Nombres inventados: los del equipo real son datos personales (Ley 1581) y no van al repositorio.
-// Diez perfiles con turnos escalonados: entre todos cubren de 8:00 a. m. a 9:00 p. m.
-const BARBERS = [
-  { name: "Andrés Gómez", schedule: week(h(9), h(13), h(19)) },
-  { name: "Camilo Restrepo", schedule: week(h(10), h(14), h(20)) },
-  { name: "Julián Ríos", schedule: week(h(9), h(12), h(18), true) },
-  { name: "Mateo Cardona", schedule: week(h(11), h(15), h(20), true) },
-  { name: "Santiago Vélez", schedule: week(h(8), h(12), h(17)) },
-  { name: "Daniel Ospina", schedule: week(h(12), h(16), h(21)) },
-  { name: "Felipe Arango", schedule: week(h(8), h(13), h(17)) },
-  { name: "Esteban Muñoz", schedule: week(h(12), h(17), h(21), true) },
-  { name: "Laura Henao", schedule: week(h(8), h(12), h(17)) },
-  { name: "Sara Montoya", schedule: week(h(12), h(15), h(21)) },
+// Diez turnos escalonados (inventados): entre todos cubren de 8:00 a. m. a 9:00 p. m.
+const SCHEDULES = [
+  week(h(9), h(13), h(19)),
+  week(h(10), h(14), h(20)),
+  week(h(9), h(12), h(18), true),
+  week(h(11), h(15), h(20), true),
+  week(h(8), h(12), h(17)),
+  week(h(12), h(16), h(21)),
+  week(h(8), h(13), h(17)),
+  week(h(12), h(17), h(21), true),
+  week(h(8), h(12), h(17)),
+  week(h(12), h(15), h(21)),
 ] as const;
+
+// Nombres inventados: los del equipo real son datos personales (Ley 1581) y no van al repositorio.
+const INVENTED_NAMES = [
+  "Andrés Gómez",
+  "Camilo Restrepo",
+  "Julián Ríos",
+  "Mateo Cardona",
+  "Santiago Vélez",
+  "Daniel Ospina",
+  "Felipe Arango",
+  "Esteban Muñoz",
+  "Laura Henao",
+  "Sara Montoya",
+] as const;
+
+/**
+ * Equipo real, opcional: `seed-demo.equipo.local.json` en la raíz (git lo ignora), una lista de
+ * nombres, p. ej. ["Danilso", "Jesús Franco"]. Si existe, el seed crea esos barberos y, en una base
+ * local, desactiva los inventados (no los borra: su historial queda). Si no, usa los inventados.
+ */
+const TEAM_FILE = "seed-demo.equipo.local.json";
+
+function realTeam(): string[] | null {
+  const path = resolve(process.cwd(), TEAM_FILE);
+  if (!existsSync(path)) return null;
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((n) => typeof n === "string" && n.trim().length > 0 && n.trim().length <= 80)) {
+    throw new Error(`${TEAM_FILE} debe ser una lista de nombres, p. ej. ["Danilso", "Jesús Franco"]`);
+  }
+  const names = parsed.map((n: string) => n.trim());
+  if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) throw new Error(`${TEAM_FILE} tiene nombres repetidos`);
+  return names;
+}
+
+const team = realTeam();
+const BARBERS = (team ?? INVENTED_NAMES).map((name, i) => ({ name, schedule: SCHEDULES[i % SCHEDULES.length]! }));
 
 /**
  * Cuentas de prueba para ingresar como recepción (el "panel de caja") y como barbero. Correos en
@@ -143,6 +181,21 @@ async function main() {
     console.log(`Barbero "${b.name}": creado con su horario.`);
   }
 
+  // Con el equipo real, los inventados dejan de atender (solo en base local; se desactivan, no se borran).
+  if (team && localDatabase) {
+    const keep = new Set(team.map((n) => n.toLowerCase()));
+    for (const name of INVENTED_NAMES) {
+      if (keep.has(name.toLowerCase())) continue;
+      const [found] = await client
+        .select({ id: staffMembers.id, active: staffMembers.active })
+        .from(staffMembers)
+        .where(and(eq(staffMembers.locationId, locationId), eq(staffMembers.displayName, name), eq(staffMembers.role, "barber"), isNull(staffMembers.userId)));
+      if (!found?.active) continue;
+      await setStaffActive(d, { locationId, staffId: found.id, active: false });
+      console.log(`Barbero inventado "${name}": desactivado.`);
+    }
+  }
+
   const missing: (typeof DEMO_ACCOUNTS)[number][] = [];
   for (const a of DEMO_ACCOUNTS) {
     const [found] = await client.select({ id: user.id }).from(user).where(eq(user.email, a.email));
@@ -156,7 +209,7 @@ async function main() {
     for (const a of missing) {
       const { staffId } = await createStaffUser(d, { locationId, name: a.name, email: a.email, password, role: a.role });
       // El barbero de prueba atiende como el primero de la lista, para que tenga citas en "Mi día".
-      if (a.role === "barber") await setWeeklySchedule(d, { locationId, staffId, blocks: BARBERS[0].schedule });
+      if (a.role === "barber") await setWeeklySchedule(d, { locationId, staffId, blocks: SCHEDULES[0] });
       console.log(`Cuenta de prueba ${a.email} (${a.role === "reception" ? "recepción" : "barbero"}): creada.`);
     }
     console.log(`Contraseña de las cuentas nuevas (se muestra solo esta vez; guárdala): ${password}`);
