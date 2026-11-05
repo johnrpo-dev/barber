@@ -59,6 +59,7 @@ Sistema de la barbería Villa. Tiene dos partes:
 | `npm run db:generate` | Genera una migración a partir de `src/db/schema.ts` |
 | `npm run db:migrate` | Aplica las migraciones |
 | `npm run db:seed` | Crea la sede de Villa con su plan de cuentas (no duplica si ya existe) |
+| `npm run db:seed-demo` | Solo desarrollo: servicios, cuatro barberos con horario, teléfono de prueba y reserva en línea abierta (no duplica) |
 | `npm run staff:create-owner` | Crea la cuenta del dueño; la contraseña se escribe oculta |
 | `npm run staff:unlock -- <correo>` | Quita los bloqueos por intentos fallidos de esa cuenta (ingreso, reautenticación, código de la app). Necesita `BETTER_AUTH_SECRET` |
 | `npm run test:e2e` | Pruebas de extremo a extremo. La primera vez, instala el navegador con `npx playwright install chromium` |

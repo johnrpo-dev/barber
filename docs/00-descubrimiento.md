@@ -380,6 +380,19 @@ CONSTRAINT no_double_booking EXCLUDE USING gist
 
 Si para el dueño lo contable es más urgente que la reserva pública, se intercambian los sprints 3 y 4.
 
+### 12.1 Fase 2 y lanzamiento
+
+Decisión del dueño (2026-11-04): **el dominio y el servidor son lo último**. Los sprints 1 a 5 están terminados en código; las pruebas en servidor real pasan al sprint de lanzamiento.
+
+| Sprint | Contenido |
+|---|---|
+| **6. Pendientes del MVP y finanzas** | Repetir la auditoría de seguridad sobre las últimas correcciones; borrado de memos y `discount_reason` en la supresión de datos del cliente; eventos de auditoría atómicos (L11). Venta de productos con inventario básico; gastos recurrentes y cuentas por pagar. |
+| **7. Agenda ampliada** | Varios servicios en una cita, citas recurrentes, lista de espera, notas y preferencias del cliente, historial del cliente, restricción por inasistencias. |
+| **8. Reportes y controles** | Reportes por barbero y servicio, tasa de no-show, anulaciones con aprobación avanzada y alertas. Opcionales: QR del 2FA, descuento del 100 % sin propina. |
+| **9. Lanzamiento** | VPS, dominio, bucket de copias, cuentas de WhatsApp, Turnstile y Resend; despliegue con el runbook, restauración de prueba, CSP Report-Only y luego enforce, pentest, pruebas con la barbería real. |
+
+La verificación en Meta (sprint 0) puede iniciarse en cualquier momento; conviene no dejarla para el sprint 9 porque tarda días o semanas.
+
 ---
 
 ## 13. Costos mensuales estimados (USD)
