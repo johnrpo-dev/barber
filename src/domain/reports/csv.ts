@@ -10,7 +10,7 @@ export type CsvCell = { text: string } | { money: Money } | { date: string } | {
 export const CSV_MAX_ROWS = 50_000;
 export const CSV_TOO_MANY_ROWS = "El periodo tiene demasiados movimientos para exportar; exporta por meses.";
 
-export const CSV_REPORTS = ["pnl", "journal", "by_staff", "by_service", "payments", "tips", "expenses", "cash_differences", "settlements"] as const;
+export const CSV_REPORTS = ["pnl", "journal", "by_staff", "by_service", "payments", "tips", "expenses", "cash_differences", "settlements", "sales", "cash_sessions"] as const;
 export type CsvReport = (typeof CSV_REPORTS)[number];
 
 const CSV_SLUGS: Record<CsvReport, string> = {
@@ -23,6 +23,8 @@ const CSV_SLUGS: Record<CsvReport, string> = {
   expenses: "gastos",
   cash_differences: "diferencias-de-caja",
   settlements: "liquidaciones",
+  sales: "ventas",
+  cash_sessions: "aperturas-y-cierres-de-caja",
 };
 
 const BOM = "﻿";

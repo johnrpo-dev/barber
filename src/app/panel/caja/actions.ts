@@ -13,11 +13,15 @@ import {
   openCashSession,
   payTips,
   reopenBusinessDay,
+  today,
 } from "@/db/cash";
 import { db } from "@/db/client";
+import { cashSessionsInPeriod } from "@/db/history";
+import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
 import type { Db } from "@/db/types";
 import { money, sum } from "@/domain/money";
+import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
 import { CashError } from "@/domain/sales/cash";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
@@ -385,5 +389,75 @@ export async function reopenDayAction(raw: z.input<typeof reopenDayInput>): Prom
     });
     refresh();
     return undefined;
+  });
+}
+
+export interface CashHistoryView {
+  period: HistoryPeriodView;
+  sessions: {
+    id: string;
+    openedDate: string;
+    openedTime: string;
+    openedBy: string;
+    openingCountedLabel: string;
+    /** Diferencia de apertura con signo ("+$ 2.000", "-$ 500"); null si cuadró. */
+    openingDifferenceLabel: string | null;
+    openingShort: boolean;
+    openingNote: string | null;
+    closed: { date: string; time: string; by: string; expectedLabel: string; countedLabel: string; differenceLabel: string | null; short: boolean; note: string | null } | null;
+    review: "none" | "pending" | "done";
+    reviewedBy: string | null;
+  }[];
+  openingDifferenceLabel: string;
+  closingDifferenceLabel: string;
+}
+
+const cashHistoryInput = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional() });
+
+/**
+ * Histórico de caja del dueño: cada apertura y cierre del periodo con quién, a qué hora, base,
+ * esperado, contado y diferencia. Solo cash.review: el esperado no se le muestra a quien cuenta a
+ * ciegas (auditoría del sprint 4, MEDIUM-3).
+ */
+export async function loadCashHistory(raw: z.input<typeof cashHistoryInput>): Promise<ActionResult<CashHistoryView>> {
+  const staff = await requirePermission("cash.review");
+  return runAction(async () => {
+    const input = cashHistoryInput.parse(raw);
+    return readOnlySnapshot(database(), async (tx) => {
+      const day = await today(tx, staff.locationId);
+      const period = historyPeriod(day.businessDate, input.from, input.to);
+      const data = await cashSessionsInPeriod(tx, { locationId: staff.locationId, from: period.from, to: period.to });
+      const diff = (d: bigint) => (d === 0n ? null : signedLabel(d));
+      return {
+        period,
+        sessions: data.sessions.map((s) => ({
+          id: s.id.toString(),
+          openedDate: s.openedDate,
+          openedTime: s.openedTime,
+          openedBy: s.openedBy,
+          openingCountedLabel: moneyLabel(s.openingCounted),
+          openingDifferenceLabel: diff(s.openingDifference),
+          openingShort: s.openingDifference < 0n,
+          openingNote: s.openingNote,
+          closed:
+            s.closedDate === null || s.expected === null || s.closingCounted === null || s.difference === null
+              ? null
+              : {
+                  date: s.closedDate,
+                  time: s.closedTime ?? "",
+                  by: s.closedBy ?? "Personal",
+                  expectedLabel: moneyLabel(s.expected),
+                  countedLabel: moneyLabel(s.closingCounted),
+                  differenceLabel: diff(s.difference),
+                  short: s.difference < 0n,
+                  note: s.closingNote,
+                },
+          review: !s.flagged ? "none" : s.reviewed ? "done" : "pending",
+          reviewedBy: s.reviewedBy,
+        })),
+        openingDifferenceLabel: signedLabel(data.openingDifference),
+        closingDifferenceLabel: signedLabel(data.closingDifference),
+      };
+    });
   });
 }

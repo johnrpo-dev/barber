@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { saleNumber } from "@/domain/sales/receipt-number";
 import { instantLabels } from "@/domain/booking/public-labels";
 import { format, money } from "@/domain/money";
 import { firstNameForMessage, type NotificationChannel } from "@/domain/notifications/templates";
@@ -227,7 +228,7 @@ export async function enqueueSaleReceipt(
     dedupeKey: `sale_receipt:${input.publicId}`,
     params: {
       name: firstNameForMessage(row.clientName) || "cliente",
-      number: input.publicId.slice(-8),
+      number: saleNumber(input.publicId),
       date: `${dateLabel}, ${timeLabel}`,
       items: itemsText(
         receipt.lines.map((l) => l.description),

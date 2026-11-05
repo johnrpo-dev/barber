@@ -1132,6 +1132,18 @@ const CASES: Case[] = [
     prepare: async () => () => ventas.loadSalesOfDay({}),
   },
   {
+    name: "ventas · historial por día",
+    action: "loadSalesHistory",
+    allowed: ["owner"],
+    prepare: async () => () => ventas.loadSalesHistory({}),
+  },
+  {
+    name: "caja · historial de aperturas y cierres",
+    action: "loadCashHistory",
+    allowed: ["owner"],
+    prepare: async () => () => caja.loadCashHistory({}),
+  },
+  {
     name: "mis comisiones",
     action: "loadMyCommissions",
     allowed: ["owner", "barber"],
@@ -1153,6 +1165,24 @@ const CASES: Case[] = [
     prepare: async () => {
       const day = businessDate(new Date(), TZ);
       return () => informes.exportReportCsvAction({ report: "journal", from: day, to: day });
+    },
+  },
+  {
+    name: "informes · exportar el historial de ventas",
+    action: "exportReportCsvAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const day = businessDate(new Date(), TZ);
+      return () => informes.exportReportCsvAction({ report: "sales", from: day, to: day });
+    },
+  },
+  {
+    name: "informes · exportar el historial de caja",
+    action: "exportReportCsvAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const day = businessDate(new Date(), TZ);
+      return () => informes.exportReportCsvAction({ report: "cash_sessions", from: day, to: day });
     },
   },
   {

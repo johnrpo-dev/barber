@@ -1,16 +1,19 @@
 // Datos de prueba para recorrer la app en local: servicios, diez barberos con horario, teléfono de
-// la sede y reserva en línea abierta. Se puede ejecutar varias veces: no duplica (busca por nombre).
+// la sede, reserva en línea abierta y dos cuentas de prueba (recepción y barbero) para ver el panel
+// como cada rol. Se puede ejecutar varias veces: no duplica (busca por nombre).
 // No toca el libro contable. Se niega a correr en producción.
 // Uso: npm run db:seed-demo
+import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
+import type { Role } from "@/domain/staff/roles";
 import { fromUnits } from "@/domain/money";
 import type { ScheduleBlock, Weekday } from "@/domain/staff/schedule";
 import { describeError } from "@/lib/log";
 import { createService } from "./catalog";
 import { db } from "./client";
 import { locationSettings, updateLocationSettings } from "./locations";
-import { locations, services, staffMembers } from "./schema";
-import { addStaffMember, setWeeklySchedule } from "./staff";
+import { locations, services, staffMembers, user } from "./schema";
+import { addStaffMember, createStaffUser, setWeeklySchedule } from "./staff";
 import type { Db } from "./types";
 
 const LOCATION_NAME = "Barbería Villa";
@@ -66,27 +69,42 @@ const BARBERS = [
 ] as const;
 
 /**
+ * Cuentas de prueba para ingresar como recepción (el "panel de caja") y como barbero. Correos en
+ * .test (dominio reservado: nunca llega un correo real). La contraseña SIEMPRE es al azar y se
+ * muestra una sola vez en la terminal de quien corre el seed: si por error (un túnel a producción
+ * por localhost) las cuentas llegaran a otra base, nadie más conocería la clave, igual que una
+ * cuenta que crea el dueño. Solo con base local: con ALLOW_SEED_DEMO=1 no se crean. Nunca la del
+ * dueño: esa la crea el dueño con npm run staff:create-owner. Auditoría del sprint 6 (M-1).
+ */
+const DEMO_ACCOUNTS: readonly { email: string; name: string; role: Exclude<Role, "owner"> }[] = [
+  { email: "recepcion@villa.test", name: "Recepción de prueba", role: "reception" },
+  { email: "barbero@villa.test", name: "Barbero de prueba", role: "barber" },
+];
+
+/**
  * tsx no fija NODE_ENV: con el .env de producción, mirar solo NODE_ENV no protege. Se exige una base
  * local (localhost, 127.0.0.1, ::1) o la opción explícita ALLOW_SEED_DEMO=1. Nunca imprime la URL.
  */
-function assertDevDatabase(): void {
+/** true si la base es local; false si solo pasó por ALLOW_SEED_DEMO=1. */
+function assertDevDatabase(): boolean {
   if (process.env.NODE_ENV === "production") {
     throw new Error("seed-demo es solo para desarrollo: no se ejecuta con NODE_ENV=production");
   }
-  if (process.env.ALLOW_SEED_DEMO === "1") return;
   let host = "";
   try {
     host = new URL(process.env.DATABASE_URL ?? "").hostname;
   } catch {
     // Sin URL válida: no es una base local reconocible.
   }
-  if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(host)) {
+  const local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(host);
+  if (!local && process.env.ALLOW_SEED_DEMO !== "1") {
     throw new Error("seed-demo solo corre contra una base local. Si de verdad es una base de pruebas, usa ALLOW_SEED_DEMO=1.");
   }
+  return local;
 }
 
 async function main() {
-  assertDevDatabase();
+  const localDatabase = assertDevDatabase();
   const client = db();
   const d = client as unknown as Db;
 
@@ -123,6 +141,25 @@ async function main() {
     const staffId = await addStaffMember(d, { locationId, displayName: b.name, role: "barber" });
     await setWeeklySchedule(d, { locationId, staffId, blocks: b.schedule });
     console.log(`Barbero "${b.name}": creado con su horario.`);
+  }
+
+  const missing: (typeof DEMO_ACCOUNTS)[number][] = [];
+  for (const a of DEMO_ACCOUNTS) {
+    const [found] = await client.select({ id: user.id }).from(user).where(eq(user.email, a.email));
+    if (found) console.log(`Cuenta de prueba ${a.email}: ya existe (su contraseña no cambia).`);
+    else missing.push(a);
+  }
+  if (missing.length > 0 && !localDatabase) {
+    console.log("Cuentas de prueba: no se crean fuera de una base local (ALLOW_SEED_DEMO=1).");
+  } else if (missing.length > 0) {
+    const password = randomBytes(12).toString("base64url");
+    for (const a of missing) {
+      const { staffId } = await createStaffUser(d, { locationId, name: a.name, email: a.email, password, role: a.role });
+      // El barbero de prueba atiende como el primero de la lista, para que tenga citas en "Mi día".
+      if (a.role === "barber") await setWeeklySchedule(d, { locationId, staffId, blocks: BARBERS[0].schedule });
+      console.log(`Cuenta de prueba ${a.email} (${a.role === "reception" ? "recepción" : "barbero"}): creada.`);
+    }
+    console.log(`Contraseña de las cuentas nuevas (se muestra solo esta vez; guárdala): ${password}`);
   }
 
   const settings = await locationSettings(d, locationId);

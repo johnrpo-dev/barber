@@ -13,7 +13,7 @@
   /* Errores y acciones destructivas (5,9:1 sobre hueso). */
   --color-alerta: #8f2a1d;
 
-  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-display: var(--font-display-face), Georgia, serif;
   --font-sans: var(--font-public-sans), system-ui, sans-serif;
 
   --ease-villa: cubic-bezier(0.2, 0.8, 0.2, 1);

@@ -7,7 +7,11 @@ import { db } from "@/db/client";
 import { paidSalesCount, saleReceipt, salesOfDay } from "@/db/receipts";
 import type { Db } from "@/db/types";
 import { isUlid } from "@/db/ulid";
+import { salesByDay } from "@/db/history";
+import { readOnlySnapshot } from "@/db/reports";
 import { formatPhone } from "@/domain/clients/client";
+import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
+import { saleNumber } from "@/domain/sales/receipt-number";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, runAction } from "@/lib/action";
 import { absLabel, moneyLabel, timeLabel } from "@/lib/labels";
@@ -39,9 +43,6 @@ export interface SaleReceiptView {
   changeLabel: string | null;
 }
 
-/** Últimos 8 caracteres del ULID (no se exporta: en un archivo "use server" sería una acción pública). */
-const receiptNumber = (publicId: string): string => publicId.slice(-8);
-
 const receiptInput = z.object({ publicId: z.string().max(40) });
 
 export async function loadSaleReceipt(raw: z.input<typeof receiptInput>): Promise<ActionResult<SaleReceiptView>> {
@@ -59,7 +60,7 @@ export async function loadSaleReceipt(raw: z.input<typeof receiptInput>): Promis
     const change = r.payments.reduce((acc, p) => acc + (p.change ?? 0n), 0n);
     return {
       publicId: r.publicId,
-      numberLabel: receiptNumber(r.publicId),
+      numberLabel: saleNumber(r.publicId),
       businessDate: r.businessDate,
       timeLabel: timeLabel(r.createdAt, r.location.timeZone),
       voided: r.status === "voided",
@@ -116,7 +117,7 @@ export async function loadSalesOfDay(raw: z.input<typeof dayInput>): Promise<Act
     const rows = await salesOfDay(conn, { locationId: staff.locationId, businessDate });
     const sales = rows.map((s) => ({
       publicId: s.publicId,
-      numberLabel: receiptNumber(s.publicId),
+      numberLabel: saleNumber(s.publicId),
       timeLabel: timeLabel(s.createdAt, day.timeZone),
       voided: s.status === "voided",
       totalLabel: moneyLabel(s.totalPaid),
@@ -125,5 +126,40 @@ export async function loadSalesOfDay(raw: z.input<typeof dayInput>): Promise<Act
     }));
     const paidCount = await paidSalesCount(conn, { locationId: staff.locationId, businessDate });
     return { businessDate, today: day.businessDate, canPickDay, sales, paidCount };
+  });
+}
+
+export interface SalesHistoryView {
+  period: HistoryPeriodView;
+  days: { date: string; paid: number; voided: number; totalLabel: string; tipsLabel: string; cashLabel: string; otherLabel: string }[];
+  total: { paid: number; voided: number; totalLabel: string; tipsLabel: string; cashLabel: string; otherLabel: string };
+}
+
+const historyInput = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional() });
+
+/**
+ * Historial de ventas del dueño: una fila por día del periodo (por defecto, este mes), con el total
+ * sumado en SQL. El detalle de cada día está en /panel/ventas?dia=… y el archivo, en Exportar.
+ */
+export async function loadSalesHistory(raw: z.input<typeof historyInput>): Promise<ActionResult<SalesHistoryView>> {
+  const staff = await requirePermission("reports.financial");
+  return runAction(async () => {
+    const input = historyInput.parse(raw);
+    return readOnlySnapshot(database(), async (tx) => {
+      const day = await today(tx, staff.locationId);
+      const period = historyPeriod(day.businessDate, input.from, input.to);
+      const data = await salesByDay(tx, { locationId: staff.locationId, from: period.from, to: period.to });
+      const labels = (r: { total: bigint; tips: bigint; cash: bigint; other: bigint }) => ({
+        totalLabel: moneyLabel(r.total),
+        tipsLabel: moneyLabel(r.tips),
+        cashLabel: moneyLabel(r.cash),
+        otherLabel: moneyLabel(r.other),
+      });
+      return {
+        period,
+        days: data.days.map((r) => ({ date: r.businessDate!, paid: r.paid, voided: r.voided, ...labels(r) })),
+        total: { paid: data.total.paid, voided: data.total.voided, ...labels(data.total) },
+      };
+    });
   });
 }

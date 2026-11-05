@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Printer } from "lucide-react";
+import { ChevronLeft, ChevronRight, History, Printer } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { addDays } from "@/domain/booking/clock";
@@ -32,7 +32,17 @@ export default async function VentasPage({ searchParams }: { searchParams: Promi
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 pb-28 pt-6 md:px-8 md:py-10">
-      <PageHeader eyebrow={isToday ? "Hoy" : undefined} title="Ventas" />
+      <PageHeader
+        eyebrow={isToday ? "Hoy" : undefined}
+        title="Ventas"
+        actions={
+          v.canPickDay ? (
+            <Link href="/panel/ventas/historial" className={navLink}>
+              <History size={18} aria-hidden /> Historial
+            </Link>
+          ) : undefined
+        }
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="font-semibold">

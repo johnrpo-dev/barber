@@ -4,6 +4,7 @@ import { z } from "zod";
 import { recordAudit } from "@/db/audit";
 import { today } from "@/db/cash";
 import { db } from "@/db/client";
+import { cashSessionsInPeriod, salesDetail } from "@/db/history";
 import {
   cardFees,
   cashDifferences,
@@ -21,6 +22,7 @@ import {
 import type { Db } from "@/db/types";
 import { receiptNumberLabel } from "@/domain/commissions/settlement";
 import { money } from "@/domain/money";
+import { saleNumber } from "@/domain/sales/receipt-number";
 import { CSV_MAX_ROWS, CSV_REPORTS, type CsvCell, type CsvReport, csvFilename, toCsv } from "@/domain/reports/csv";
 import { type PeriodPreset, PERIOD_PRESET_LABELS, PERIOD_PRESETS, periodLabel, presetPeriod, type ReportPeriod, reportPeriod } from "@/domain/reports/period";
 import type { EntryKind } from "@/domain/ledger/entry";
@@ -296,6 +298,47 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
           pesos(r.payout),
           text(r.paidFrom === null ? "Sin pago" : r.paidFrom === "cash" ? "Caja" : "Banco"),
           text(r.status === "settled" ? "Vigente" : "Revertida"),
+        ]),
+      };
+    case "sales": {
+      // Una fila por venta, anuladas incluidas (marcadas). Sin datos del cliente.
+      const rows = await salesDetail(tx, { ...q, limit: CSV_MAX_ROWS + 1 });
+      return {
+        header: ["Fecha", "Hora", "Número", "Estado", "Servicios", "Atendió", "Servicios (bruto)", "Descuento", "Propina", "Total cobrado", "Efectivo", "Otros medios", "Medios"],
+        rows: rows.map((r) => [
+          date(r.businessDate),
+          text(r.time),
+          text(saleNumber(r.publicId)),
+          text(r.status === "paid" ? "Vigente" : "Anulada"),
+          text(r.services),
+          text(r.staff),
+          pesos(r.subtotal),
+          pesos(r.discount),
+          pesos(r.tips),
+          pesos(r.total),
+          pesos(r.cash),
+          pesos(r.other),
+          text(r.methods),
+        ]),
+      };
+    }
+    case "cash_sessions":
+      return {
+        // Sin las notas del conteo: son texto libre y no salen en un archivo; se ven en pantalla.
+        header: ["Abrió el", "Hora", "Abrió", "Base contada", "Diferencia de apertura", "Cerró el", "Hora de cierre", "Cerró", "Esperado", "Contado", "Diferencia de cierre", "Revisión"],
+        rows: (await cashSessionsInPeriod(tx, q)).sessions.map((r) => [
+          date(r.openedDate),
+          text(r.openedTime),
+          text(r.openedBy),
+          pesos(r.openingCounted),
+          pesos(r.openingDifference),
+          r.closedDate ? date(r.closedDate) : text("Abierta"),
+          text(r.closedTime ?? ""),
+          text(r.closedBy ?? ""),
+          r.expected === null ? text("") : pesos(r.expected),
+          r.closingCounted === null ? text("") : pesos(r.closingCounted),
+          r.difference === null ? text("") : pesos(r.difference),
+          text(!r.flagged ? "" : r.reviewed ? `Revisada${r.reviewedBy ? ` por ${r.reviewedBy}` : ""}` : "Pendiente de revisión"),
         ]),
       };
   }

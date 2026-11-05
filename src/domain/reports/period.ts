@@ -91,3 +91,18 @@ export function sameSpanPreviousMonth(today: string): ReportPeriod {
 export function periodLabel(period: ReportPeriod): string {
   return period.from === period.to ? period.from : `${period.from} a ${period.to}`;
 }
+
+export interface HistoryPeriodView extends ReportPeriod {
+  /** Los atajos, ya resueltos con el día contable de la sede. */
+  presets: { key: PeriodPreset; label: string; from: string; to: string }[];
+}
+
+/**
+ * Periodo de un historial (ventas, caja): el de la dirección si viene completo y es válido; si no,
+ * este mes según el día contable de la sede. Un periodo inválido (al revés o de más de
+ * MAX_REPORT_DAYS) se rechaza con ReportError, igual que en Informes.
+ */
+export function historyPeriod(today: string, from?: string, to?: string): HistoryPeriodView {
+  const period = from && to && isDateString(from) && isDateString(to) ? reportPeriod(from, to) : presetPeriod("this_month", today);
+  return { ...period, presets: PERIOD_PRESETS.map((key) => ({ key, label: PERIOD_PRESET_LABELS[key], ...presetPeriod(key, today) })) };
+}
