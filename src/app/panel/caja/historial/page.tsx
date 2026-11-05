@@ -89,7 +89,7 @@ export default async function CashHistoryPage({ searchParams }: { searchParams: 
                       <dd className={cx("text-sm", s.openingDifferenceLabel ? (s.openingShort ? "font-semibold text-alerta" : "font-semibold") : "text-tinta/70")}>
                         {s.openingDifferenceLabel ? (
                           <>
-                            {s.openingShort ? "Faltante" : "Sobrante"} frente al libro <span className="monto">{s.openingDifferenceLabel}</span>
+                            {s.openingShort ? "Faltante" : "Sobrante"} frente al libro <span className="monto">{s.openingDifferenceLabel}</span> · responde {s.openedBy}
                           </>
                         ) : (
                           "Cuadró con el libro"
@@ -112,7 +112,7 @@ export default async function CashHistoryPage({ searchParams }: { searchParams: 
                           <dd className={cx("text-sm", s.closed.differenceLabel ? (s.closed.short ? "font-semibold text-alerta" : "font-semibold") : "text-tinta/70")}>
                             {s.closed.differenceLabel ? (
                               <>
-                                {s.closed.short ? "Faltante" : "Sobrante"} <span className="monto">{s.closed.differenceLabel}</span>
+                                {s.closed.short ? "Faltante" : "Sobrante"} <span className="monto">{s.closed.differenceLabel}</span> · responde {s.closed.by}
                               </>
                             ) : (
                               "Cuadró"

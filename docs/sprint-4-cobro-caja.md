@@ -208,6 +208,7 @@ El cierre del **día contable** (`closeDay`) solo se permite sin caja abierta de
 | Aprobar anulación (`ledger.reverse` y reautenticación) | Sí | No | No |
 | Cerrar día (`day.close`) | Sí | Sí | No |
 | Reabrir día (`day.reopen` y reautenticación) | Sí | No | No |
+| Abrir la caja con el día de **hoy** cerrado: lo reabre en la misma transacción, con motivo automático y a nombre de quien abre (`day.reopen.today`; nunca un día anterior) | Sí | Sí | No |
 | Categorías de gasto y métodos de pago (`settings.manage`) | Sí | No | No |
 
 Cada acción nueva entra en `authorization.test.ts`, con sus casos de aislamiento entre sedes.

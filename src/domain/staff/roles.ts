@@ -15,7 +15,8 @@ export const PERMISSIONS = [
   "ledger.post", // cobrar, registrar gastos de caja
   "ledger.reverse", // anular un movimiento (con motivo)
   "day.close", // cerrar la caja del día
-  "day.reopen", // reabrir un día cerrado
+  "day.reopen", // reabrir un día cerrado (cualquier día)
+  "day.reopen.today", // abrir la caja aunque hoy esté cerrado: reabre HOY (nunca otro día) para no parar la operación
   "reports.financial", // utilidad, ingresos y gastos
   "commissions.view.all",
   "commissions.view.own",
@@ -43,6 +44,7 @@ const GRANTS: Record<Role, ReadonlySet<Permission>> = {
   reception: new Set<Permission>([
     "ledger.post",
     "day.close",
+    "day.reopen.today",
     "cash.manage",
     "appointments.manage.all",
     "clients.view.contact",

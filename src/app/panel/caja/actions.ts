@@ -86,7 +86,8 @@ export interface CashView {
   flaggedSessions: {
     id: string;
     open: boolean;
-    opening: null | { atLabel: string; expectedLabel: string; countedLabel: string; differenceLabel: string; note: string | null };
+    /** openedBy: quien abrió, responsable de la diferencia de apertura. */
+    opening: null | { atLabel: string; openedBy: string; expectedLabel: string; countedLabel: string; differenceLabel: string; note: string | null };
     closing: null | {
       flagged: boolean;
       atLabel: string;
@@ -102,6 +103,10 @@ export interface CashView {
   canBankExpense: boolean;
   canCloseDay: boolean;
   canReopenDay: boolean;
+  /** Abrir la caja aunque hoy esté cerrado (lo reabre en la misma operación): recepción y dueño. */
+  canReopenToday: boolean;
+  /** Si hoy se reabrió: quién, a qué hora y por qué (lo ve todo el que entra a Caja). */
+  todayReopened: null | { by: string; atLabel: string; reason: string };
   /** Citas de hoy en la silla o terminadas, sin cobrar: lo primero que ve quien cobra. */
   /** Día anterior con movimientos y sin cerrar (cierre tardío o se olvidó): se cierra desde Caja. */
   pendingDay: null | { date: string; label: string };
@@ -132,7 +137,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
   const staff = await requirePermission("ledger.post");
   return runAction(async () => {
     // Todo en UNA transacción REPEATABLE READ de solo lectura (L3): una sola foto del libro.
-    const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay } = await cashViewData(database(), staff.locationId);
+    const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay, reopened } = await cashViewData(database(), staff.locationId);
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -194,6 +199,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
             opening: f.openingNeedsReview
               ? {
                   atLabel: atLabel(f.openedAt, tz, day.businessDate),
+                  openedBy: f.openedBy ?? "Personal",
                   expectedLabel: moneyLabel(f.openingExpected),
                   countedLabel: moneyLabel(f.openingCounted),
                   differenceLabel: signedLabel(f.openingCounted - f.openingExpected),
@@ -218,6 +224,8 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       canBankExpense: can(staff.role, "expenses.bank"),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
+      canReopenToday: can(staff.role, "day.reopen.today"),
+      todayReopened: reopened ? { by: reopened.by, atLabel: atLabel(reopened.at, tz, day.businessDate), reason: reopened.reason } : null,
       pendingDay: pendingDay ? { date: pendingDay, label: formatDateLabel(pendingDay) } : null,
       toCharge: toCharge.map((a) => ({
         appointmentId: a.appointmentId.toString(),
@@ -262,6 +270,7 @@ export async function openCashSessionAction(
       note: input.note,
       idempotencyKey: input.idempotencyKey,
       actor: { userId: staff.userId },
+      reopenClosedToday: can(staff.role, "day.reopen.today"),
     });
     refresh();
     return { sessionId: opened.sessionId.toString(), differenceLabel: opened.difference === 0n ? null : signedLabel(opened.difference) };

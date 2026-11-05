@@ -11,17 +11,19 @@ import {
   cashViewData,
   closeBusinessDay,
   closeCashSession,
+  lastReopenOf,
   lastUnclosedPastDay,
   ledgerCash,
   openCashSession,
   payTips,
+  REOPEN_ON_CASH_OPEN_REASON,
   sessionSummary,
 } from "./cash";
 import { addExpense } from "./expenses";
-import { closeDay, trialBalance } from "./ledger";
+import { closeDay, isDayClosed, trialBalance } from "./ledger";
 import { chairAppointment, key, quickSale, type Shop, setupShop, simpleCheckout, TZ } from "./sales-testing";
 import { checkout } from "./sales";
-import { journalEntries, sales } from "./schema";
+import { auditEvents, journalEntries, sales } from "./schema";
 import { createTestDb, dbError } from "./testing";
 import type { Db } from "./types";
 
@@ -200,6 +202,71 @@ describe("propiedad: el cierre tardío no mezcla días", () => {
           expect(late.length).toBe(closed.difference === 0n ? 0 : 1);
         },
       ),
+      { numRuns: 8 },
+    );
+  }, 120_000);
+});
+
+// Si el día de HOY se cerró antes de tiempo, recepción no se queda sin operar: abrir la caja lo
+// reabre en la misma transacción, con su nombre. Un día anterior cerrado sigue cerrado.
+
+describe("abrir la caja con el día de hoy cerrado", () => {
+  const closeToday = (shop: Shop) => closeBusinessDay(db, { locationId: shop.locationId, businessDate: today(), actor: shop.owner });
+
+  it("con permiso, abrir la caja reabre hoy y queda registrado con quien abrió; cobra normal", async () => {
+    const shop = await newShop();
+    await closeToday(shop);
+    const opened = await openCashSession(db, {
+      locationId: shop.locationId,
+      counted: cop(0n),
+      idempotencyKey: key("open"),
+      actor: shop.reception,
+      reopenClosedToday: true,
+    });
+    expect(opened.created).toBe(true);
+    expect(await isDayClosed(db, shop.locationId, today())).toBe(false);
+    expect(await lastReopenOf(db, shop.locationId, today())).toMatchObject({ reason: REOPEN_ON_CASH_OPEN_REASON });
+    const audit = await db
+      .select({ action: auditEvents.action, actor: auditEvents.actorUserId })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.locationId, shop.locationId), eq(auditEvents.action, "day.reopen")));
+    expect(audit).toEqual([{ action: "day.reopen", actor: shop.reception.userId }]);
+    await cashSaleAt(shop);
+    expect(await ledgerCash(db, shop.locationId)).toBe(cop(30_000n).minor);
+  });
+
+  it("sin el permiso sigue rechazando la apertura y no cambia nada", async () => {
+    const shop = await newShop();
+    await closeToday(shop);
+    await expect(openCashSession(db, { locationId: shop.locationId, counted: cop(0n), idempotencyKey: key("open"), actor: shop.owner })).rejects.toThrow(
+      /^El día ya está cerrado/,
+    );
+    expect(await isDayClosed(db, shop.locationId, today())).toBe(true);
+    expect(await lastReopenOf(db, shop.locationId, today())).toBeNull();
+  });
+
+  it("propiedad: para cualquier conjunto de días anteriores cerrados, abrir la caja solo reabre hoy", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.uniqueArray(fc.integer({ min: 1, max: 6 }), { maxLength: 4 }), fc.boolean(), fc.bigInt({ min: 0n, max: 50_000n }), async (back, todayClosed, counted) => {
+        const shop = await newShop();
+        const past = back.map((n) => addDays(today(), -n));
+        for (const d of past) await closeBusinessDay(db, { locationId: shop.locationId, businessDate: d, actor: shop.owner });
+        if (todayClosed) await closeToday(shop);
+        const opened = await openCashSession(db, {
+          locationId: shop.locationId,
+          counted: cop(counted),
+          note: "base",
+          idempotencyKey: key("open"),
+          actor: shop.reception,
+          reopenClosedToday: true,
+        });
+        expect(opened.difference).toBe(cop(counted).minor);
+        expect(await ledgerCash(db, shop.locationId)).toBe(cop(counted).minor);
+        expect(await isDayClosed(db, shop.locationId, today())).toBe(false);
+        for (const d of past) expect(await isDayClosed(db, shop.locationId, d)).toBe(true);
+        // Solo hubo reapertura si hoy estaba cerrado.
+        expect((await lastReopenOf(db, shop.locationId, today())) !== null).toBe(todayClosed);
+      }),
       { numRuns: 8 },
     );
   }, 120_000);

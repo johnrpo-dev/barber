@@ -80,7 +80,7 @@ Los permisos se verifican **siempre en el servidor**, con denegación por defect
 | Rol | Puede | No puede |
 |---|---|---|
 | **Dueño/Admin** | Todo: usuarios, precios, reglas de comisión, reportes completos, aprobar anulaciones, reabrir cajas, exportar | — (MFA obligatorio; las acciones críticas piden reautenticación) |
-| **Recepción/Caja** | Agenda completa, crear citas y walk-ins, cobrar, abrir y cerrar **su** caja, registrar gastos de caja, **solicitar** anulaciones | Ver utilidades, comisiones de otros o reportes financieros; aprobar sus propias anulaciones |
+| **Recepción/Caja** | Agenda completa, crear citas y walk-ins, cobrar, abrir y cerrar **su** caja (siempre: si el día de hoy se cerró antes de tiempo, abrir la caja lo reabre a su nombre), registrar gastos de caja, **solicitar** anulaciones | Ver utilidades, comisiones de otros o reportes financieros; aprobar sus propias anulaciones |
 | **Barbero** | Ver su agenda, marcar "En silla" y "Terminado", ver a sus clientes (teléfono enmascarado), ver **sus** comisiones, bloquear su tiempo | Ver la caja general o datos de otros barberos; modificar montos |
 | **Cliente** | Reservar, reprogramar o cancelar mediante enlace con token | — (sin cuenta en el MVP) |
 
@@ -150,7 +150,8 @@ Qué pasa al confirmar: en **una sola transacción** la venta queda `paid` y sel
 2. Se cuenta el efectivo.
 3. Si hay diferencia, se registra como `cash_adjustment` con nota obligatoria.
 4. El día queda bloqueado.
-5. Si se olvidó cerrar la caja, al otro día se cierra contando (el ajuste queda en el día del turno) y se abre la de hoy, sin reabrir nada ni mezclar las ventas de los dos días.
+5. Quien abre responde por la base y quien cierra por la diferencia del cierre: su nombre queda en Caja, en el historial y en el Excel.
+6. Si se olvidó cerrar la caja, al otro día se cierra contando (el ajuste queda en el día del turno) y se abre la de hoy, sin reabrir nada ni mezclar las ventas de los dos días.
 
 **Liquidar comisiones**
 1. Se elige barbero y periodo.

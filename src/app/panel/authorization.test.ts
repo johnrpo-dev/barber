@@ -1826,6 +1826,26 @@ describe("conteo a ciegas", () => {
     });
   });
 
+  it("con el día de hoy cerrado, recepción abre la caja igual: el día se reabre a su nombre (y el barbero no puede)", async () => {
+    await cashDrawer(false);
+    const day = businessDate(new Date(), TZ);
+    await closeBusinessDay(db, { locationId: A.location, businessDate: day, actor: { userId: "seed" } });
+    const units = String((await ledgerCash(db, A.location)) / 100n);
+
+    await signInAs(A.users.reception);
+    const view = await caja.loadCashView();
+    expect(view.ok && view.data).toMatchObject({ dayClosed: true, canReopenToday: true, canReopenDay: false });
+    expect(await caja.openCashSessionAction({ countedUnits: units, idempotencyKey: `abrir-${uniq()}` })).toMatchObject({ ok: true });
+    const after = await caja.loadCashView();
+    expect(after.ok && after.data).toMatchObject({ dayClosed: false, todayReopened: { by: expect.stringMatching(/^Persona reception/) } });
+
+    // Quien no maneja caja no la abre, ni con el día cerrado.
+    await signInAs(A.users.reception);
+    expect(await caja.closeCashSessionAction({ countedUnits: units, note: "Fin", idempotencyKey: `cerrar-${uniq()}` })).toMatchObject({ ok: true });
+    await signInAs(A.users.barber);
+    await expect(caja.openCashSessionAction({ countedUnits: units, idempotencyKey: `abrir-${uniq()}` })).rejects.toMatchObject({ url: "/panel?sin-permiso=1" });
+  });
+
   it("el dueño ve los cierres marcados y los da por revisados una sola vez", async () => {
     const id = await flaggedSession();
     await signInAs(A.users.owner);

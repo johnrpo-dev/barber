@@ -126,14 +126,19 @@ export function CashBoard({ initial }: { initial: CashView }) {
         }
       />
 
-      {/* Caja cerrada: lo primero es abrirla (sin ella no entra efectivo). */}
-      {!s && !view.dayClosed ? (
+      {/* Caja cerrada: lo primero es abrirla (sin ella no entra efectivo). Si hoy se cerró antes de
+          tiempo, abrir la caja lo reabre: la operación no espera al dueño. */}
+      {!s && (!view.dayClosed || view.canReopenToday) ? (
         <div className="flex flex-col gap-3 rounded-xl border border-cuero/30 bg-cuero/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <Lock size={20} className="mt-0.5 shrink-0 text-cuero" aria-hidden />
             <div className="flex flex-col gap-0.5">
               <p className="font-semibold">Abre la caja para empezar</p>
-              <p className="text-sm text-tinta/80">Cuenta la base. Mientras esté cerrada solo se cobra con tarjeta, transferencia o billetera.</p>
+              <p className="text-sm text-tinta/80">
+                {view.dayClosed
+                  ? "El día de hoy está cerrado. Al abrir la caja se reabre y queda registrado con tu nombre."
+                  : "Cuenta la base. Mientras esté cerrada solo se cobra con tarjeta, transferencia o billetera."}
+              </p>
             </div>
           </div>
           <Btn className="shrink-0" onPress={() => setSheet({ kind: "open" })}>
@@ -160,7 +165,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
         </div>
       ) : null}
       {/* Día de hoy cerrado: nadie abre caja ni cobra hasta que el dueño lo reabra (es su control). */}
-      {view.dayClosed ? (
+      {view.dayClosed && !view.canReopenToday ? (
         <div role="alert" className="flex flex-col gap-3 rounded-xl border border-alerta/30 bg-alerta/5 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <CalendarX size={20} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
@@ -386,7 +391,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
               <Lock size={20} className="text-tinta/70" aria-hidden /> Caja cerrada
             </h2>
             <p className="text-sm text-tinta/70">
-              {view.dayClosed
+              {view.dayClosed && !view.canReopenToday
                 ? "Con el día cerrado no se abre la caja."
                 : "Ábrela contando la base para recibir efectivo. Sin caja abierta solo se cobra con tarjeta, transferencia o billetera."}
             </p>
@@ -465,6 +470,12 @@ export function CashBoard({ initial }: { initial: CashView }) {
           <h2 id="dia" className="font-display text-2xl leading-tight">
             Día contable
           </h2>
+          {view.todayReopened ? (
+            <p className="text-sm text-tinta/80">
+              Hoy se reabrió a las <span className="monto">{view.todayReopened.atLabel}</span> ·{" "}
+              <span className="font-semibold">{view.todayReopened.by}</span>: {view.todayReopened.reason}
+            </p>
+          ) : null}
           {view.pendingDay && view.canCloseDay ? (
             <div className="flex flex-col gap-2 rounded-xl border border-cuero/30 bg-cuero/5 p-4">
               <p className="text-sm">
@@ -483,6 +494,8 @@ export function CashBoard({ initial }: { initial: CashView }) {
                 <Btn variant="danger" className="self-start" onPress={() => setSheet({ kind: "reopen" })}>
                   <CalendarX size={18} aria-hidden /> Reabrir el día
                 </Btn>
+              ) : view.canReopenToday ? (
+                <p className="text-sm text-tinta/70">Si hace falta seguir trabajando, abre la caja: el día se reabre con tu nombre.</p>
               ) : (
                 <p className="text-sm text-tinta/70">Solo el dueño puede reabrirlo.</p>
               )}
@@ -673,6 +686,10 @@ function OpenForm({ view, onDone, onCancel }: { view: CashView; onDone: (m: stri
         error={invalid.errors.note}
         isRequired={diff !== 0n}
       />
+      {view.dayClosed ? (
+        <p className="rounded-lg border border-cuero/30 bg-cuero/5 p-3 text-sm">El día de hoy estaba cerrado: al abrir la caja se reabre y queda registrado con tu nombre.</p>
+      ) : null}
+      <p className="text-xs text-tinta/70">La apertura queda a tu nombre: respondes por la base que cuentas.</p>
       <FormError message={error} />
       <Actions pending={pending} onCancel={onCancel} variant="success">
         <LockOpen size={18} aria-hidden /> Abrir caja
@@ -775,6 +792,7 @@ function CloseForm({
           <h3 ref={summaryRef} tabIndex={-1} className="font-display text-2xl outline-none">
             {session?.staleDayLabel ? `Caja del ${session.staleDayLabel} cerrada` : "Caja cerrada"}
           </h3>
+          <p className="text-sm text-tinta/70">El cierre queda a tu nombre, con la diferencia.</p>
         </div>
         <dl className="flex flex-col gap-2 rounded-xl border border-tinta/10 bg-hueso/40 p-4 text-sm">
           <div className="flex items-baseline justify-between gap-3">
@@ -1257,7 +1275,7 @@ function FlaggedSessions({ sessions, onReviewed }: { sessions: CashView["flagged
       <ul className={cx(card, "divide-y divide-tinta/10")}>
         {sessions.map((f) => (
           <li key={f.id} className="flex flex-col gap-3 px-4 py-3">
-            {f.opening ? <ReviewPart title="Apertura" at={f.opening.atLabel} part={f.opening} /> : null}
+            {f.opening ? <ReviewPart title="Apertura" at={f.opening.atLabel} who={f.opening.openedBy} part={f.opening} /> : null}
             {f.closing?.flagged ? <ReviewPart title="Cierre" at={f.closing.atLabel} who={f.closing.closedBy} part={f.closing} /> : null}
             {f.open ? (
               <p className="text-sm text-tinta/70">El turno sigue abierto: lo revisas cuando se cierre.</p>
@@ -1299,7 +1317,11 @@ function ReviewPart({
         </p>
         <p className="text-xs text-tinta/70">
           <span className="monto">{at}</span>
-          {who ? ` · Cerró ${who}` : ""}
+          {who ? (
+            <>
+              {" · "}Responsable: <span className="font-semibold text-tinta">{who}</span>
+            </>
+          ) : null}
         </p>
       </div>
       <dl className="grid grid-cols-2 gap-2 text-sm">

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gte, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
 import { businessDate } from "@/domain/ledger/business-date";
 import { cashAdjustmentEntry, cashDepositEntry, CashError, sessionIsFromEarlierDay, staleSessionMessage, tipPayoutEntry } from "@/domain/sales/cash";
@@ -137,9 +138,25 @@ export interface OpenedSession {
   created: boolean;
 }
 
+/** Motivo con el que queda la reapertura automática de hoy al abrir la caja. */
+export const REOPEN_ON_CASH_OPEN_REASON = "Se abrió la caja con el día de hoy cerrado";
+
 export async function openCashSession(
   db: Db,
-  input: { locationId: bigint; counted: Money; note?: string; idempotencyKey: string; actor: ActorRef; now?: Date },
+  input: {
+    locationId: bigint;
+    counted: Money;
+    note?: string;
+    idempotencyKey: string;
+    actor: ActorRef;
+    now?: Date;
+    /**
+     * Si hoy está cerrado, lo reabre en la misma transacción en vez de rechazar la apertura
+     * (recepción y dueño: la operación no se para porque el día se cerró antes de tiempo). Solo
+     * toca HOY; un día anterior cerrado sigue cerrado. Queda en la bitácora con quien abrió.
+     */
+    reopenClosedToday?: boolean;
+  },
 ): Promise<OpenedSession> {
   assertWholePesos(input.counted, "El efectivo contado");
   const note = cleanNote(input.note);
@@ -156,7 +173,20 @@ export async function openCashSession(
     if (await openSession(tx, input.locationId, { lock: true })) throw new CashError("La caja ya está abierta");
     // Un turno no se abre en un día cerrado, haya o no diferencia (L1): todo lo que entre a la caja
     // durante el turno se registraría en ese día.
-    const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new CashError(m));
+    const now = input.now ?? new Date();
+    const current = await today(tx, input.locationId, now);
+    if (current.closed && input.reopenClosedToday) {
+      await reopenDay(tx, { locationId: input.locationId, businessDate: current.businessDate, reason: REOPEN_ON_CASH_OPEN_REASON, createdBy: input.actor.userId });
+      await recordAudit(tx, {
+        locationId: input.locationId,
+        actorUserId: input.actor.userId,
+        action: "day.reopen",
+        targetKind: "business_day",
+        targetRef: current.businessDate,
+        summary: `Reabrió el día ${current.businessDate} al abrir la caja`,
+      });
+    }
+    const day = await requireOpenDay(tx, input.locationId, now, (m) => new CashError(m));
     const expected = await ledgerCash(tx, input.locationId);
     const adjustment = cashAdjustmentEntry({ expected: money(expected), counted: input.counted }, note ?? undefined, {
       businessDate: day,
@@ -325,10 +355,13 @@ export async function markSessionReviewed(db: Db, input: { locationId: bigint; s
  * primero. Incluye el turno abierto si su apertura ya quedó marcada (se revisa al cerrarlo).
  */
 export async function sessionsNeedingReview(db: Db, locationId: bigint) {
+  const opener = alias(staffMembers, "opener");
   return db
     .select({
       id: cashSessions.id,
       openedAt: cashSessions.openedAt,
+      // Quien abre responde por la diferencia de apertura; quien cierra, por la del cierre.
+      openedBy: opener.displayName,
       openingCounted: cashSessions.openingCounted,
       openingExpected: cashSessions.openingExpected,
       openingNote: cashSessions.openingNote,
@@ -344,6 +377,7 @@ export async function sessionsNeedingReview(db: Db, locationId: bigint) {
     })
     .from(cashSessions)
     .leftJoin(staffMembers, and(eq(staffMembers.locationId, cashSessions.locationId), eq(staffMembers.userId, cashSessions.closedBy)))
+    .leftJoin(opener, and(eq(opener.locationId, cashSessions.locationId), eq(opener.userId, cashSessions.openedBy)))
     .where(
       and(
         eq(cashSessions.locationId, locationId),
@@ -526,6 +560,21 @@ export async function closeBusinessDay(db: Db, input: { locationId: bigint; busi
   });
 }
 
+/** La última reapertura de ese día (quién, cuándo y por qué), para que se vea en Caja. */
+export async function lastReopenOf(db: Db, locationId: bigint, day: string): Promise<{ by: string; at: Date; reason: string } | null> {
+  const [row] = rowsOf<{ by: string | null; at: Date | string; reason: string }>(
+    await db.execute(sql`
+      select m.display_name as by, e.created_at as at, e.reason
+        from day_close_events e
+        left join staff_members m on m.location_id = e.location_id and m.user_id = e.created_by
+       where e.location_id = ${locationId}::bigint and e.business_date = ${day}::date and e.action = 'reopen'
+       order by e.id desc
+       limit 1
+    `),
+  );
+  return row ? { by: row.by ?? "Personal", at: new Date(row.at), reason: row.reason } : null;
+}
+
 export async function reopenBusinessDay(
   db: Db,
   input: { locationId: bigint; businessDate: string; reason: string; actor: ActorRef },
@@ -544,7 +593,7 @@ export async function reopenBusinessDay(
       action: "day.reopen",
       targetKind: "business_day",
       targetRef: input.businessDate,
-      summary: `Reabrió el día ${input.businessDate}`,
+      summary: `Reabrió el día ${input.businessDate}: ${reason}`,
     });
   });
 }
@@ -766,7 +815,8 @@ export async function cashViewData(db: Db, locationId: bigint, now: Date = new D
       const flagged = await sessionsNeedingReview(tx, locationId);
       const toCharge = await appointmentsToCharge(tx, locationId, day.businessDate);
       const pendingDay = await lastUnclosedPastDay(tx, locationId, day.businessDate);
-      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged, toCharge, pendingDay };
+      const reopened = await lastReopenOf(tx, locationId, day.businessDate);
+      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged, toCharge, pendingDay, reopened };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );

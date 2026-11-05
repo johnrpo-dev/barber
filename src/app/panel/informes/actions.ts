@@ -325,7 +325,7 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
     case "cash_sessions":
       return {
         // Sin las notas del conteo: son texto libre y no salen en un archivo; se ven en pantalla.
-        header: ["Abrió el", "Hora", "Abrió", "Base contada", "Diferencia de apertura", "Cerró el", "Hora de cierre", "Cerró", "Esperado", "Contado", "Diferencia de cierre", "Revisión"],
+        header: ["Abrió el", "Hora", "Abrió (responsable de la apertura)", "Base contada", "Diferencia de apertura", "Cerró el", "Hora de cierre", "Cerró (responsable del cierre)", "Esperado", "Contado", "Diferencia de cierre", "Revisión"],
         rows: (await cashSessionsInPeriod(tx, q)).sessions.map((r) => [
           date(r.openedDate),
           text(r.openedTime),
