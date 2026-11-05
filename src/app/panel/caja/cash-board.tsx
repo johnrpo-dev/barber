@@ -159,11 +159,27 @@ export function CashBoard({ initial }: { initial: CashView }) {
           </Btn>
         </div>
       ) : null}
+      {/* Día de hoy cerrado: nadie abre caja ni cobra hasta que el dueño lo reabra (es su control). */}
       {view.dayClosed ? (
-        <p className={cx(card, "p-4 text-sm text-tinta/80")}>
-          El día de hoy está cerrado: no se puede abrir la caja ni cobrar.{" "}
-          {view.canReopenDay ? "Si se cerró por error, reábrelo abajo en Día contable." : "Si se cerró por error, pídele al dueño que lo reabra en Caja."}
-        </p>
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-alerta/30 bg-alerta/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <CalendarX size={20} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
+            <div className="flex flex-col gap-0.5">
+              <p className="font-semibold">El día de hoy está cerrado</p>
+              <p className="text-sm text-tinta/80">
+                Por eso no se puede abrir la caja ni cobrar.{" "}
+                {view.canReopenDay
+                  ? "Si se cerró por error, reábrelo: queda registrado con tu nombre y el motivo."
+                  : "Si se cerró por error, pídele al dueño que lo reabra desde Caja; recepción no puede reabrir días."}
+              </p>
+            </div>
+          </div>
+          {view.canReopenDay ? (
+            <Btn variant="danger" className="shrink-0" onPress={() => setSheet({ kind: "reopen" })}>
+              <CalendarX size={18} aria-hidden /> Reabrir el día
+            </Btn>
+          ) : null}
+        </div>
       ) : null}
 
       {/* Cobrar: la acción principal de la pantalla */}
@@ -369,7 +385,11 @@ export function CashBoard({ initial }: { initial: CashView }) {
             <h2 id="turno" className="flex items-center gap-2 font-display text-2xl leading-tight">
               <Lock size={20} className="text-tinta/70" aria-hidden /> Caja cerrada
             </h2>
-            <p className="text-sm text-tinta/70">Ábrela contando la base para recibir efectivo. Sin caja abierta solo se cobra con tarjeta, transferencia o billetera.</p>
+            <p className="text-sm text-tinta/70">
+              {view.dayClosed
+                ? "Con el día cerrado no se abre la caja."
+                : "Ábrela contando la base para recibir efectivo. Sin caja abierta solo se cobra con tarjeta, transferencia o billetera."}
+            </p>
           </div>
           {view.lastClosed ? (
             <dl className="grid grid-cols-2 gap-3 rounded-lg bg-hueso/50 p-3 text-sm">
