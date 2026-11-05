@@ -14,6 +14,7 @@ import { generatePassword, initials, ROLE_OPTIONS } from "../staff-directory";
 import { TimeOffForm, TimeOffList } from "../time-off";
 import type { TimeOffView } from "../time-off-view";
 import { type ScheduleBlockInput, ScheduleEditor } from "./schedule-editor";
+import { type ServiceChoiceView, ServicesEditor } from "./services-editor";
 
 export interface MemberView {
   id: string;
@@ -41,12 +42,17 @@ export function StaffDetail({
   schedule,
   timeOff,
   today,
+  services,
+  doing,
 }: {
   member: MemberView;
   minPasswordLength: number;
   schedule: ScheduleBlockInput[];
   timeOff: TimeOffView[];
   today: string;
+  services: ServiceChoiceView[];
+  /** Ids de los servicios (activos o no) que hace hoy. */
+  doing: string[];
 }) {
   const [addingTimeOff, setAddingTimeOff] = useState(false);
   const firstName = member.displayName.split(/\s+/)[0] ?? member.displayName;
@@ -105,6 +111,9 @@ export function StaffDetail({
           <Tab id="horario" className={tabClass}>
             Horario
           </Tab>
+          <Tab id="servicios" className={tabClass}>
+            Servicios
+          </Tab>
           <Tab id="ausencias" className={tabClass}>
             Ausencias
             {timeOff.length > 0 ? (
@@ -119,6 +128,15 @@ export function StaffDetail({
         {/* Montados siempre: cambiar de pestaña no descarta un horario o un perfil sin guardar. */}
         <TabPanel id="horario" shouldForceMount className="outline-none data-[inert]:hidden">
           <ScheduleEditor staffId={member.id} initial={schedule} />
+        </TabPanel>
+
+        <TabPanel id="servicios" shouldForceMount className="outline-none data-[inert]:hidden">
+          <ServicesEditor
+            staffId={member.id}
+            firstName={firstName}
+            services={services}
+            initial={doing.filter((id) => services.some((s) => s.id === id))}
+          />
         </TabPanel>
 
         <TabPanel id="ausencias" className="flex flex-col gap-4 outline-none">

@@ -617,6 +617,16 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "personal · servicios que hace",
+    action: "saveStaffServicesAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const target = await addStaffMember(db, { locationId: A.location, displayName: `Manicurista ${uniq()}`, role: "barber" });
+      // Nace con todos los servicios: quitárselos es un cambio y deja un evento.
+      return () => personal.saveStaffServicesAction({ staffId: String(target), serviceIds: [] });
+    },
+  },
+  {
     name: "bloqueos · ausencia de otra persona",
     action: "addStaffTimeOffAction",
     allowed: ["owner", "reception"],
@@ -1335,6 +1345,10 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
       personal.updateStaffProfileAction({ staffId: String(A.users.reception.staffId), displayName: "X", role: "owner", active: true }),
   },
   { name: "borrar un horario", prepare: async () => () => personal.saveScheduleAction({ staffId: String(A.users.barber.staffId), blocks: [] }) },
+  {
+    name: "quitarle los servicios a alguien",
+    prepare: async () => () => personal.saveStaffServicesAction({ staffId: String(A.users.barber.staffId), serviceIds: [] }),
+  },
   {
     name: "poner una ausencia",
     prepare: async () => {
@@ -2257,6 +2271,7 @@ const AUDITED: Record<string, AuditAction> = {
   resetStaffPasswordAction: "staff.password_reset",
   revokeStaffSessionsAction: "staff.sessions_revoke",
   saveScheduleAction: "schedule.save",
+  saveStaffServicesAction: "staff.update",
   exportReportCsvAction: "report.export",
 };
 

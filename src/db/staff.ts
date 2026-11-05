@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, like, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, like, notInArray, sql } from "drizzle-orm";
 import { hashPassword } from "better-auth/crypto";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { isRole, type Role } from "@/domain/staff/roles";
 import { assertValidWeeklySchedule, type ScheduleBlock, type Weekday } from "@/domain/staff/schedule";
-import { account, locations, session, staffMembers, staffSchedules, user, verification } from "./schema";
+import { account, locations, services, session, staffMembers, staffSchedules, staffServices, user, verification } from "./schema";
 import type { Db } from "./types";
 
 // Personal de la sede y sus horarios. Los roles se guardan por sede (staff_members),
@@ -59,6 +59,7 @@ export async function createStaffUser(
       .values({ locationId: input.locationId, userId, displayName: name, role: input.role })
       .returning({ id: staffMembers.id });
     if (!staff) throw new StaffError("No se pudo crear el miembro del personal");
+    await assignAllServices(tx as unknown as Db, input.locationId, staff.id);
     return { userId, staffId: staff.id };
   });
 }
@@ -70,12 +71,89 @@ export async function addStaffMember(
 ): Promise<bigint> {
   const displayName = input.displayName.trim();
   if (displayName.length < 2) throw new StaffError("El nombre debe tener al menos 2 caracteres");
-  const [staff] = await db
-    .insert(staffMembers)
-    .values({ locationId: input.locationId, displayName, role: input.role })
-    .returning({ id: staffMembers.id });
-  if (!staff) throw new StaffError("No se pudo crear el miembro del personal");
-  return staff.id;
+  return db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Db;
+    const [staff] = await tx
+      .insert(staffMembers)
+      .values({ locationId: input.locationId, displayName, role: input.role })
+      .returning({ id: staffMembers.id });
+    if (!staff) throw new StaffError("No se pudo crear el miembro del personal");
+    await assignAllServices(tx, input.locationId, staff.id);
+    return staff.id;
+  });
+}
+
+// ─── Servicios que hace cada persona ─────────────────────────────────────────
+
+/** Persona nueva: hace todos los servicios de la sede hasta que el dueño la acote. */
+async function assignAllServices(db: Db, locationId: bigint, staffId: bigint): Promise<void> {
+  await db.execute(sql`
+    insert into staff_services (location_id, staff_id, service_id)
+    select ${locationId}::bigint, ${staffId}::bigint, s.id from services s where s.location_id = ${locationId}::bigint
+    on conflict do nothing
+  `);
+}
+
+/** Servicios que hace una persona (ids internos). */
+export async function staffServiceIds(db: Db, input: { locationId: bigint; staffId: bigint }): Promise<bigint[]> {
+  const rows = await db
+    .select({ serviceId: staffServices.serviceId })
+    .from(staffServices)
+    .where(and(eq(staffServices.locationId, input.locationId), eq(staffServices.staffId, input.staffId)))
+    .orderBy(asc(staffServices.serviceId));
+  return rows.map((r) => r.serviceId);
+}
+
+/** Servicios de cada persona de la sede: staffId → ids de servicio. */
+export async function serviceIdsByStaff(db: Db, locationId: bigint): Promise<Map<bigint, bigint[]>> {
+  const rows = await db
+    .select({ staffId: staffServices.staffId, serviceId: staffServices.serviceId })
+    .from(staffServices)
+    .where(eq(staffServices.locationId, locationId))
+    .orderBy(asc(staffServices.staffId), asc(staffServices.serviceId));
+  const map = new Map<bigint, bigint[]>();
+  for (const r of rows) map.set(r.staffId, [...(map.get(r.staffId) ?? []), r.serviceId]);
+  return map;
+}
+
+/**
+ * Reemplaza los servicios que hace una persona. Solo servicios de esa sede (la FK compuesta también
+ * lo impide). Puede quedar sin ninguno: entonces no se ofrece para nada (p. ej. recepción).
+ * Devuelve lo que se agregó y lo que se quitó, para la bitácora.
+ */
+export async function setStaffServices(
+  db: Db,
+  input: { locationId: bigint; staffId: bigint; serviceIds: readonly bigint[] },
+): Promise<{ added: bigint[]; removed: bigint[] }> {
+  const wanted = [...new Set(input.serviceIds)];
+  if (wanted.length > 0) {
+    const found = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(and(eq(services.locationId, input.locationId), inArray(services.id, wanted)));
+    if (found.length !== wanted.length) throw new StaffError("Algún servicio no existe en esta sede");
+  }
+  const before = await staffServiceIds(db, input);
+  const removed = before.filter((id) => !wanted.includes(id));
+  const added = wanted.filter((id) => !before.includes(id));
+  if (removed.length > 0) {
+    await db
+      .delete(staffServices)
+      .where(
+        and(
+          eq(staffServices.locationId, input.locationId),
+          eq(staffServices.staffId, input.staffId),
+          wanted.length > 0 ? notInArray(staffServices.serviceId, wanted) : undefined,
+        ),
+      );
+  }
+  if (added.length > 0) {
+    await db
+      .insert(staffServices)
+      .values(added.map((serviceId) => ({ locationId: input.locationId, staffId: input.staffId, serviceId })))
+      .onConflictDoNothing();
+  }
+  return { added, removed };
 }
 
 /** Membresías activas del usuario. Sin membresía activa no hay acceso, aunque la contraseña sea correcta. */

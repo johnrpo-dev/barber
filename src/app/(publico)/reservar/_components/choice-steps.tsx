@@ -64,9 +64,9 @@ export function StaffPicker({
 }) {
   const options = [{ id: "any", name: "Cualquiera", initials: "" }, ...staff];
   return (
-    <RadioGroup aria-label="Barbero" orientation="horizontal" value={value} onChange={onChange} className="flex flex-col gap-2">
+    <RadioGroup aria-label="Con quién" orientation="horizontal" value={value} onChange={onChange} className="flex flex-col gap-2">
       <span aria-hidden className="text-sm font-semibold">
-        Barbero
+        Con quién
       </span>
       <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
         {options.map((o) => (

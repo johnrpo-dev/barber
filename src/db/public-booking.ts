@@ -34,6 +34,7 @@ import { findByManageToken, issueManageLink, revokeManageLinks } from "./manage-
 import { checkQuotaAlert, enqueueNotification, globalQuotaReached, messageParams, preferredChannel, recordOtpAttempt, recordOtpOutcome } from "./notifications";
 import { enforce } from "./rate-limit";
 import { appointmentEvents, appointments, bookingVerifications, clients, locations, services, staffMembers, staffSchedules } from "./schema";
+import { serviceIdsByStaff } from "./staff";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
 
@@ -1178,7 +1179,8 @@ export async function rescheduleByClient(
 export interface PortalData {
   location: { name: string; address: string | null; mapsUrl: string | null; publicPhone: string | null; whatsappUrl: string | null };
   services: { id: string; name: string; durationMin: number; priceLabel: string }[];
-  staff: { id: string; name: string; initials: string }[];
+  /** serviceIds: ids públicos de los servicios que hace (para ofrecerla solo en esos). */
+  staff: { id: string; name: string; initials: string; serviceIds: string[] }[];
   hours: { weekday: Weekday; label: string; ranges: string[] }[];
   /** "Abierto ahora · cierra a las 9:00 p. m." (hora local de la sede). */
   openNow: { open: boolean; label: string };
@@ -1258,9 +1260,14 @@ export async function loadPortalData(db: Db, location: PublicLocation, now: Date
     .where(and(eq(staffMembers.locationId, location.id), eq(staffMembers.active, true)))
     .orderBy(asc(staffMembers.displayName), asc(staffMembers.id));
 
-  const staff = new Map<bigint, { id: string; name: string; initials: string }>();
+  const publicServiceId = new Map(serviceRows.map((s) => [s.internalId, s.id]));
+  const doing = await serviceIdsByStaff(db, location.id);
+  const staff = new Map<bigint, { id: string; name: string; initials: string; serviceIds: string[] }>();
   for (const r of scheduleRows) {
-    if (r.bookableOnline && !staff.has(r.staffId)) staff.set(r.staffId, { id: r.publicId, name: r.name, initials: initials(r.name) });
+    if (!r.bookableOnline || staff.has(r.staffId)) continue;
+    // Solo servicios activos; quien no hace ninguno no se muestra en la reserva.
+    const serviceIds = (doing.get(r.staffId) ?? []).flatMap((id) => publicServiceId.get(id) ?? []);
+    if (serviceIds.length > 0) staff.set(r.staffId, { id: r.publicId, name: r.name, initials: initials(r.name), serviceIds });
   }
   const week = ([1, 2, 3, 4, 5, 6, 7] as const).map((weekday) => ({
     weekday,

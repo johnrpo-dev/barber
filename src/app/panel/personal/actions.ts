@@ -5,13 +5,16 @@ import { z } from "zod";
 import { auditActor, recordAudit, recordConfigChange, staffSnapshot } from "@/db/audit";
 import { db } from "@/db/client";
 import { resetStaffPassword, revokeStaffSessions } from "@/db/credentials";
+import { listServices } from "@/db/catalog";
 import {
   addStaffMember,
   createStaffUser,
   setStaffActive,
+  setStaffServices,
   setWeeklySchedule,
   StaffError,
   staffMember,
+  staffServiceIds,
   updateStaffMember,
 } from "@/db/staff";
 import type { Db } from "@/db/types";
@@ -251,6 +254,49 @@ export async function saveScheduleAction(raw: unknown): Promise<ActionResult> {
       });
     });
     revalidateStaff(input.staffId);
+    return undefined;
+  });
+}
+
+// ─── Servicios que hace ──────────────────────────────────────────────────────
+
+const servicesSchema = z.object({
+  staffId: idSchema,
+  serviceIds: z.array(idSchema).max(500, "Demasiados servicios"),
+});
+
+/**
+ * Qué servicios hace una persona. La pantalla solo muestra los activos: los retirados que ya tenía
+ * se conservan (si el servicio vuelve, ella también). Quien no hace un servicio no se ofrece para él
+ * en la agenda ni en la reserva en línea; las citas que ya tiene no cambian.
+ */
+export async function saveStaffServicesAction(raw: unknown): Promise<ActionResult> {
+  return runAction(async () => {
+    const staff = await requirePermission("staff.manage");
+    const input = servicesSchema.parse(raw);
+    const member = await requireMember(staff.locationId, input.staffId);
+    await conn().transaction(async (tx) => {
+      const t = tx as unknown as Db;
+      const all = await listServices(t, { locationId: staff.locationId, includeInactive: true });
+      const active = new Set(all.filter((x) => x.active).map((x) => x.id));
+      const wanted = [...new Set(input.serviceIds)];
+      if (wanted.some((id) => !active.has(id))) throw new StaffError("Algún servicio no existe o ya no se ofrece");
+      const keptInactive = (await staffServiceIds(t, { locationId: staff.locationId, staffId: input.staffId })).filter((id) => !active.has(id));
+      const { added, removed } = await setStaffServices(t, { locationId: staff.locationId, staffId: input.staffId, serviceIds: [...wanted, ...keptInactive] });
+      if (added.length === 0 && removed.length === 0) return;
+      const names = new Map(all.map((x) => [x.id, x.name]));
+      const list = (ids: bigint[]) => ids.map((id) => names.get(id) ?? "?").join(", ");
+      const parts = [added.length > 0 ? `ahora hace ${list(added)}` : null, removed.length > 0 ? `ya no hace ${list(removed)}` : null].filter(Boolean);
+      await recordAudit(t, {
+        ...auditActor(staff),
+        action: "staff.update",
+        targetKind: "staff",
+        targetRef: input.staffId.toString(),
+        summary: `Servicios de ${member.displayName}: ${parts.join("; ")}`.slice(0, 500),
+      });
+    });
+    revalidateStaff(input.staffId);
+    revalidatePath("/panel/agenda");
     return undefined;
   });
 }

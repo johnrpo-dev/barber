@@ -42,13 +42,22 @@ function values(draft: ServiceDraft) {
   };
 }
 
+/** Servicio nuevo: lo hace todo el personal de la sede hasta que el dueño lo acote en Personal. */
 export async function createService(db: Db, input: { locationId: bigint; draft: ServiceDraft }): Promise<Service> {
-  const [row] = await db
-    .insert(services)
-    .values({ locationId: input.locationId, ...values(input.draft) })
-    .returning(columns);
-  if (!row) throw new Error("No se pudo crear el servicio");
-  return toService(row);
+  return db.transaction(async (txRaw) => {
+    const tx = txRaw as unknown as Db;
+    const [row] = await tx
+      .insert(services)
+      .values({ locationId: input.locationId, ...values(input.draft) })
+      .returning(columns);
+    if (!row) throw new Error("No se pudo crear el servicio");
+    await tx.execute(sql`
+      insert into staff_services (location_id, staff_id, service_id)
+      select m.location_id, m.id, ${row.id}::bigint from staff_members m where m.location_id = ${input.locationId}::bigint
+      on conflict do nothing
+    `);
+    return toService(row);
+  });
 }
 
 export async function updateService(

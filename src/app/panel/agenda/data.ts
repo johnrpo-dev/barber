@@ -43,6 +43,8 @@ export interface AgendaColumnView {
   staffId: string;
   displayName: string;
   blocks: { startMin: number; endMin: number }[];
+  /** Servicios que hace (ids internos como texto). */
+  serviceIds: string[];
 }
 
 export interface AgendaTimeOffView {
@@ -120,6 +122,7 @@ export async function loadAgenda(
       staffId: String(c.staffId),
       displayName: c.displayName,
       blocks: c.blocks.map((b) => ({ startMin: b.startMin, endMin: b.endMin })),
+      serviceIds: c.serviceIds.map(String),
     })),
     appointments: agenda.appointments.map((a) => {
       const own = a.staffId === staff.staffId;

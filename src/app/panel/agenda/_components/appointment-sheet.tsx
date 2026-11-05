@@ -382,7 +382,11 @@ function Reschedule({
   const [date, setDate] = useState(initialDate);
   const [minute, setMinute] = useState<number | null>(null);
   const [pending, startTransition] = useTransition();
-  const staffOptions = columns.some((c) => c.staffId === a.staffId) ? columns : [{ staffId: a.staffId, displayName: a.staffName, blocks: [] }, ...columns];
+  // Otro barbero solo si hace el servicio de la cita; el actual siempre aparece.
+  const others = columns.filter((c) => c.staffId === a.staffId || c.serviceIds.includes(a.serviceId));
+  const staffOptions = others.some((c) => c.staffId === a.staffId)
+    ? others
+    : [{ staffId: a.staffId, displayName: a.staffName, blocks: [], serviceIds: [a.serviceId] }, ...others];
 
   function submit() {
     if (minute === null) return;

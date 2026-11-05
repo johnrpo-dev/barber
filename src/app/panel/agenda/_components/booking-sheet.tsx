@@ -160,6 +160,16 @@ function StaffChoice({
   );
 }
 
+/** Solo quienes hacen el servicio elegido (sin servicio, todos). */
+function doers(columns: AgendaColumnView[], serviceId: string | null): AgendaColumnView[] {
+  return serviceId ? columns.filter((c) => c.serviceIds.includes(serviceId)) : columns;
+}
+
+/** Si quien estaba elegido no hace el servicio nuevo, vuelve a "Cualquiera". */
+function keepIfDoes(columns: AgendaColumnView[], serviceId: string, staffId: string): string {
+  return staffId === "any" || doers(columns, serviceId).some((c) => c.staffId === staffId) ? staffId : "any";
+}
+
 export function initials(name: string): string {
   return name
     .split(/\s+/)
@@ -274,6 +284,7 @@ function AppointmentFlow({
             value={serviceId}
             onChange={(id) => {
               setServiceId(id);
+              setStaffId((cur) => keepIfDoes(columns, id, cur));
               setMinute(null);
               setStep(1);
             }}
@@ -290,7 +301,7 @@ function AppointmentFlow({
         <section className="flex flex-col gap-3">
           <h3 className="font-display text-xl">¿Con quién?</h3>
           <StaffChoice
-            columns={columns}
+            columns={doers(columns, serviceId)}
             value={staffId}
             onChange={(id) => {
               setStaffId(id);
@@ -445,6 +456,7 @@ function WalkInForm({
           value={serviceId}
           onChange={(id) => {
             setServiceId(id);
+            setStaffId((cur) => keepIfDoes(columns, id, cur));
             setKey(newKey());
           }}
           compact
@@ -453,7 +465,7 @@ function WalkInForm({
       <section className="flex flex-col gap-2">
         <h3 className="text-sm font-semibold">Barbero</h3>
         <StaffChoice
-          columns={columns}
+          columns={doers(columns, serviceId)}
           value={staffId}
           onChange={(id) => {
             setStaffId(id);

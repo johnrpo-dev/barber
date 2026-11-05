@@ -160,7 +160,8 @@ export function BookingFlow({
       (!initialServiceId || saved.serviceId === initialServiceId) &&
       (!initialStaffId || saved.staffId === initialStaffId) &&
       (saved.serviceId === null || portal.services.some((x) => x.id === saved.serviceId)) &&
-      (saved.staffId === "any" || portal.staff.some((x) => x.id === saved.staffId));
+      (saved.staffId === "any" ||
+        portal.staff.some((x) => x.id === saved.staffId && (saved.serviceId === null || x.serviceIds.includes(saved.serviceId))));
     let start = s;
     if (saved && compatible) {
       start = saved;
@@ -206,6 +207,7 @@ export function BookingFlow({
   // ─── Datos derivados ─────────────────────────────────────────────────────
   const service = portal.services.find((x) => x.id === s.serviceId) ?? null;
   const barber = s.staffId === "any" ? null : (portal.staff.find((x) => x.id === s.staffId) ?? null);
+  const staffForService = s.serviceId ? portal.staff.filter((x) => x.serviceIds.includes(s.serviceId!)) : portal.staff;
   const staffName = barber?.name ?? "Cualquiera";
   const idx = Math.max(0, order.indexOf(s.step));
   const whenText = s.date && s.slotLabel ? `${capitalize(shortWeekdayDay(s.date))} · ${s.slotLabel}` : null;
@@ -223,7 +225,11 @@ export function BookingFlow({
   );
 
   function pickService(id: string) {
-    if (id !== s.serviceId) patch({ serviceId: id, minute: null, slotLabel: null, hold: null });
+    if (id !== s.serviceId) {
+      // Si el barbero elegido no hace ese servicio, vuelve a "Cualquiera".
+      const keeps = s.staffId === "any" || portal.staff.some((x) => x.id === s.staffId && x.serviceIds.includes(id));
+      patch({ serviceId: id, minute: null, slotLabel: null, hold: null, ...(keeps ? {} : { staffId: "any" }) });
+    }
     goTo("time");
   }
 
@@ -383,7 +389,7 @@ export function BookingFlow({
 
           {s.step === "time" && s.serviceId ? (
             <>
-              {portal.staff.length > 1 ? <StaffPicker staff={portal.staff} value={s.staffId} onChange={chooseStaff} /> : null}
+              {staffForService.length > 1 ? <StaffPicker staff={staffForService} value={s.staffId} onChange={chooseStaff} /> : null}
               {timeAlert ? (
                 <p role="alert" className="rounded-xl border border-alerta/30 bg-alerta/5 p-4 text-sm font-medium text-alerta">
                   {timeAlert}

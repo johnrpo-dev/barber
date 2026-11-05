@@ -7,16 +7,16 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Role } from "@/domain/staff/roles";
 import { fromUnits } from "@/domain/money";
 import type { ScheduleBlock, Weekday } from "@/domain/staff/schedule";
 import { describeError } from "@/lib/log";
 import { createService } from "./catalog";
 import { db } from "./client";
-import { locationSettings, updateLocationSettings } from "./locations";
+import { locationSettings, setStaffBookableOnline, updateLocationSettings } from "./locations";
 import { locations, services, staffMembers, user } from "./schema";
-import { addStaffMember, createStaffUser, setStaffActive, setWeeklySchedule } from "./staff";
+import { addStaffMember, createStaffUser, setStaffActive, setStaffServices, setWeeklySchedule, staffServiceIds } from "./staff";
 import type { Db } from "./types";
 
 const LOCATION_NAME = "Barbería Villa";
@@ -85,26 +85,47 @@ const INVENTED_NAMES = [
 ] as const;
 
 /**
- * Equipo real, opcional: `seed-demo.equipo.local.json` en la raíz (git lo ignora), una lista de
- * nombres, p. ej. ["Danilso", "Jesús Franco"]. Si existe, el seed crea esos barberos y, en una base
- * local, desactiva los inventados (no los borra: su historial queda). Si no, usa los inventados.
+ * Equipo real, opcional: `seed-demo.equipo.local.json` en la raíz (git lo ignora). Cada persona es
+ * un nombre, o un objeto con lo que hace: `{ "name": "Valentina", "services": ["Manicure tradicional
+ * dama"] }` (solo esos) o `{ "name": "Danilso", "skip": ["Manicure tradicional dama"] }` (todos
+ * menos esos). Si existe, el seed crea esas personas y, en una base local, desactiva las inventadas
+ * (no las borra: su historial queda). Si no, usa las inventadas, que hacen todo.
  */
 const TEAM_FILE = "seed-demo.equipo.local.json";
 
-function realTeam(): string[] | null {
+interface TeamMember {
+  name: string;
+  /** Solo estos servicios (por nombre). */
+  services?: string[];
+  /** Todos menos estos. */
+  skip?: string[];
+}
+
+const nameList = (v: unknown) => Array.isArray(v) && v.every((x) => typeof x === "string" && x.trim().length > 0);
+
+function realTeam(): TeamMember[] | null {
   const path = resolve(process.cwd(), TEAM_FILE);
   if (!existsSync(path)) return null;
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((n) => typeof n === "string" && n.trim().length > 0 && n.trim().length <= 80)) {
-    throw new Error(`${TEAM_FILE} debe ser una lista de nombres, p. ej. ["Danilso", "Jesús Franco"]`);
-  }
-  const names = parsed.map((n: string) => n.trim());
-  if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) throw new Error(`${TEAM_FILE} tiene nombres repetidos`);
-  return names;
+  const bad = () => new Error(`${TEAM_FILE} debe ser una lista de nombres u objetos { "name", "services" | "skip" }`);
+  if (!Array.isArray(parsed) || parsed.length === 0) throw bad();
+  const members = parsed.map((m): TeamMember => {
+    if (typeof m === "string") return { name: m.trim() };
+    if (typeof m !== "object" || m === null) throw bad();
+    const o = m as Record<string, unknown>;
+    if (typeof o.name !== "string") throw bad();
+    if (o.services !== undefined && !nameList(o.services)) throw bad();
+    if (o.skip !== undefined && !nameList(o.skip)) throw bad();
+    if (o.services !== undefined && o.skip !== undefined) throw new Error(`${TEAM_FILE}: "${o.name}" usa "services" o "skip", no los dos`);
+    return { name: o.name.trim(), services: o.services as string[] | undefined, skip: o.skip as string[] | undefined };
+  });
+  if (members.some((m) => m.name.length === 0 || m.name.length > 80)) throw bad();
+  if (new Set(members.map((m) => m.name.toLowerCase())).size !== members.length) throw new Error(`${TEAM_FILE} tiene nombres repetidos`);
+  return members;
 }
 
 const team = realTeam();
-const BARBERS = (team ?? INVENTED_NAMES).map((name, i) => ({ name, schedule: SCHEDULES[i % SCHEDULES.length]! }));
+const BARBERS = (team ?? INVENTED_NAMES.map((name) => ({ name }) as TeamMember)).map((m, i) => ({ ...m, schedule: SCHEDULES[i % SCHEDULES.length]! }));
 
 /**
  * Cuentas de prueba para ingresar como recepción (el "panel de caja") y como barbero. Correos en
@@ -166,24 +187,49 @@ async function main() {
     console.log(`Servicio "${s.name}": creado.`);
   }
 
+  const catalog = await client.select({ id: services.id, name: services.name }).from(services).where(eq(services.locationId, locationId));
+  const serviceId = (name: string) => {
+    const found = catalog.find((c) => c.name.toLowerCase() === name.trim().toLowerCase());
+    if (!found) throw new Error(`${TEAM_FILE}: no existe el servicio "${name}"`);
+    return found.id;
+  };
+  /** Lo que hace según el archivo, o null si hace todo. */
+  const servicesFor = (b: TeamMember): bigint[] | null => {
+    if (b.services) return b.services.map(serviceId);
+    if (b.skip) {
+      const skip = new Set(b.skip.map(serviceId));
+      return catalog.filter((c) => !skip.has(c.id)).map((c) => c.id);
+    }
+    return null;
+  };
+
   for (const b of BARBERS) {
+    const wanted = servicesFor(b);
     const [found] = await client
       .select({ id: staffMembers.id })
       .from(staffMembers)
       .where(and(eq(staffMembers.locationId, locationId), eq(staffMembers.displayName, b.name)));
     if (found) {
-      // Un barbero que ya existe conserva su horario: el seed nunca pisa datos reales.
-      console.log(`Barbero "${b.name}": ya existe; su horario no se toca.`);
+      // Quien ya existe conserva su horario. Sus servicios solo se acotan si siguen como al crearla
+      // (todos): si alguien ya los cambió en Personal, el seed no los pisa.
+      const current = await staffServiceIds(d, { locationId, staffId: found.id });
+      if (wanted && current.length === catalog.length) {
+        await setStaffServices(d, { locationId, staffId: found.id, serviceIds: wanted });
+        console.log(`Profesional "${b.name}": ya existe; sus servicios quedan como dice ${TEAM_FILE}.`);
+      } else {
+        console.log(`Profesional "${b.name}": ya existe; su horario y sus servicios no se tocan.`);
+      }
       continue;
     }
     const staffId = await addStaffMember(d, { locationId, displayName: b.name, role: "barber" });
     await setWeeklySchedule(d, { locationId, staffId, blocks: b.schedule });
-    console.log(`Barbero "${b.name}": creado con su horario.`);
+    if (wanted) await setStaffServices(d, { locationId, staffId, serviceIds: wanted });
+    console.log(`Profesional "${b.name}": creado con su horario${wanted ? " y sus servicios" : ""}.`);
   }
 
   // Con el equipo real, los inventados dejan de atender (solo en base local; se desactivan, no se borran).
   if (team && localDatabase) {
-    const keep = new Set(team.map((n) => n.toLowerCase()));
+    const keep = new Set(team.map((m) => m.name.toLowerCase()));
     for (const name of INVENTED_NAMES) {
       if (keep.has(name.toLowerCase())) continue;
       const [found] = await client
@@ -213,6 +259,18 @@ async function main() {
       console.log(`Cuenta de prueba ${a.email} (${a.role === "reception" ? "recepción" : "barbero"}): creada.`);
     }
     console.log(`Contraseña de las cuentas nuevas (se muestra solo esta vez; guárdala): ${password}`);
+  }
+
+  // Las cuentas de prueba no salen en la reserva en línea ni en la portada (es la vitrina del negocio);
+  // al barbero de prueba se le agenda desde el panel.
+  const demoStaff = await client
+    .select({ id: staffMembers.id, bookable: staffMembers.bookableOnline })
+    .from(staffMembers)
+    .innerJoin(user, eq(user.id, staffMembers.userId))
+    .where(and(eq(staffMembers.locationId, locationId), inArray(user.email, DEMO_ACCOUNTS.map((a) => a.email))));
+  for (const m of demoStaff.filter((x) => x.bookable)) {
+    await setStaffBookableOnline(d, { locationId, staffId: m.id, bookable: false });
+    console.log("Cuenta de prueba: fuera de la reserva en línea.");
   }
 
   const settings = await locationSettings(d, locationId);

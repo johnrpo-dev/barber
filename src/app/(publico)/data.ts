@@ -17,7 +17,7 @@ export interface PortalView {
   enabled: boolean; // reserva pública activa y configuración lista (publicBookingReadiness)
   location: { name: string; address: string | null; mapsUrl: string | null; publicPhone: string | null; whatsappUrl: string | null };
   services: { id: string /* uuid */; name: string; durationMin: number; priceLabel: string /* "$35.000" */ }[];
-  staff: { id: string /* uuid */; name: string; initials: string }[];
+  staff: { id: string /* uuid */; name: string; initials: string; serviceIds: string[] /* uuids de los servicios que hace */ }[];
   hours: { weekday: 1 | 2 | 3 | 4 | 5 | 6 | 7; label: string /* "Lunes" */; ranges: string[] /* ["9:00 a. m. – 7:00 p. m."] */ }[];
   openNow: { open: boolean; label: string /* "Abierto ahora · cierra a las 9:00 p. m." */ };
   featured: string[]; // ids de services, lo más pedido primero (máx. 6)

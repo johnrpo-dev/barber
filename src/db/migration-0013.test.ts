@@ -95,6 +95,10 @@ const AUDIT_STUB = `create table audit_events (id bigint generated always as ide
  */
 const LATER_COLUMNS_STUB = `alter table locations add column tax_id text, add column receipt_footer text`;
 const DROP_LATER_COLUMNS = `alter table locations drop column tax_id, drop column receipt_footer`;
+/** staff_services (0019): las funciones de hoy asignan servicios al crear personas y servicios. */
+const LATER_TABLES_STUB = `create table staff_services (location_id bigint not null, staff_id bigint not null, service_id bigint not null,
+  created_at timestamptz not null default now(), primary key (location_id, staff_id, service_id))`;
+const DROP_LATER_TABLES = `drop table staff_services`;
 
 describe("saldos sobre datos de antes de 0013", () => {
   it("las ventas, la anulación y el pago de propinas viejos quedan pendientes e iguales a 2335 y 2380", { timeout: 180_000 }, async () => {
@@ -105,6 +109,7 @@ describe("saldos sobre datos de antes de 0013", () => {
       const db = orm as unknown as Db;
       await old.exec(AUDIT_STUB);
       await old.exec(LATER_COLUMNS_STUB);
+      await old.exec(LATER_TABLES_STUB);
 
       const shop = await setupShop(db, "Villa vieja");
       await openCashSession(db, { locationId: shop.locationId, counted: fromUnits(0n), idempotencyKey: key("open"), actor: shop.owner });
@@ -139,6 +144,7 @@ describe("saldos sobre datos de antes de 0013", () => {
 
       await old.exec("drop table audit_events");
       await old.exec(DROP_LATER_COLUMNS);
+      await old.exec(DROP_LATER_TABLES);
       await migrate(orm as never, { migrationsFolder });
 
       const { rows: balances } = await old.query<{ commission: string; tips: string; receivable: string }>(

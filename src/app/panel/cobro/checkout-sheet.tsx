@@ -881,7 +881,9 @@ function AddExtra({
 }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const [staffId, setStaffId] = useState(defaultStaff);
+  const [staffId, setStaffId] = useState<string | null>(defaultStaff);
+  // "Lo hizo": solo quienes hacen el servicio elegido.
+  const doers = serviceId ? view.staff.filter((s) => s.serviceIds.includes(serviceId)) : view.staff;
   if (!open) {
     return (
       <Btn variant="secondary" onPress={() => setOpen(true)} className="self-start">
@@ -895,9 +897,13 @@ function AddExtra({
         label="Servicio"
         options={view.extraServices.map((s) => ({ id: s.serviceId, label: s.name, description: s.unitPriceLabel }))}
         value={serviceId}
-        onChange={setServiceId}
+        onChange={(id) => {
+          setServiceId(id);
+          const can = view.staff.filter((s) => s.serviceIds.includes(id));
+          if (!can.some((s) => s.id === staffId)) setStaffId(can.length === 1 ? can[0]!.id : null);
+        }}
       />
-      <SelectField label="Lo hizo" options={view.staff.map((s) => ({ id: s.id, label: s.name }))} value={staffId} onChange={setStaffId} />
+      <SelectField label="Lo hizo" options={doers.map((s) => ({ id: s.id, label: s.name }))} value={staffId} onChange={setStaffId} />
       <div className="flex justify-end gap-2">
         <Btn variant="ghost" onPress={() => setOpen(false)}>
           Cancelar

@@ -58,7 +58,7 @@ export function Ticket({
   const [time, suffix] = data.timeLabel ? splitTime(data.timeLabel) : [EMPTY, ""];
   const rows: [string, string | null, boolean?][] = [
     ["Servicio", data.serviceName],
-    ["Barbero", data.staffName],
+    ["Te atiende", data.staffName],
     ["Duración", data.durationMin ? `${data.durationMin} min` : null],
     ["Valor", data.priceLabel, true],
     ["Dónde", data.address],

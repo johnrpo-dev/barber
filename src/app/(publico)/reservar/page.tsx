@@ -50,7 +50,9 @@ export default async function ReservarPage({ searchParams }: { searchParams: Sea
   const servicio = one(sp.servicio);
   const barbero = one(sp.barbero);
   const initialServiceId = servicio && portal.services.some((s) => s.id === servicio) ? servicio : null;
-  const initialStaffId = barbero && portal.staff.some((p) => p.id === barbero) ? barbero : null;
+  // El barbero de la URL solo si existe y, con servicio elegido, si lo hace.
+  const initialStaffId =
+    barbero && portal.staff.some((p) => p.id === barbero && (!initialServiceId || p.serviceIds.includes(initialServiceId))) ? barbero : null;
 
   return (
     <main>

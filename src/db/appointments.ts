@@ -23,6 +23,7 @@ import {
   staffSchedules,
   timeOff,
 } from "./schema";
+import { serviceIdsByStaff } from "./staff";
 import { extendManageLink, revokeManageLinks } from "./manage-links";
 import { pgError } from "./serializable";
 import type { TimeRange } from "./tstzrange";
@@ -94,12 +95,16 @@ interface StaffWithBlocks {
   blocks: ScheduleBlock[];
 }
 
-/** Personal activo con su horario semanal. `onlineOnly`: solo quienes se ofrecen en la reserva pública. */
+/**
+ * Personal activo con su horario semanal. `onlineOnly`: solo quienes se ofrecen en la reserva
+ * pública. `serviceId`: solo quienes hacen ese servicio (staff_services).
+ */
 async function activeStaff(
   db: Db,
   locationId: bigint,
   staffIds?: readonly bigint[],
   onlineOnly = false,
+  serviceId?: bigint,
 ): Promise<StaffWithBlocks[]> {
   const rows = await db
     .select({
@@ -121,6 +126,9 @@ async function activeStaff(
         eq(staffMembers.active, true),
         staffIds ? inArray(staffMembers.id, [...staffIds]) : undefined,
         onlineOnly ? eq(staffMembers.bookableOnline, true) : undefined,
+        serviceId === undefined
+          ? undefined
+          : sql`exists (select 1 from staff_services ss where ss.location_id = ${staffMembers.locationId} and ss.staff_id = ${staffMembers.id} and ss.service_id = ${serviceId}::bigint)`,
       ),
     )
     .orderBy(asc(staffMembers.displayName), asc(staffMembers.id), asc(staffSchedules.weekday), asc(staffSchedules.startMin));
@@ -133,6 +141,12 @@ async function activeStaff(
     byId.set(r.staffId, s);
   }
   return [...byId.values()];
+}
+
+/** Por qué una persona pedida no se ofrece: no está activa (o no atiende en línea) o no hace el servicio. */
+async function notOfferedMessage(db: Db, locationId: bigint, staffId: bigint, onlineOnly: boolean, serviceName: string): Promise<string> {
+  const [member] = await activeStaff(db, locationId, [staffId], onlineOnly);
+  return member ? `${member.displayName} no hace ${serviceName}` : "Ese barbero no está activo";
 }
 
 /** Lo que ocupa tiempo: citas activas (sin contar reservas vencidas) y ausencias vigentes. */
@@ -237,7 +251,7 @@ export async function availability(
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
   // Lo público solo ofrece a quienes atienden en línea; recepción ve a todo el equipo.
-  const staff = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined, !input.internal)).filter(
+  const staff = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined, !input.internal, svc.id)).filter(
     (s) => s.blocks.length > 0,
   );
   const from = localMinuteToInstant(input.fromDate, 0, rules.timeZone);
@@ -340,8 +354,11 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
       input.locationId,
       input.staffId === "any" ? undefined : [input.staffId],
       input.source === "online",
+      svc.id,
     );
-    if (input.staffId !== "any" && candidates.length === 0) throw new BookingError("Ese barbero no está activo");
+    if (input.staffId !== "any" && candidates.length === 0) {
+      throw new BookingError(await notOfferedMessage(tx, input.locationId, input.staffId, input.source === "online", svc.name));
+    }
     const busy = await busyIntervals(tx, { locationId: input.locationId, from: occupied.start, to: occupied.end, now });
 
     const free = candidates.filter((s) => !overlapsBusy(s.staffId, occupied, busy));
@@ -507,7 +524,10 @@ export async function walkIn(
   if (existing) return replayOf(existing, hash);
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
-  const staff = await activeStaff(db, input.locationId, input.staffId === "any" ? undefined : [input.staffId]);
+  const staff = await activeStaff(db, input.locationId, input.staffId === "any" ? undefined : [input.staffId], false, svc.id);
+  if (input.staffId !== "any" && staff.length === 0) {
+    throw new BookingError(await notOfferedMessage(db, input.locationId, input.staffId, false, svc.name));
+  }
   const plan = planWalkIn({
     now,
     durationMin: svc.durationMin,
@@ -550,6 +570,8 @@ async function lockAppointment(db: Db, locationId: bigint, appointmentId: bigint
       during: appointments.during,
       bufferMin: appointments.bufferMin,
       durationMin: appointments.durationMin,
+      serviceId: appointments.serviceId,
+      serviceName: appointments.serviceName,
     })
     .from(appointments)
     .where(and(eq(appointments.locationId, locationId), eq(appointments.id, appointmentId)))
@@ -640,8 +662,14 @@ export async function rescheduleAppointment(
       }
       const rules = await locationRules(tx, input.locationId);
       await expireHolds(tx, input.locationId, now);
-      const [staff] = await activeStaff(tx, input.locationId, [input.staffId], "kind" in input.actor);
-      if (!staff) throw new BookingError("Ese barbero no está activo");
+      // Con otro barbero, tiene que hacer el servicio; con el mismo, la cita ya era suya.
+      const changesStaff = input.staffId !== appt.staffId;
+      const [staff] = await activeStaff(tx, input.locationId, [input.staffId], "kind" in input.actor, changesStaff ? appt.serviceId : undefined);
+      if (!staff) {
+        throw new BookingError(
+          changesStaff ? await notOfferedMessage(tx, input.locationId, input.staffId, "kind" in input.actor, appt.serviceName) : "Ese barbero no está activo",
+        );
+      }
       if (!input.allowOutsideHours && !fitsSchedule(input.start, appt.durationMin, staff.blocks, rules.timeZone)) {
         throw new BookingError(`Ese horario está fuera del turno de ${staff.displayName}`);
       }
@@ -701,6 +729,8 @@ export interface AgendaColumn {
   displayName: string;
   /** Turno de ese día (minutos locales). */
   blocks: ScheduleBlock[];
+  /** Servicios que hace (para ofrecerla solo en esos). */
+  serviceIds: bigint[];
 }
 
 export interface AgendaTimeOff {
@@ -762,12 +792,18 @@ export async function dayAgenda(db: Db, input: { locationId: bigint; date: strin
     .where(and(eq(timeOff.locationId, input.locationId), isNull(timeOff.cancelledAt), sql`${timeOff.during} && ${range(from, to)}`));
 
   const withAppointments = new Set(rows.map((r) => r.staffId));
+  const doing = await serviceIdsByStaff(db, input.locationId);
   const columns: AgendaColumn[] = (await activeStaff(db, input.locationId, input.staffId ? [input.staffId] : undefined))
     .filter((s) => s.blocks.length > 0 || withAppointments.has(s.staffId))
-    .map((s) => ({ staffId: s.staffId, displayName: s.displayName, blocks: s.blocks.filter((b) => b.weekday === weekday) }));
+    .map((s) => ({
+      staffId: s.staffId,
+      displayName: s.displayName,
+      blocks: s.blocks.filter((b) => b.weekday === weekday),
+      serviceIds: doing.get(s.staffId) ?? [],
+    }));
   // Personal ya retirado que aún tiene citas ese día: su columna se muestra (sin turno) para no perderlas.
   for (const r of rows) {
-    if (!columns.some((c) => c.staffId === r.staffId)) columns.push({ staffId: r.staffId, displayName: r.staffName, blocks: [] });
+    if (!columns.some((c) => c.staffId === r.staffId)) columns.push({ staffId: r.staffId, displayName: r.staffName, blocks: [], serviceIds: [] });
   }
 
   return {

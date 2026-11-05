@@ -118,7 +118,7 @@ export default async function HomePage() {
 
             {portal && portal.services.length > 0 ? (
               <dl className="entrar mt-3 grid grid-cols-3 divide-x divide-hueso/15 border-t border-hueso/15 pt-5 [animation-delay:240ms]">
-                <HeroFact label="Barberos" value={String(portal.staff.length)} first />
+                <HeroFact label="Equipo" value={String(portal.staff.length)} first />
                 <HeroFact label="Servicios" value={String(portal.services.length)} />
                 {enabled ? <HeroFact label="En línea" value="24/7" /> : null}
               </dl>
@@ -238,7 +238,7 @@ export default async function HomePage() {
       {portal && portal.staff.length > 0 ? (
         <section aria-labelledby="barberos-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
           <SectionHeading id="barberos-h" title="El equipo">
-            {plural(portal.staff.length, "barbero", "barberos")}. Elige con quién, o déjanos asignarte el primero libre.
+            {plural(portal.staff.length, "profesional", "profesionales")}. Elige con quién, o déjanos asignarte el primero libre.
           </SectionHeading>
           <ul role="list" className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {portal.staff.map((p) => {

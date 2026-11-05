@@ -351,6 +351,26 @@ export const staffSchedules = pgTable(
   ],
 );
 
+/**
+ * Qué servicios hace cada persona. Quien no tiene un servicio no se ofrece para él (agenda, reserva
+ * en línea, walk-in). Al crear un servicio o una persona se asigna todo; el dueño lo acota en Personal.
+ */
+export const staffServices = pgTable(
+  "staff_services",
+  {
+    locationId: locationId(),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    serviceId: bigint("service_id", { mode: "bigint" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ name: "staff_services_pkey", columns: [t.locationId, t.staffId, t.serviceId] }),
+    foreignKey({ name: "staff_services_staff_fk", columns: [t.locationId, t.staffId], foreignColumns: [staffMembers.locationId, staffMembers.id] }),
+    foreignKey({ name: "staff_services_service_fk", columns: [t.locationId, t.serviceId], foreignColumns: [services.locationId, services.id] }),
+    index("staff_services_service_idx").on(t.locationId, t.serviceId),
+  ],
+);
+
 // ─── Agenda ──────────────────────────────────────────────────────────────────
 // Garantías en la migración agenda_guards: sin doble reserva (EXCLUDE), transiciones de estado
 // válidas, citas terminadas/canceladas congeladas, nada se borra y el historial es solo-inserción.

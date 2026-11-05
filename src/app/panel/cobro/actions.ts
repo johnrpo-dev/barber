@@ -47,7 +47,8 @@ export interface CheckoutView {
   }[];
   /** commissionBps solo para la vista previa: el servidor la vuelve a leer al cobrar. */
   extraServices: { serviceId: string; name: string; unitPriceMinor: string; unitPriceLabel: string; commissionBps: string }[];
-  staff: { id: string; name: string }[];
+  /** serviceIds: lo que hace cada quien (para "Lo hizo"); las propinas van a cualquiera. */
+  staff: { id: string; name: string; serviceIds: string[] }[];
   methods: { id: string; kind: "cash" | "card" | "transfer" | "wallet"; label: string; feeBps: string }[];
   rules: { maxDiscountBps: string; canDiscount: boolean; tipsBearCardFees: boolean; commissionBase: "net" | "gross" };
   cashSessionOpen: boolean;
@@ -89,7 +90,7 @@ export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<Acti
         unitPriceLabel: moneyLabel(s.price),
         commissionBps: String(s.commissionBps),
       })),
-      staff: ctx.staff.map((s) => ({ id: s.id.toString(), name: s.name })),
+      staff: ctx.staff.map((s) => ({ id: s.id.toString(), name: s.name, serviceIds: s.serviceIds.map(String) })),
       methods: ctx.methods.map((m) => ({ id: m.id.toString(), kind: m.kind, label: m.label, feeBps: String(m.feeBps) })),
       rules: {
         maxDiscountBps: ctx.rules.maxDiscountBps.toString(),
@@ -123,7 +124,7 @@ export async function loadWalkInCheckout(): Promise<ActionResult<CheckoutView>> 
         commissionBps: String(s.commissionBps),
       })),
       // Primero quienes atienden (barberos), después el resto del personal activo.
-      staff: [...ctx.staff].sort((a, b) => Number(b.role === "barber") - Number(a.role === "barber")).map((s) => ({ id: s.id.toString(), name: s.name })),
+      staff: [...ctx.staff].sort((a, b) => Number(b.role === "barber") - Number(a.role === "barber")).map((s) => ({ id: s.id.toString(), name: s.name, serviceIds: s.serviceIds.map(String) })),
       methods: ctx.methods.map((m) => ({ id: m.id.toString(), kind: m.kind, label: m.label, feeBps: String(m.feeBps) })),
       rules: {
         maxDiscountBps: ctx.rules.maxDiscountBps.toString(),

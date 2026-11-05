@@ -2,10 +2,12 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { db } from "@/db/client";
 import { locationRules } from "@/db/appointments";
-import { staffMember, weeklySchedule } from "@/db/staff";
+import { listServices } from "@/db/catalog";
+import { staffMember, staffServiceIds, weeklySchedule } from "@/db/staff";
 import { listTimeOff } from "@/db/time-off";
 import type { Db } from "@/db/types";
 import { businessDate } from "@/domain/ledger/business-date";
+import { format } from "@/domain/money";
 import { formatTime } from "@/domain/staff/schedule";
 import { idSchema } from "@/lib/action";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
@@ -26,10 +28,12 @@ export default async function StaffDetailPage({ params }: { params: Promise<{ st
   if (!member) notFound();
 
   const now = new Date();
-  const [blocks, { timeZone }, upcoming] = await Promise.all([
+  const [blocks, { timeZone }, upcoming, catalog, doing] = await Promise.all([
     weeklySchedule(conn, { locationId: staff.locationId, staffId }),
     locationRules(conn, staff.locationId),
     listTimeOff(conn, { locationId: staff.locationId, staffId, from: now }),
+    listServices(conn, { locationId: staff.locationId }),
+    staffServiceIds(conn, { locationId: staff.locationId, staffId }),
   ]);
 
   return (
@@ -49,6 +53,8 @@ export default async function StaffDetailPage({ params }: { params: Promise<{ st
         schedule={blocks.map((b) => ({ weekday: b.weekday, start: formatTime(b.startMin), end: formatTime(b.endMin) }))}
         timeOff={upcoming.map((t) => toTimeOffView(t, timeZone))}
         today={businessDate(now, timeZone)}
+        services={catalog.map((s) => ({ id: s.id.toString(), name: s.name, durationLabel: `${s.durationMin} min`, priceLabel: format(s.price) }))}
+        doing={doing.map(String)}
       />
     </main>
   );

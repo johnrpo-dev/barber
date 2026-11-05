@@ -29,6 +29,7 @@ import {
   services,
   staffMembers,
 } from "./schema";
+import { serviceIdsByStaff } from "./staff";
 import { serializable } from "./serializable";
 import type { Db } from "./types";
 import { ulid } from "./ulid";
@@ -469,7 +470,18 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
     isDayClosed(db, input.locationId, day),
     paidSaleForAppointment(db, input.locationId, input.appointmentId),
   ]);
-  return { appointment: appt, rules, businessDate: day, extraServices, staff, methods, cashSessionOpen: Boolean(session), dayClosed, paid };
+  const doing = await serviceIdsByStaff(db, input.locationId);
+  return {
+    appointment: appt,
+    rules,
+    businessDate: day,
+    extraServices,
+    staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
+    methods,
+    cashSessionOpen: Boolean(session),
+    dayClosed,
+    paid,
+  };
 }
 
 /** Lo que necesita la hoja de cobro de un walk-in (sin cita): catálogo, personal, medios y reglas. */
@@ -496,5 +508,14 @@ export async function walkInCheckoutContext(db: Db, input: { locationId: bigint;
     openSession(db, input.locationId),
     isDayClosed(db, input.locationId, day),
   ]);
-  return { rules, businessDate: day, services: services_, staff, methods, cashSessionOpen: Boolean(session), dayClosed };
+  const doing = await serviceIdsByStaff(db, input.locationId);
+  return {
+    rules,
+    businessDate: day,
+    services: services_,
+    staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
+    methods,
+    cashSessionOpen: Boolean(session),
+    dayClosed,
+  };
 }

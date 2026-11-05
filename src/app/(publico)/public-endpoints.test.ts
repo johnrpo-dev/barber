@@ -897,7 +897,7 @@ describe("lecturas y enlaces malos", () => {
     const portal = await data.loadPortal();
     expect(portal).toMatchObject({ enabled: true, today, maxAdvanceDays: 14, turnstileSiteKey: null });
     expect(portal!.services).toEqual([{ id: A.servicePublic, name: "Corte", durationMin: 30, priceLabel: expect.stringContaining("35.000") }]);
-    expect(portal!.staff).toEqual([{ id: A.barberPublic, name: "Andrés Gómez", initials: "AG" }]);
+    expect(portal!.staff).toEqual([{ id: A.barberPublic, name: "Andrés Gómez", initials: "AG", serviceIds: [A.servicePublic] }]);
     expect(portal!.hours[0]).toEqual({ weekday: 1, label: "Lunes", ranges: ["12:00 a. m. – 12:00 a. m."] });
     expect(portal!.location.whatsappUrl).toBe("https://wa.me/573005551234");
   });
