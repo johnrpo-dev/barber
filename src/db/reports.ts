@@ -4,7 +4,7 @@ import { addDays } from "@/domain/booking/clock";
 import { sameDayLastWeek, sameSpanPreviousMonth } from "@/domain/reports/period";
 import type { AccountTotalRow, PnlTotals } from "@/domain/reports/pnl";
 import type { PaymentKind } from "@/domain/sales/checkout";
-import { today } from "./cash";
+import { REOPEN_ON_CASH_OPEN_REASON, today } from "./cash";
 import { commissionBalances, type StaffBalances } from "./commissions";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
@@ -385,6 +385,8 @@ export interface DashboardData {
   cashReviewCount: number;
   voidPendingCount: number;
   yesterdayUnclosed: boolean;
+  /** Hoy se reabrió el día al abrir la caja: quién (la última vez) y cuántas veces. */
+  todayAutoReopen: { by: string; times: number } | null;
   owed: StaffBalances[];
   upcoming: { at: Date; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 }
@@ -461,6 +463,16 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
             and not ledger_day_is_closed(${locationId}::bigint, ${yesterday}::date)) as unclosed
       `),
     );
+    const [reopen] = rowsOf<{ by: string | null; times: number }>(
+      await tx.execute(sql`
+        select (array_agg(m.display_name order by e.id desc))[1] as by, count(*)::int as times
+          from day_close_events e
+          left join staff_members m on m.location_id = e.location_id and m.user_id = e.created_by
+         where e.location_id = ${locationId}::bigint and e.business_date = ${day.businessDate}::date
+           and e.action = 'reopen' and e.reason = ${REOPEN_ON_CASH_OPEN_REASON}
+        having count(*) > 0
+      `),
+    );
     const upcoming = rowsOf<{ at: Date | string; staff_name: string; service_name: string; client_name: string | null; status: "pending" | "confirmed" | "arrived" }>(
       await tx.execute(sql`
         select lower(a.during) as at, m.display_name as staff_name, a.service_name, c.name as client_name, a.status
@@ -492,6 +504,7 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
       cashReviewCount: Number(alerts?.reviews ?? "0"),
       voidPendingCount: Number(alerts?.voids ?? "0"),
       yesterdayUnclosed: alerts?.unclosed === true,
+      todayAutoReopen: reopen ? { by: reopen.by ?? "Personal", times: Number(reopen.times) } : null,
       owed: balances.filter((b) => b.commissionOwed !== 0n || b.tipsOwed !== 0n || b.receivable !== 0n),
       upcoming: upcoming.map((u) => ({ at: new Date(u.at), staffName: u.staff_name, serviceName: u.service_name, clientName: u.client_name, status: u.status })),
     };

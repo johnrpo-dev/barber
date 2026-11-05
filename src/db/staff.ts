@@ -72,14 +72,14 @@ export async function addStaffMember(
   const displayName = input.displayName.trim();
   if (displayName.length < 2) throw new StaffError("El nombre debe tener al menos 2 caracteres");
   return db.transaction(async (txRaw) => {
-    const tx = txRaw as unknown as Db;
-    const [staff] = await tx
-      .insert(staffMembers)
-      .values({ locationId: input.locationId, displayName, role: input.role })
-      .returning({ id: staffMembers.id });
-    if (!staff) throw new StaffError("No se pudo crear el miembro del personal");
-    await assignAllServices(tx, input.locationId, staff.id);
-    return staff.id;
+      const tx = txRaw as unknown as Db;
+      const [staff] = await tx
+        .insert(staffMembers)
+        .values({ locationId: input.locationId, displayName, role: input.role })
+        .returning({ id: staffMembers.id });
+      if (!staff) throw new StaffError("No se pudo crear el miembro del personal");
+      await assignAllServices(tx, input.locationId, staff.id);
+      return staff.id;
   });
 }
 
@@ -126,18 +126,29 @@ export async function setStaffServices(
   input: { locationId: bigint; staffId: bigint; serviceIds: readonly bigint[] },
 ): Promise<{ added: bigint[]; removed: bigint[] }> {
   const wanted = [...new Set(input.serviceIds)];
+  // Leer, borrar e insertar en UNA transacción, con la fila de la persona bloqueada: si algo falla a
+  // mitad, la persona no queda sin servicios (y sin ofrecerse) en silencio, y dos ediciones a la vez
+  // no se mezclan.
+  return db.transaction(async (txRaw) => {
+  const tx = txRaw as unknown as Db;
+  const [person] = await tx
+    .select({ id: staffMembers.id })
+    .from(staffMembers)
+    .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)))
+    .for("update");
+  if (!person) throw new StaffError("Esa persona no existe en esta sede");
   if (wanted.length > 0) {
-    const found = await db
+    const found = await tx
       .select({ id: services.id })
       .from(services)
       .where(and(eq(services.locationId, input.locationId), inArray(services.id, wanted)));
     if (found.length !== wanted.length) throw new StaffError("Algún servicio no existe en esta sede");
   }
-  const before = await staffServiceIds(db, input);
+  const before = await staffServiceIds(tx, input);
   const removed = before.filter((id) => !wanted.includes(id));
   const added = wanted.filter((id) => !before.includes(id));
   if (removed.length > 0) {
-    await db
+    await tx
       .delete(staffServices)
       .where(
         and(
@@ -148,12 +159,13 @@ export async function setStaffServices(
       );
   }
   if (added.length > 0) {
-    await db
+    await tx
       .insert(staffServices)
       .values(added.map((serviceId) => ({ locationId: input.locationId, staffId: input.staffId, serviceId })))
       .onConflictDoNothing();
   }
   return { added, removed };
+  });
 }
 
 /** Membresías activas del usuario. Sin membresía activa no hay acceso, aunque la contraseña sea correcta. */

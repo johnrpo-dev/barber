@@ -277,13 +277,14 @@ async function main() {
   const { name: _name, ...rest } = settings;
   await updateLocationSettings(d, locationId, {
     ...rest,
-    // La dirección y el mapa solo se llenan si están vacíos: el seed no pisa datos reales.
+    // Dirección, mapa y teléfono solo se llenan si están vacíos: el seed no pisa datos reales. La
+    // reserva en línea solo se abre sola en una base local (auditoría, LOW-1).
     address: rest.address ?? ADDRESS,
     mapsUrl: rest.mapsUrl ?? MAPS_URL,
-    publicPhone: DEMO_PHONE,
-    publicBookingEnabled: true,
+    publicPhone: rest.publicPhone ?? DEMO_PHONE,
+    publicBookingEnabled: localDatabase ? true : rest.publicBookingEnabled,
   });
-  console.log(`Sede: dirección, teléfono ${DEMO_PHONE} y reserva en línea abierta.`);
+  console.log(`Sede: dirección y teléfono (si faltaban)${localDatabase ? " y reserva en línea abierta" : ""}.`);
 
   await client.$client.end();
 }

@@ -37,14 +37,13 @@ export async function salesByDay(db: Db, q: ReportQuery): Promise<{ days: SalesD
              coalesce(sum(p.cash) filter (where s.status = 'paid'), 0)::text as cash,
              coalesce(sum(p.other) filter (where s.status = 'paid'), 0)::text as other
         from sales s
-        left join (
-          select sale_id,
-                 sum(amount) filter (where kind = 'cash') as cash,
-                 sum(amount) filter (where kind <> 'cash') as other
-            from sale_payments
-           where location_id = ${loc(q)}
-           group by sale_id
-        ) p on p.sale_id = s.id
+        -- Los pagos de CADA venta del periodo (no de toda la sede): el costo crece con el periodo.
+        left join lateral (
+          select sum(sp.amount) filter (where sp.kind = 'cash') as cash,
+                 sum(sp.amount) filter (where sp.kind <> 'cash') as other
+            from sale_payments sp
+           where sp.location_id = s.location_id and sp.sale_id = s.id
+        ) p on true
        where s.location_id = ${loc(q)} and ${inRange(sql`s.business_date`, q)}
        group by grouping sets ((s.business_date), ())
        order by grouping(s.business_date), s.business_date desc
@@ -216,6 +215,8 @@ export async function cashSessionsInPeriod(db: Db, q: ReportQuery): Promise<{ se
         left join staff_members mc on mc.location_id = cs.location_id and mc.user_id = cs.closed_by
         left join staff_members mr on mr.location_id = cs.location_id and mr.user_id = cs.reviewed_by
        where cs.location_id = ${loc(q)} and ${inRange(sql`(cs.opened_at at time zone l.timezone)::date`, q)}
+         -- Cota por instantes, con un día de margen a cada lado por la zona: descarta turnos viejos sin calcular su fecha local.
+         and cs.opened_at >= ${q.from}::date - 1 and cs.opened_at < ${q.to}::date + 2
        order by cs.opened_at desc, cs.id desc
        limit 50001
     `),

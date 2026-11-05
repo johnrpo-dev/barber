@@ -400,9 +400,9 @@ export function SettlementForm({ ctx, refreshNonce }: { ctx: SettlementContext; 
         <Text slot="description" className={field.description}>
           {!ctx.cashSessionOpen ? (
             <>
-              La caja está cerrada.{" "}
+              La caja de hoy no está abierta.{" "}
               <Link href="/panel/caja" className="font-semibold text-cuero underline underline-offset-2">
-                Abre la caja
+                Ve a Caja
               </Link>{" "}
               para pagar en efectivo.
             </>
@@ -415,7 +415,7 @@ export function SettlementForm({ ctx, refreshNonce }: { ctx: SettlementContext; 
       </RadioGroup>
       {data && cashBlocked ? (
         <Notice tone="alert">
-          {!data.cash.sessionOpen ? "Abre la caja para pagar en efectivo, o paga desde el banco." : "No hay tanto efectivo en la caja. Paga desde el banco o consigna primero."}
+          {!data.cash.sessionOpen ? "La caja de hoy no está abierta: ábrela en Caja (o cierra la de otro día) para pagar en efectivo, o paga desde el banco." : "No hay tanto efectivo en la caja. Paga desde el banco o consigna primero."}
         </Notice>
       ) : null}
 

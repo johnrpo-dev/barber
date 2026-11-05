@@ -94,6 +94,8 @@ export function CashBoard({ initial }: { initial: CashView }) {
   const s = view.session;
   /** La caja quedó abierta de un día anterior: no recibe efectivo de hoy hasta cerrarla contando. */
   const stale = s?.staleDayLabel ?? null;
+  /** El día pendiente no se cierra con una caja abierta de ese día o anterior (lo exige también la base). */
+  const pendingBlocked = !!s && !!view.pendingDay && s.businessDate <= view.pendingDay.date;
   const closeSheet = () => setSheet(null);
   const startClose = () => {
     void refresh();
@@ -152,7 +154,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
           <div className="flex items-start gap-3">
             <TriangleAlert size={20} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
             <div className="flex flex-col gap-0.5">
-              <p className="font-semibold">La caja del {stale} sigue abierta</p>
+              <p className="font-semibold">
+                La caja del {stale} sigue abierta <span className="font-normal text-tinta/80">(la abrió {s?.openedBy})</span>
+              </p>
               <p className="text-sm text-tinta/80">
                 Ciérrala contando el efectivo y después abre la de hoy. Así las ventas de cada día no se mezclan. Mientras tanto solo se cobra con
                 tarjeta, transferencia o billetera.
@@ -357,7 +361,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
 
           {s.byMethod.length > 0 ? (
             <div className="flex flex-col gap-2">
-              <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-tinta/70">Otros medios del turno (no se cuentan)</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-tinta/70">Otros medios del día (no se cuentan)</h3>
               <ul className="flex flex-col divide-y divide-tinta/10 rounded-lg border border-tinta/10">
                 {s.byMethod.map((m) => (
                   <li key={m.label} className="flex items-center justify-between px-3 py-2 text-sm">
@@ -370,7 +374,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
           ) : null}
 
           <div className="grid grid-cols-2 gap-2">
-            <Btn variant="secondary" onPress={() => setSheet({ kind: "expense" })} isDisabled={view.dayClosed || !!stale}>
+            <Btn variant="secondary" onPress={() => setSheet({ kind: "expense" })} isDisabled={view.dayClosed || (!!stale && !view.canBankExpense)}>
               <Receipt size={18} aria-hidden /> Registrar gasto
             </Btn>
             <Btn variant="secondary" onPress={() => setSheet({ kind: "tips" })} isDisabled={view.dayClosed || !!stale || view.tipsOwed.length === 0}>
@@ -480,9 +484,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
             <div className="flex flex-col gap-2 rounded-xl border border-cuero/30 bg-cuero/5 p-4">
               <p className="text-sm">
                 <span className="font-semibold">El {view.pendingDay.label} quedó sin cerrar.</span>{" "}
-                {stale ? "Primero cierra la caja de ese día." : "Ciérralo para que nadie registre más movimientos en esa fecha."}
+                {pendingBlocked ? "Primero cierra la caja de ese día." : "Ciérralo para que nadie registre más movimientos en esa fecha."}
               </p>
-              <Btn variant="secondary" className="self-start" isDisabled={!!stale} onPress={() => setSheet({ kind: "closePendingDay" })}>
+              <Btn variant="secondary" className="self-start" isDisabled={pendingBlocked} onPress={() => setSheet({ kind: "closePendingDay" })}>
                 <CalendarCheck size={18} aria-hidden /> Cerrar el {view.pendingDay.label}
               </Btn>
             </div>

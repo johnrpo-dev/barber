@@ -54,6 +54,8 @@ export interface CashView {
   expectedOpeningLabel: string | null;
   session: null | {
     id: string;
+    /** Día contable del turno (fecha local de la apertura). */
+    businessDate: string;
     /**
      * El turno quedó abierto de un día anterior ("lunes 3 de noviembre"): no recibe efectivo de hoy.
      * Se cierra contando y luego se abre la caja de hoy. null si es de hoy.
@@ -159,6 +161,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       }
       session = {
         id: summary.id.toString(),
+        businessDate: summary.businessDate,
         staleDayLabel: sessionIsFromEarlierDay(summary.businessDate, day.businessDate) ? formatDateLabel(summary.businessDate) : null,
         openedAtLabel: atLabel(summary.openedAt, tz, day.businessDate),
         openedBy: summary.openedBy,
@@ -180,8 +183,9 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       businessDate: day.businessDate,
       dayClosed: day.closed,
       // Con la caja abierta, el saldo de 1105 ES el esperado: solo para quien tiene cash.review.
-      expectedOpeningMinor: summary && blind ? null : minorText(ledger),
-      expectedOpeningLabel: summary && blind ? null : moneyLabel(ledger),
+      // El saldo de 1105 es el esperado al abrir y durante el turno: a ciegas, nunca llega (MEDIUM-2).
+      expectedOpeningMinor: blind ? null : minorText(ledger),
+      expectedOpeningLabel: blind ? null : moneyLabel(ledger),
       session,
       blindCount: blind,
       lastClosed: closed
@@ -258,6 +262,8 @@ const countInput = z.object({
   idempotencyKey: idempotencyKeySchema,
 });
 
+const BLIND_OPENING_NOTE = "Conteo a ciegas al abrir";
+
 export async function openCashSessionAction(
   raw: z.input<typeof countInput>,
 ): Promise<ActionResult<{ sessionId: string; differenceLabel: string | null }>> {
@@ -267,7 +273,9 @@ export async function openCashSessionAction(
     const opened = await openCashSession(database(), {
       locationId: staff.locationId,
       counted: input.countedUnits,
-      note: input.note,
+      // A ciegas la nota no se exige: pedirla solo con diferencia diría si la base cuadra (MEDIUM-2).
+      // La diferencia queda igual, a nombre de quien abre, y la base la marca si supera el umbral.
+      note: input.note ?? (can(staff.role, "cash.review") ? undefined : BLIND_OPENING_NOTE),
       idempotencyKey: input.idempotencyKey,
       actor: { userId: staff.userId },
       reopenClosedToday: can(staff.role, "day.reopen.today"),

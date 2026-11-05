@@ -6,7 +6,12 @@ import { addDays, localMinuteToInstant } from "@/domain/booking/clock";
 import { businessDate } from "@/domain/ledger/business-date";
 import { fromUnits } from "@/domain/money";
 import { sessionIsFromEarlierDay } from "@/domain/sales/cash";
+import { updateService } from "./catalog";
+import { giveAdvance } from "./commissions";
+import { dashboardData } from "./reports";
+import { decideVoid, requestVoid } from "./voids";
 import {
+  appointmentsToCharge,
   cashDeposit,
   cashViewData,
   closeBusinessDay,
@@ -16,6 +21,7 @@ import {
   ledgerCash,
   openCashSession,
   payTips,
+  reopenBusinessDay,
   REOPEN_ON_CASH_OPEN_REASON,
   sessionSummary,
 } from "./cash";
@@ -270,4 +276,75 @@ describe("abrir la caja con el día de hoy cerrado", () => {
       { numRuns: 8 },
     );
   }, 120_000);
+});
+
+// Correcciones de la auditoría (seguridad, base de datos y revisión de código).
+
+describe("auditoría de caja", () => {
+  it("una venta con tarjeta antes de abrir la caja cuenta en los otros medios del día", async () => {
+    const shop = await newShop();
+    await quickSale(db, shop, { kind: "card" });
+    await openCashSession(db, { locationId: shop.locationId, counted: cop(0n), idempotencyKey: key("open"), actor: shop.reception });
+    const summary = await sessionSummary(db, shop.locationId);
+    expect(summary?.byMethod.map((m) => m.total)).toEqual([cop(30_000n).minor]);
+  });
+
+  it("un día viejo reabierto y sin volver a cerrar aparece como pendiente, sin importar su antigüedad", async () => {
+    const shop = await newShop();
+    const old = addDays(today(), -20);
+    await closeBusinessDay(db, { locationId: shop.locationId, businessDate: old, actor: shop.owner });
+    expect(await lastUnclosedPastDay(db, shop.locationId, today())).toBeNull();
+    await reopenBusinessDay(db, { locationId: shop.locationId, businessDate: old, reason: "Corregir un gasto", actor: shop.owner });
+    expect(await lastUnclosedPastDay(db, shop.locationId, today())).toBe(old);
+    await closeBusinessDay(db, { locationId: shop.locationId, businessDate: old, actor: shop.owner });
+    expect(await lastUnclosedPastDay(db, shop.locationId, today())).toBeNull();
+  });
+
+  it("cada reapertura automática de hoy queda contada en la auditoría y en Inicio del dueño", async () => {
+    const shop = await newShop();
+    const base = { locationId: shop.locationId, counted: cop(0n), actor: shop.reception, reopenClosedToday: true };
+    expect((await dashboardData(db, { locationId: shop.locationId })).todayAutoReopen).toBeNull();
+    for (const round of [1, 2]) {
+      await closeBusinessDay(db, { locationId: shop.locationId, businessDate: today(), actor: shop.owner });
+      await openCashSession(db, { ...base, idempotencyKey: key("open") });
+      await closeCashSession(db, { ...base, idempotencyKey: key("close") });
+      expect((await dashboardData(db, { locationId: shop.locationId })).todayAutoReopen).toEqual({ by: "Personal", times: round });
+    }
+    const audit = await db
+      .select({ summary: auditEvents.summary })
+      .from(auditEvents)
+      .where(and(eq(auditEvents.locationId, shop.locationId), eq(auditEvents.action, "day.reopen")))
+      .orderBy(auditEvents.id);
+    expect(audit.map((a) => a.summary)).toEqual([
+      `Reabrió el día ${today()} al abrir la caja (reapertura automática; primera vez ese día)`,
+      `Reabrió el día ${today()} al abrir la caja (reapertura automática; 2 veces ese día)`,
+    ]);
+  });
+
+  it("Por cobrar muestra el nombre y el precio congelados en la cita, no los del catálogo de hoy", async () => {
+    const shop = await newShop();
+    const appointmentId = await chairAppointment(db, shop);
+    await updateService(db, {
+      locationId: shop.locationId,
+      serviceId: shop.service,
+      draft: { name: "Corte premium", durationMin: 30, bufferMin: 10, price: cop(45_000n), commissionBps: 4_000 },
+    });
+    const list = await appointmentsToCharge(db, shop.locationId, addDays(today(), 2));
+    expect(list.find((a) => a.appointmentId === appointmentId)).toMatchObject({ serviceName: "Corte", price: cop(30_000n).minor });
+  });
+
+  it("con la caja de ayer abierta no se devuelve efectivo de una anulación ni se da un anticipo en efectivo", async () => {
+    const shop = await newShop();
+    await openYesterday(shop, 100_000n);
+    const sale = await cashSaleAt(shop, yesterdayEvening());
+    const stale = /^La caja del .+ sigue abierta/;
+    const { requestId } = await requestVoid(db, { locationId: shop.locationId, saleId: sale.saleId, reason: "Cobro duplicado", idempotencyKey: key("vr"), actor: shop.reception });
+    await expect(
+      decideVoid(db, { locationId: shop.locationId, requestId, approve: true, note: "", idempotencyKey: key("vd"), approver: shop.owner }),
+    ).rejects.toThrow(stale);
+    await expect(
+      giveAdvance(db, { locationId: shop.locationId, staffId: shop.barber, amount: cop(10_000n), paidFrom: "cash", reason: "Transporte", idempotencyKey: key("adv"), actor: shop.owner }),
+    ).rejects.toThrow(stale);
+    expect(await ledgerCash(db, shop.locationId)).toBe(cop(130_000n).minor);
+  });
 });

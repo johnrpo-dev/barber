@@ -13,7 +13,7 @@ import { decideVoid, requestVoid } from "@/db/voids";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
-import { auditEvents, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
+import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -1824,6 +1824,23 @@ describe("conteo a ciegas", () => {
       closedBy: expect.stringMatching(/^Persona reception/),
       closedLabel: expect.stringMatching(/^\d{2}:\d{2}$/),
     });
+  });
+
+  it("recepción abre a ciegas: no recibe el saldo esperado y, sin nota, queda la de conteo a ciegas", async () => {
+    await cashDrawer(false);
+    const expectedMinor = await ledgerCash(db, A.location);
+    await signInAs(A.users.reception);
+    const blind = await caja.loadCashView();
+    expect(blind.ok && blind.data).toMatchObject({ session: null, expectedOpeningMinor: null, expectedOpeningLabel: null });
+    const counted = String(expectedMinor / 100n + 1n);
+    expect(await caja.openCashSessionAction({ countedUnits: counted, idempotencyKey: `abrir-${uniq()}` })).toMatchObject({ ok: true });
+    const [opened] = await db.select({ note: cashSessions.openingNote }).from(cashSessions).where(eq(cashSessions.locationId, A.location)).orderBy(sql`${cashSessions.id} desc`).limit(1);
+    expect(opened?.note).toBe("Conteo a ciegas al abrir");
+    expect(await caja.closeCashSessionAction({ countedUnits: counted, note: "Fin", idempotencyKey: `cerrar-${uniq()}` })).toMatchObject({ ok: true });
+
+    await signInAs(A.users.owner);
+    const full = await caja.loadCashView();
+    expect(full.ok && full.data.expectedOpeningMinor).not.toBeNull();
   });
 
   it("con el día de hoy cerrado, recepción abre la caja igual: el día se reabre a su nombre (y el barbero no puede)", async () => {

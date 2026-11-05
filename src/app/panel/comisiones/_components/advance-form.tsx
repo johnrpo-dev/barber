@@ -116,7 +116,7 @@ export function AdvanceForm({
         </div>
         <Text slot="description" className={field.description}>
           {cashSessionOpen === false
-            ? "La caja está cerrada: ábrela para darlo en efectivo."
+            ? "La caja de hoy no está abierta: ábrela en Caja para darlo en efectivo."
             : paidFrom === "bank"
               ? "Sale de la cuenta del negocio. Se pide confirmar tu identidad."
               : "Sale efectivo del turno abierto. Se pide confirmar tu identidad."}
@@ -144,7 +144,7 @@ export function AdvanceForm({
       </TextField>
 
       <FormError message={error} />
-      {error?.startsWith("Abre la caja") ? (
+      {error?.startsWith("Abre la caja") || error?.startsWith("La caja del ") ? (
         <Link
           href="/panel/caja"
           className="inline-flex h-11 items-center gap-2 self-start rounded-lg border border-tinta/20 px-4 text-sm font-semibold outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-cuero"

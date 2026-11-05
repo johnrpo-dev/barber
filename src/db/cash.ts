@@ -81,7 +81,7 @@ const sessionColumns = {
   openedAt: cashSessions.openedAt,
   openingCounted: cashSessions.openingCounted,
   /** Día contable del turno: la fecha local de la sede al abrirlo. */
-  businessDate: sql<string>`((${cashSessions.openedAt} at time zone (select l.timezone from locations l where l.id = ${cashSessions.locationId}))::date)::text`,
+  businessDate: sql<string>`(("cash_sessions"."opened_at" at time zone (select l.timezone from locations l where l.id = "cash_sessions"."location_id"))::date)::text`,
 };
 
 /** La caja abierta de la sede. `lock`: la toma FOR UPDATE (cobro en efectivo, gastos, cierre). */
@@ -138,6 +138,12 @@ export interface OpenedSession {
   created: boolean;
 }
 
+/** La hora de la base (inicio de la transacción), la misma que usan los triggers. */
+async function databaseNow(db: Db): Promise<Date> {
+  const [row] = rowsOf<{ now: Date | string }>(await db.execute(sql`select now() as now`));
+  return new Date(row!.now);
+}
+
 /** Motivo con el que queda la reapertura automática de hoy al abrir la caja. */
 export const REOPEN_ON_CASH_OPEN_REASON = "Se abrió la caja con el día de hoy cerrado";
 
@@ -173,9 +179,18 @@ export async function openCashSession(
     if (await openSession(tx, input.locationId, { lock: true })) throw new CashError("La caja ya está abierta");
     // Un turno no se abre en un día cerrado, haya o no diferencia (L1): todo lo que entre a la caja
     // durante el turno se registraría en ese día.
-    const now = input.now ?? new Date();
+    // El día de la apertura sale del reloj de la BASE, el mismo con que la base pone opened_at: con
+    // relojes desfasados cerca de medianoche, el asiento y el turno no quedan en días distintos.
+    const now = input.now ?? (await databaseNow(tx));
     const current = await today(tx, input.locationId, now);
     if (current.closed && input.reopenClosedToday) {
+      const [prior] = rowsOf<{ n: string }>(
+        await tx.execute(sql`
+          select count(*)::text as n from day_close_events
+           where location_id = ${input.locationId}::bigint and business_date = ${current.businessDate}::date and action = 'reopen'
+        `),
+      );
+      const times = Number(prior?.n ?? "0") + 1;
       await reopenDay(tx, { locationId: input.locationId, businessDate: current.businessDate, reason: REOPEN_ON_CASH_OPEN_REASON, createdBy: input.actor.userId });
       await recordAudit(tx, {
         locationId: input.locationId,
@@ -183,7 +198,7 @@ export async function openCashSession(
         action: "day.reopen",
         targetKind: "business_day",
         targetRef: current.businessDate,
-        summary: `Reabrió el día ${current.businessDate} al abrir la caja`,
+        summary: `Reabrió el día ${current.businessDate} al abrir la caja (reapertura automática; ${times === 1 ? "primera vez" : `${times} veces`} ese día)`,
       });
     }
     const day = await requireOpenDay(tx, input.locationId, now, (m) => new CashError(m));
@@ -671,9 +686,9 @@ export async function sessionSummary(db: Db, locationId: bigint): Promise<Sessio
           eq(salePayments.locationId, locationId),
           ne(salePayments.kind, "cash"),
           eq(sales.status, "paid"),
-          gte(sales.createdAt, session.openedAt),
-          // Solo las ventas del día del turno (por el índice location_id, business_date; L6): si el
-          // turno quedó abierto de ayer, lo que se cobre hoy con tarjeta no se le suma.
+          // Las ventas del DÍA del turno (por el índice location_id, business_date; L6): no se cuentan
+          // y sirven para cuadrar con el datáfono. Sin cota por la hora de apertura: una venta con
+          // tarjeta antes de abrir la caja también es del día. Lo de hoy no se suma a una caja de ayer.
           eq(sales.businessDate, session.businessDate),
         ),
       )
@@ -731,11 +746,11 @@ export async function lastClosedSession(db: Db, locationId: bigint) {
 export async function appointmentsToCharge(db: Db, locationId: bigint, day: string) {
   const rows = rowsOf<{ id: string; start: string; status: "in_chair" | "completed"; client: string | null; service: string; staff: string; price: string }>(
     await db.execute(sql`
-      select a.id::text, lower(a.during) as start, a.status, c.name as client, sv.name as service,
-             m.display_name as staff, sv.price::text
+      -- Nombre y precio congelados en la cita (lo que cobra checkout), no los del catálogo de hoy.
+      select a.id::text, lower(a.during) as start, a.status, c.name as client, a.service_name as service,
+             m.display_name as staff, a.price::text
         from appointments a
         join locations l on l.id = a.location_id
-        join services sv on sv.location_id = a.location_id and sv.id = a.service_id
         join staff_members m on m.location_id = a.location_id and m.id = a.staff_id
         left join clients c on c.location_id = a.location_id and c.id = a.client_id
        where a.location_id = ${locationId}::bigint
@@ -785,8 +800,8 @@ export async function daySales(db: Db, locationId: bigint, day: string) {
  * así que un cobro que entra a mitad de la lectura no deja la pantalla descuadrada.
  */
 /**
- * El día anterior más reciente (última semana) con asientos y sin cerrar: queda así cuando la caja
- * se cerró tarde o nadie cerró el día. Desde Caja se cierra sin reabrir nada.
+ * El día anterior más reciente sin cerrar: con asientos en la última semana (la caja se cerró tarde
+ * o nadie cerró el día) o reabierto alguna vez y no vuelto a cerrar. Desde Caja se cierra.
  */
 export async function lastUnclosedPastDay(db: Db, locationId: bigint, today: string): Promise<string | null> {
   const [row] = rowsOf<{ day: string | null }>(
@@ -794,7 +809,11 @@ export async function lastUnclosedPastDay(db: Db, locationId: bigint, today: str
       select max(d.day)::text as day
         from (select distinct e.business_date as day from journal_entries e
                where e.location_id = ${locationId}::bigint
-                 and e.business_date < ${today}::date and e.business_date >= ${today}::date - 7) d
+                 and e.business_date < ${today}::date and e.business_date >= ${today}::date - 7
+              union
+              -- Reabierto (para anular, corregir…) y nunca vuelto a cerrar: sin límite de antigüedad.
+              select ev.business_date from day_close_events ev
+               where ev.location_id = ${locationId}::bigint and ev.business_date < ${today}::date and ev.action = 'reopen') d
        where not ledger_day_is_closed(${locationId}::bigint, d.day)
     `),
   );

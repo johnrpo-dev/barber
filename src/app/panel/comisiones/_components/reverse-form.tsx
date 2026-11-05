@@ -96,7 +96,7 @@ export function ReverseForm({
       </TextField>
 
       <FormError message={error} />
-      {error?.startsWith("Abre la caja") ? (
+      {error?.startsWith("Abre la caja") || error?.startsWith("La caja del ") ? (
         <Link
           href="/panel/caja"
           className="inline-flex h-11 items-center gap-2 self-start rounded-lg border border-tinta/20 px-4 text-sm font-semibold outline-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-cuero"

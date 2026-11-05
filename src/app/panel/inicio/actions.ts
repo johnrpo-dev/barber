@@ -25,7 +25,7 @@ export type DashboardView = {
     trend: "up" | "down" | "flat" | null;
   }[];
   cash: { open: boolean; openedAtLabel: string | null; openedBy: string | null; expectedLabel: string | null };
-  alerts: { kind: "cash_review" | "void_pending" | "day_unclosed"; count: number; label: string; href: string }[];
+  alerts: { kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened"; count: number; label: string; href: string }[];
   owed: { staffId: string; name: string; commissionLabel: string; tipsLabel: string; receivableLabel: string; netMinor: string; netLabel: string }[];
   upcoming: { atLabel: string; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 };
@@ -63,6 +63,17 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
       });
     }
     if (d.yesterdayUnclosed) alerts.push({ kind: "day_unclosed", count: 1, label: "Ayer no se cerró el día", href: "/panel/caja" });
+    if (d.todayAutoReopen) {
+      alerts.push({
+        kind: "day_reopened",
+        count: d.todayAutoReopen.times,
+        label:
+          d.todayAutoReopen.times === 1
+            ? `Hoy el día estaba cerrado y ${d.todayAutoReopen.by} lo reabrió al abrir la caja`
+            : `Hoy se reabrió el día ${d.todayAutoReopen.times} veces al abrir la caja (la última, ${d.todayAutoReopen.by})`,
+        href: "/panel/caja",
+      });
+    }
 
     return {
       businessDate: d.businessDate,
