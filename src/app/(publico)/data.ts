@@ -33,7 +33,7 @@ export async function loadPortal(): Promise<PortalView | null> {
   const location = await publicLocation(database());
   if (!location) return null;
   const readiness = publicBookingReadiness();
-  const data = await loadPortalData(database(), location, new Date());
+  const data = await loadPortalData(database(), location, new Date(), { cacheDemand: true });
   let turnstileSiteKey: string | null = null;
   if (readiness.ready) turnstileSiteKey = publicConfig().turnstile?.siteKey ?? null;
   return { enabled: location.publicBookingEnabled && readiness.ready, ...data, turnstileSiteKey };

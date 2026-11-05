@@ -7,7 +7,7 @@ import { changeStatus, createAppointment } from "./appointments";
 import { createService } from "./catalog";
 import { findOrCreateClient } from "./clients";
 import { createLocation } from "./ledger";
-import { FEATURED_COUNT, loadPortalData, publicLocation, type PortalData } from "./public-booking";
+import { DEMAND_CACHE_MS, FEATURED_COUNT, loadPortalData, publicLocation, type PortalData } from "./public-booking";
 import { addStaffMember, setWeeklySchedule } from "./staff";
 import { createTestDb } from "./testing";
 import type { Db } from "./types";
@@ -112,6 +112,21 @@ describe("portada: lo más pedido", () => {
     expect(p.featuredByDemand).toBe(true);
     // Manicura (2), Tinte (1) y después el catálogo; Barba no sube por sus citas canceladas.
     expect(featuredNames(p)).toEqual(["Manicura", "Tinte", "Corte", "Barba", "Cejas", "Corte + barba"]);
+  });
+
+  it("con caché (la portada pública): reusa el conteo 5 minutos y después lo refresca", async () => {
+    const loc = (await publicLocation(db, { fallbackToFirst: true }))!;
+    const t0 = new Date();
+    const first = await loadPortalData(db, loc, t0, { cacheDemand: true });
+    await book("Cejas", 4, 600);
+    await book("Cejas", 4, 660);
+    await book("Cejas", 4, 720);
+    const cached = await loadPortalData(db, loc, new Date(t0.getTime() + DEMAND_CACHE_MS - 1), { cacheDemand: true });
+    expect(featuredNames(cached)).toEqual(featuredNames(first));
+    // Sin caché (y pasado el plazo) se ven las citas nuevas.
+    expect(featuredNames(await portal())[0]).toBe("Cejas");
+    const fresh = await loadPortalData(db, loc, new Date(t0.getTime() + DEMAND_CACHE_MS + 1), { cacheDemand: true });
+    expect(featuredNames(fresh)[0]).toBe("Cejas");
   });
 
   it("los servicios siguen en orden alfabético para la reserva", async () => {

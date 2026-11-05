@@ -8,12 +8,16 @@ import { firstNameForMessage, type NotificationChannel, TEMPLATE_PARAMS } from "
 import type { Notifier } from "@/lib/notify/ports";
 import { NotifyError } from "@/lib/notify/ports";
 import { describeError } from "@/lib/log";
+import { REMINDERS_SINCE_VERSION } from "@/content/privacy/versions";
 import { hasLatestConsent } from "./consents";
 import { activeLinkGeneration } from "./manage-links";
 import { hit } from "./rate-limit";
 import { appointmentEvents, appointments, clients, locations, notificationEvents, notifications, sales, staffMembers } from "./schema";
 import type { Db } from "./types";
 import { BUSINESS_NAME } from "@/domain/brand";
+
+/** El recordatorio único solo con autorización dada desde la política 2026-11-05b (o después). */
+const REMINDER_CONSENT = { sinceVersion: REMINDERS_SINCE_VERSION };
 
 // Outbox de mensajes al cliente (sprint-3-reserva-publica.md §5). La web escribe la intención
 // dentro de la transacción del dominio; el worker la entrega A LO SUMO UNA VEZ:
@@ -238,7 +242,7 @@ export async function deliverNotification(db: Db, id: bigint, notifier: Notifier
         status: appointments.status,
         during: appointments.during,
         publicId: appointments.publicId,
-        reminderConsent: n.clientId === null ? sql<boolean>`false` : sql<boolean>`${hasLatestConsent("reminders", n.locationId, n.clientId)}`,
+        reminderConsent: n.clientId === null ? sql<boolean>`false` : sql<boolean>`${hasLatestConsent("reminders", n.locationId, n.clientId, REMINDER_CONSENT)}`,
       })
       .from(locations)
       .leftJoin(clients, and(eq(clients.locationId, locations.id), n.clientId === null ? sql`false` : eq(clients.id, n.clientId)))
@@ -353,7 +357,7 @@ export async function createDueReminders(db: Db, ctx: DeliveryContext, now: Date
         sql`lower(${appointments.during}) > ${new Date(now.getTime() + 30 * MINUTE_MS).toISOString()}::timestamptz`,
         sql`lower(${appointments.during}) <= ${new Date(now.getTime() + REMINDER_LEAD_MS).toISOString()}::timestamptz`,
         sql`${clients.anonymizedAt} is null`,
-        sql`${hasLatestConsent("reminders", appointments.locationId, appointments.clientId)}`,
+        sql`${hasLatestConsent("reminders", appointments.locationId, appointments.clientId, REMINDER_CONSENT)}`,
       ),
     );
 

@@ -1,6 +1,6 @@
 import { type AnyColumn, and, desc, eq, sql } from "drizzle-orm";
 import { CONSENT_PURPOSES, type ConsentChoices, type ConsentPurpose, consentRows } from "@/domain/clients/consent";
-import { privacyVersion } from "@/content/privacy/versions";
+import { privacyVersion, versionsSince } from "@/content/privacy/versions";
 import { clientConsents } from "./schema";
 import type { Db } from "./types";
 
@@ -48,11 +48,21 @@ export async function latestConsents(db: Db, input: { locationId: bigint; client
   return out;
 }
 
-/** Condición SQL: el último consentimiento de `purpose` del cliente es verdadero. */
-export function hasLatestConsent(purpose: ConsentPurpose, locationId: bigint | AnyColumn, clientId: bigint | AnyColumn) {
+/**
+ * Condición SQL: el último consentimiento de `purpose` del cliente es verdadero. Con
+ * `sinceVersion`, además tiene que haberse dado con esa versión de la política o una posterior
+ * (una revocación posterior, de cualquier versión, sigue mandando).
+ */
+export function hasLatestConsent(purpose: ConsentPurpose, locationId: bigint | AnyColumn, clientId: bigint | AnyColumn, opts: { sinceVersion?: string } = {}) {
   const v = (x: bigint | AnyColumn) => (typeof x === "bigint" ? sql`${String(x)}::bigint` : sql`${x}`);
+  const granted = opts.sinceVersion
+    ? sql`(cc.granted and cc.text_version in (${sql.join(
+        versionsSince(opts.sinceVersion).map((x) => sql`${x}`),
+        sql`, `,
+      )}))`
+    : sql`cc.granted`;
   return sql`coalesce((
-    select cc.granted from client_consents cc
+    select ${granted} from client_consents cc
     where cc.location_id = ${v(locationId)} and cc.client_id = ${v(clientId)} and cc.purpose = ${purpose}
     order by cc.id desc limit 1
   ), false)`;

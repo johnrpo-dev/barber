@@ -1209,13 +1209,39 @@ async function serviceDemand(db: Db, locationId: bigint, now: Date): Promise<Map
   return new Map(rows.map((r) => [r.serviceId, Number(r.n)]));
 }
 
-export async function loadPortalData(db: Db, location: PublicLocation, now: Date): Promise<PortalData> {
+/** "Lo más pedido" cambia despacio: la portada lo reusa este tiempo (auditoría del sprint 6, M-2). */
+export const DEMAND_CACHE_MS = 5 * MINUTE_MS;
+const demandCache = new WeakMap<Db, Map<bigint, { expires: number; value: Promise<Map<bigint, number>> }>>();
+
+/**
+ * serviceDemand con caché en memoria por proceso y sede. Cada visita anónima a la portada haría
+ * si no un GROUP BY sobre 60 días de citas; así es uno cada DEMAND_CACHE_MS. Guarda la promesa,
+ * para que las visitas simultáneas compartan la misma consulta, y la suelta si falla.
+ */
+function cachedServiceDemand(db: Db, locationId: bigint, now: Date): Promise<Map<bigint, number>> {
+  let perDb = demandCache.get(db);
+  if (!perDb) demandCache.set(db, (perDb = new Map()));
+  const hit = perDb.get(locationId);
+  if (hit && hit.expires > now.getTime()) return hit.value;
+  const value = serviceDemand(db, locationId, now);
+  perDb.set(locationId, { expires: now.getTime() + DEMAND_CACHE_MS, value });
+  value.catch(() => {
+    if (perDb.get(locationId)?.value === value) perDb.delete(locationId);
+  });
+  return value;
+}
+
+/**
+ * Datos de la portada. `cacheDemand`: la portada pública lo pasa en true; el horario, los
+ * servicios y "abierto ahora" se leen siempre frescos.
+ */
+export async function loadPortalData(db: Db, location: PublicLocation, now: Date, opts: { cacheDemand?: boolean } = {}): Promise<PortalData> {
   const serviceRows = await db
     .select({ internalId: services.id, id: services.publicId, name: services.name, durationMin: services.durationMin, price: services.price })
     .from(services)
     .where(and(eq(services.locationId, location.id), eq(services.active, true)))
     .orderBy(asc(services.name));
-  const demand = await serviceDemand(db, location.id, now);
+  const demand = await (opts.cacheDemand ? cachedServiceDemand : serviceDemand)(db, location.id, now);
 
   const scheduleRows = await db
     .select({

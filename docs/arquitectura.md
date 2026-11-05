@@ -213,6 +213,9 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
     - el consentimiento y la bandeja de avisos son solo-inserción;
     - el estado del código es inmutable salvo +1 intento y un único consumo;
     - un enlace revocado no revive.
+  - **Recordatorio único y portada (cierre del sprint 6):**
+    - el recordatorio exige que la última autorización de recordatorios sea de la política 2026-11-05b o posterior (`hasLatestConsent(..., { sinceVersion })`), al crearlo y otra vez al entregarlo, como promete esa versión (M-1); una revocación posterior manda;
+    - "lo más pedido" de la portada se cuenta a lo sumo una vez cada 5 minutos por proceso y sede (`DEMAND_CACHE_MS`), con las visitas simultáneas compartiendo la consulta: un bot que recarga `/` no dispara un GROUP BY por visita (M-2).
 - **Ajustes de la sede.** Solo el dueño (`settings.manage`). Las acciones están en la matriz de autorización y el enlace del mapa solo acepta `https://`.
 - **Endurecimiento antes del dinero (inicio del sprint 4).**
   - **Verificación en dos pasos (TOTP).** Plugin `twoFactor` de better-auth: códigos de 6 dígitos cada 30 s, 10 códigos de respaldo guardados cifrados y mostrados una sola vez.
@@ -352,6 +355,10 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 | `client_devices` crece sin purga (una fila por verificación). Revocar ya es definitivo en la base (trigger 0017, B2). Falta purgar en el mantenimiento diario las filas vencidas o revocadas hace más de 30 días y limitar a 5 los navegadores activos por cliente | Bajo | Sprint 7 |
 | `seed-demo` valida el host de `DATABASE_URL`, no la base: un túnel SSH a producción por `localhost` pasaría. Lo acota que no corre con `NODE_ENV=production` y que no pisa barberos existentes (B3) | Bajo | Sprint 9: exigir también `ALLOW_SEED_DEMO=1` o una base `_dev` |
 | El recibo va al celular que tecleó quien cobra: si se equivocó, le llega a un tercero (servicios, total y medio de pago, solo primer nombre) (B4) | Bajo | Sprint 8: mostrar el celular enmascarado antes de enviar |
+| **Retirar la autorización de recordatorios o de marketing (cierre del sprint 6, B-3).** La política dice "escríbenos y lo desactivamos", pero el panel no tiene cómo. Los consentimientos son solo-inserción y manda la última fila: basta una acción del personal que inserte `granted = false` (con bitácora), sin tocar el esquema. Hoy se haría a mano en la base | Medio (Ley 1581: derecho a revocar) | Sprint 7, con la ficha del cliente |
+| El cliente recordado (reserva sin código) no vuelve a autorizar: si autorizó con una política anterior a 2026-11-05b, nunca recibe el recordatorio (cumple lo que promete la política, pero lo pierde quien más reserva). Pedir la autorización nueva una vez en ese flujo | Bajo (producto) | Sprint 7 |
+| Reprogramar varias veces con más de 6 h de anticipación da un recordatorio por cada hora nueva (cierre del sprint 6, B-2). Solo llega al celular verificado del propio cliente y lo frenan el límite de gestión y la cuota por destinatario | Bajo | Aceptado |
+| Las fotos de referencia de la portada se empaquetan siempre (`/_next/static/media`, ruta con hash) aunque `showsReferencePhotos()` las oculte; también saldrían si producción arrancara con `NODE_ENV` mal puesto (cierre del sprint 6, B-1) | Bajo | Sprint 9: reemplazarlas por las reales o quitarlas antes del lanzamiento |
 | Los códigos de respaldo y la desactivación del TOTP se escriben directo en la base con el formato interno de better-auth (L11). Si una versión nueva cambia el formato, la prueba de punta a punta de `src/lib/auth.test.ts` falla; revisar el changelog de better-auth antes de subir de versión (B5) | Bajo | Aceptado, con la prueba como guarda |
 
 ## Riesgos y cuándo esta decisión deja de servir

@@ -2,6 +2,7 @@ import type { PGlite } from "@electric-sql/pglite";
 import { and, eq } from "drizzle-orm";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { CURRENT_PRIVACY_VERSION } from "@/content/privacy/versions";
 import { MINUTE_MS } from "@/domain/booking/clock";
 import { deriveManageToken, manageLinkExpiry } from "@/domain/links/manage-token";
 import { fromUnits } from "@/domain/money";
@@ -17,6 +18,7 @@ import { createLocation } from "./ledger";
 import { findByManageToken, issueManageLink } from "./manage-links";
 import {
   checkQuotaAlert,
+  createDueReminders,
   type DeliveryContext,
   deliverNotification,
   enqueueNotification,
@@ -56,7 +58,7 @@ function ctxWith(over: Partial<DeliveryContext> = {}): DeliveryContext {
 }
 
 /** Cliente nuevo con una cita confirmada que empieza en `hoursAhead` horas y su enlace. */
-async function booked(hoursAhead: number, opts: { reminders?: boolean } = {}) {
+async function booked(hoursAhead: number, opts: { reminders?: boolean; textVersion?: string } = {}) {
   const k = ++seq;
   const phone = `300 ${String(1000000 + k).slice(-7, -4)} ${String(1000000 + k).slice(-4)}`;
   const c = await findOrCreateClient(db, { locationId: location, name: `Cliente ${k}`, phone });
@@ -81,7 +83,7 @@ async function booked(hoursAhead: number, opts: { reminders?: boolean } = {}) {
       clientId: c.id,
       appointmentId: appt.appointmentId,
       choices: { dataProcessing: true, reminders: opts.reminders, marketing: false },
-      textVersion: "2026-11-01",
+      textVersion: opts.textVersion ?? CURRENT_PRIVACY_VERSION,
       ip: null,
       userAgent: null,
       source: "online",
@@ -403,5 +405,52 @@ describe("barrido", () => {
     await scanNotifications(db, n, ctxWith(), twoHoursBefore(b.start));
     await scanNotifications(db, n, ctxWith(), new Date(twoHoursBefore(b.start).getTime() + MINUTE_MS));
     expect(n.sent.filter((s) => s.to === b.phone)).toHaveLength(1);
+  });
+
+  it("la autorización de recordatorios tiene que ser de la política 2026-11-05b o posterior, y una revocación manda", async () => {
+    // Marcó la casilla de recordatorios con la política del 3 de noviembre: la 2026-11-05b promete
+    // no mandarle este hasta que acepte la nueva.
+    const old = await booked(30, { reminders: true, textVersion: "2026-11-03" });
+    const revoked = await booked(30.25, { reminders: true });
+    await recordConsents(db, {
+      locationId: location,
+      clientId: revoked.clientId,
+      appointmentId: null,
+      choices: { dataProcessing: true, reminders: false, marketing: false },
+      textVersion: CURRENT_PRIVACY_VERSION,
+      ip: null,
+      userAgent: null,
+      source: "staff",
+    });
+    const n = new MemoryNotifier();
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(old.start));
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(revoked.start));
+    const keys = (await db.select({ key: notifications.dedupeKey }).from(notifications)).map((r) => r.key);
+    expect(keys).not.toContain(dedupeKey("rem", old.publicId, old.start));
+    expect(keys).not.toContain(dedupeKey("rem", revoked.publicId, revoked.start));
+    expect(n.sent.some((s) => s.to === old.phone || s.to === revoked.phone)).toBe(false);
+  });
+
+  it("ya encolado: si la autorización vigente no es de la versión nueva, la entrega lo suprime", async () => {
+    const b = await booked(31, { reminders: true });
+    const n = new MemoryNotifier();
+    expect(await createDueReminders(db, ctxWith(), twoHoursBefore(b.start))).toBeGreaterThanOrEqual(1);
+    // Antes de entregar, queda vigente una fila de una versión vieja (no debería pasar en la app,
+    // pero la entrega revalida igual que el barrido).
+    await recordConsents(db, {
+      locationId: location,
+      clientId: b.clientId,
+      appointmentId: null,
+      choices: { dataProcessing: true, reminders: true, marketing: false },
+      textVersion: "2026-11-03",
+      ip: null,
+      userAgent: null,
+      source: "online",
+    });
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(b.start));
+    expect(n.sent.some((s) => s.to === b.phone)).toBe(false);
+    const [row] = await db.select({ id: notifications.id }).from(notifications).where(eq(notifications.dedupeKey, dedupeKey("rem", b.publicId, b.start)));
+    const events = await db.select({ kind: notificationEvents.kind }).from(notificationEvents).where(eq(notificationEvents.notificationId, row!.id));
+    expect(events.map((e) => e.kind)).toContain("suppressed");
   });
 });

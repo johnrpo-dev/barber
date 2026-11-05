@@ -270,6 +270,20 @@ const LATEST = PRIVACY_VERSIONS[PRIVACY_VERSIONS.length - 1]!;
 export const CURRENT_PRIVACY_VERSION: string = LATEST.version;
 export const CURRENT_PRIVACY: PrivacyVersion = LATEST;
 
+/**
+ * Desde esta versión el recordatorio único va en la autorización. Una autorización de
+ * recordatorios dada con una versión anterior no vale para él: la política 2026-11-05b lo promete
+ * ("no te lo enviamos hasta que aceptes esta").
+ */
+export const REMINDERS_SINCE_VERSION = "2026-11-05b";
+
+/** `v` y todas las versiones publicadas después de ella. */
+export function versionsSince(v: string): string[] {
+  const i = PRIVACY_VERSIONS.findIndex((p) => p.version === v);
+  if (i < 0) throw new Error(`La versión de la política ${v} no existe`);
+  return PRIVACY_VERSIONS.slice(i).map((p) => p.version);
+}
+
 export function privacyVersion(v: string): PrivacyVersion | undefined {
   return PRIVACY_VERSIONS.find((p) => p.version === v);
 }
