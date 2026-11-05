@@ -179,6 +179,8 @@ export const AUDIT_FIELDS = {
     "maxActivePerClient",
     "address",
     "mapsUrl",
+    // El NIT o cédula no entra: si el negocio es persona natural, es su documento.
+    "receiptFooter",
   ],
   staff: ["displayName", "role", "active", "bookableOnline"],
 } as const satisfies Record<string, readonly string[]>;
@@ -212,6 +214,7 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   maxActivePerClient: "Citas activas por cliente",
   address: "Dirección",
   mapsUrl: "Enlace del mapa",
+  receiptFooter: "Pie del recibo",
   displayName: "Nombre",
   role: "Rol",
   bookableOnline: "En la reserva en línea",

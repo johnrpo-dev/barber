@@ -20,6 +20,8 @@ export interface SettingsView {
   freeCancelHours: number;
   noShowGraceMin: number;
   maxActivePerClient: number;
+  taxId: string | null;
+  receiptFooter: string | null;
 }
 
 export interface BookableRow {
@@ -34,7 +36,13 @@ export function SettingsForm({ settings, staff }: { settings: SettingsView; staf
   const toast = useToast();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [s, setS] = useState({ ...settings, address: settings.address ?? "", mapsUrl: settings.mapsUrl ?? "" });
+  const [s, setS] = useState({
+    ...settings,
+    address: settings.address ?? "",
+    mapsUrl: settings.mapsUrl ?? "",
+    taxId: settings.taxId ?? "",
+    receiptFooter: settings.receiptFooter ?? "",
+  });
   const set = <K extends keyof typeof s>(key: K) => (value: (typeof s)[K]) => setS((prev) => ({ ...prev, [key]: value }));
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -162,6 +170,25 @@ export function SettingsForm({ settings, staff }: { settings: SettingsView; staf
               step={1}
             />
           </div>
+        </section>
+
+        <section aria-labelledby="recibo" className={cx(card, "flex flex-col gap-5 p-5")}>
+          <div className="flex flex-col gap-1">
+            <h2 id="recibo" className="font-display text-2xl leading-tight">
+              Recibo
+            </h2>
+            <p className="max-w-prose text-sm text-tinta/70">
+              Lo que sale en el recibo impreso, además del nombre, la dirección y el teléfono de la sede. El recibo no es una factura electrónica.
+            </p>
+          </div>
+          <TextField value={s.taxId} onChange={set("taxId")} maxLength={30} className={field.root}>
+            <Label className={field.label}>NIT o cédula (opcional)</Label>
+            <Input className={cx(field.input, "monto")} inputMode="numeric" placeholder="900.123.456-7" autoComplete="off" />
+          </TextField>
+          <TextField value={s.receiptFooter} onChange={set("receiptFooter")} maxLength={200} className={field.root}>
+            <Label className={field.label}>Mensaje al pie (opcional)</Label>
+            <Input className={field.input} placeholder="¡Gracias por venir!" autoComplete="off" />
+          </TextField>
         </section>
 
         <FormError message={error} />

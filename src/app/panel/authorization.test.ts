@@ -13,7 +13,7 @@ import { decideVoid, requestVoid } from "@/db/voids";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
-import { expenseCategories, paymentMethods, services, session, staffMembers, user } from "@/db/schema";
+import { expenseCategories, paymentMethods, sales, services, session, staffMembers, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -105,6 +105,7 @@ const informes = await import("./informes/actions");
 const inicio = await import("./inicio/actions");
 const auditoria = await import("./auditoria/actions");
 const clientes = await import("./clientes/actions");
+const ventas = await import("./ventas/actions");
 const panelRoot = await import("./actions");
 
 const TZ = "America/Bogota";
@@ -195,6 +196,11 @@ async function seedSale(opts: { kind?: PaymentKind; tip?: bigint } = {}): Promis
     actor: SEED_ACTOR(),
   });
   return saleId;
+}
+
+async function salePublicId(saleId: bigint): Promise<string> {
+  const [row] = await db.select({ publicId: sales.publicId }).from(sales).where(eq(sales.id, saleId));
+  return row!.publicId;
 }
 
 /** Deja la caja de la sede A abierta o cerrada, contando exactamente lo esperado (sin diferencias). */
@@ -716,6 +722,8 @@ const CASES: Case[] = [
           freeCancelHours: 4,
           noShowGraceMin: 15,
           maxActivePerClient: 2,
+          taxId: "900.123.456-7",
+          receiptFooter: `Gracias ${n}`,
         });
     },
   },
@@ -1093,6 +1101,21 @@ const CASES: Case[] = [
       const publicId = await seedSettlement();
       return () => comprobantes.loadReceipt({ publicId });
     },
+  },
+  {
+    name: "ventas · recibo de una venta de hoy",
+    action: "loadSaleReceipt",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const publicId = await salePublicId(await seedSale());
+      return () => ventas.loadSaleReceipt({ publicId });
+    },
+  },
+  {
+    name: "ventas · las del día",
+    action: "loadSalesOfDay",
+    allowed: ["owner", "reception"],
+    prepare: async () => () => ventas.loadSalesOfDay({}),
   },
   {
     name: "mis comisiones",
@@ -1821,6 +1844,7 @@ const STAFF_MODULES: Record<string, Record<string, unknown>> = {
   "panel/cobro/actions.ts": cobro,
   "panel/caja/actions.ts": caja,
   "panel/anulaciones/actions.ts": anulaciones,
+  "panel/ventas/actions.ts": ventas,
   "cuenta/actions.ts": cuenta,
 };
 
@@ -1933,6 +1957,66 @@ describe("comprobantes", () => {
     const publicId = await seedSettlement();
     await signInAs(A.users.owner);
     expect(JSON.stringify(await comprobantes.loadReceipt({ publicId }))).not.toMatch(/Juan|Pérez|300 123/);
+  });
+});
+
+// ─── Recibos de venta: un 404 igual para todo lo ajeno ───────────────────────
+
+describe("recibos de venta", () => {
+  it("el dueño de otra sede recibe 404; un id inválido o inexistente, también", async () => {
+    const publicId = await salePublicId(await seedSale());
+    await signInAs(B.owner);
+    await expect(ventas.loadSaleReceipt({ publicId })).rejects.toMatchObject(NOT_FOUND);
+    await signInAs(A.users.owner);
+    await expect(ventas.loadSaleReceipt({ publicId: "no-es-un-ulid" })).rejects.toMatchObject(NOT_FOUND);
+    await expect(ventas.loadSaleReceipt({ publicId: "01ARZ3NDEKTSV4RRFFQ69G5FAV" })).rejects.toMatchObject(NOT_FOUND);
+  });
+
+  it("el recibo trae lo cobrado y no lleva datos del cliente", async () => {
+    await cashDrawer(true);
+    const publicId = await salePublicId(await seedSale({ kind: "cash", tip: 2_000n }));
+    await signInAs(A.users.reception);
+    const result = await ventas.loadSaleReceipt({ publicId });
+    expect(result).toMatchObject({ ok: true, data: { publicId, voided: false, numberLabel: publicId.slice(-8) } });
+    if (!result.ok) return;
+    expect(result.data.tips).toHaveLength(1);
+    expect(result.data.payments[0]).toMatchObject({ amountLabel: result.data.totalLabel });
+    // El cliente de la cita es "Juan Pérez", 300 123 4567; ese mismo número es el de la sede en otro
+    // caso, así que se busca el nombre y el celular guardado (E.164), no el teléfono formateado.
+    expect(JSON.stringify(result)).not.toMatch(/Juan|Pérez|\+57300|client/i);
+  });
+
+  it("recepción ve solo hoy aunque pida otro día; el dueño navega", async () => {
+    const today = businessDate(new Date(), TZ);
+    const yesterday = addDays(today, -1);
+    await signInAs(A.users.reception);
+    expect(await ventas.loadSalesOfDay({ date: yesterday })).toMatchObject({ ok: true, data: { businessDate: today, canPickDay: false } });
+    await signInAs(A.users.owner);
+    expect(await ventas.loadSalesOfDay({ date: yesterday })).toMatchObject({ ok: true, data: { businessDate: yesterday, canPickDay: true } });
+    // Un día futuro o mal escrito vuelve a hoy.
+    expect(await ventas.loadSalesOfDay({ date: addDays(today, 3) })).toMatchObject({ ok: true, data: { businessDate: today } });
+    expect(await ventas.loadSalesOfDay({ date: "ayer" })).toMatchObject({ ok: true, data: { businessDate: today } });
+  });
+
+  it("una venta anulada se reimprime con el sello y sale marcada en la lista", async () => {
+    const saleId = await seedSale();
+    const publicId = await salePublicId(saleId);
+    const { requestId } = await requestVoid(db, { locationId: A.location, saleId, reason: "Se cobró dos veces", idempotencyKey: `void-${uniq()}`, actor: { userId: "seed" } });
+    await decideVoid(db, { locationId: A.location, requestId, approve: true, note: "", idempotencyKey: `decide-${uniq()}`, approver: { userId: A.users.owner.id, role: "owner" } });
+    await signInAs(A.users.owner);
+    expect(await ventas.loadSaleReceipt({ publicId })).toMatchObject({ ok: true, data: { voided: true } });
+    const list = await ventas.loadSalesOfDay({});
+    expect(list.ok && list.data.sales.find((s) => s.publicId === publicId)).toMatchObject({ voided: true });
+  });
+
+  it("la lista del día es solo de esta sede", async () => {
+    const publicId = await salePublicId(await seedSale());
+    await signInAs(B.owner);
+    const result = await ventas.loadSalesOfDay({});
+    expect(result.ok && result.data.sales.some((s) => s.publicId === publicId)).toBe(false);
+    await signInAs(A.users.owner);
+    const own = await ventas.loadSalesOfDay({});
+    expect(own.ok && own.data.sales.some((s) => s.publicId === publicId)).toBe(true);
   });
 });
 

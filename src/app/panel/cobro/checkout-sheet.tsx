@@ -3,7 +3,7 @@
 import { TZDate } from "@date-fns/tz";
 import { format as formatDate } from "date-fns";
 import { es } from "date-fns/locale";
-import { Banknote, CheckCircle2, Lock, Percent, Plus, Receipt as ReceiptIcon, Share2, Trash2, X } from "lucide-react";
+import { Banknote, CheckCircle2, Lock, Percent, Plus, Printer, Receipt as ReceiptIcon, Share2, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input, Label, Radio, RadioGroup, TextField, ToggleButton, ToggleButtonGroup } from "react-aria-components";
@@ -1231,8 +1231,14 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
 
       <div className="flex flex-col gap-2 min-[400px]:flex-row">
         <Btn variant="secondary" size="lg" className="flex-1" onPress={share}>
-          <Share2 size={18} aria-hidden /> Compartir recibo
+          <Share2 size={18} aria-hidden /> Compartir
         </Btn>
+        <Link
+          href={`/panel/ventas/${receipt.publicId}`}
+          className="inline-flex h-12 flex-1 select-none items-center justify-center gap-2 rounded-lg border border-tinta/20 bg-papel px-5 text-base font-semibold text-tinta outline-none hover:border-tinta/40 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-cuero"
+        >
+          <Printer size={18} aria-hidden /> Imprimir
+        </Link>
         <Btn size="lg" className="flex-1" onPress={onDone}>
           Listo
         </Btn>

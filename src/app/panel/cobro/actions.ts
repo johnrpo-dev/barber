@@ -138,6 +138,8 @@ export async function loadWalkInCheckout(): Promise<ActionResult<CheckoutView>> 
 
 export interface Receipt {
   saleId: string;
+  /** ULID de la venta: lleva a /panel/ventas/[publicId] para imprimir el recibo. */
+  publicId: string;
   totalLabel: string;
   changeLabel: string | null;
   lines: { description: string; netLabel: string }[];
@@ -207,6 +209,7 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
     const change = sale.payments.reduce((acc, p) => acc + (p.change ?? 0n), 0n);
     return {
       saleId: sale.id.toString(),
+      publicId: sale.publicId,
       totalLabel: moneyLabel(sale.totalPaid),
       changeLabel: change > 0n ? moneyLabel(change) : null,
       lines: sale.lines.map((l) => ({ description: l.description, netLabel: moneyLabel(l.net) })),

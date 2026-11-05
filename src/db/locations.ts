@@ -19,6 +19,9 @@ export interface LocationSettings {
   freeCancelHours: number;
   noShowGraceMin: number;
   maxActivePerClient: number;
+  /** Recibo impreso: NIT o cédula del negocio y mensaje del pie (migración 0014). */
+  taxId: string | null;
+  receiptFooter: string | null;
 }
 
 export async function locationSettings(db: Db, locationId: bigint): Promise<LocationSettings> {
@@ -36,6 +39,8 @@ export async function locationSettings(db: Db, locationId: bigint): Promise<Loca
       freeCancelHours: locations.freeCancelHours,
       noShowGraceMin: locations.noShowGraceMin,
       maxActivePerClient: locations.maxActivePerClient,
+      taxId: locations.taxId,
+      receiptFooter: locations.receiptFooter,
     })
     .from(locations)
     .where(eq(locations.id, locationId));

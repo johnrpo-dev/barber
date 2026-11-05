@@ -12,6 +12,7 @@ import {
   House,
   LogOut,
   type LucideIcon,
+  Receipt,
   ReceiptText,
   Scissors,
   ScrollText,
@@ -45,7 +46,8 @@ export type NavIcon =
   | "mis-comisiones"
   | "informes"
   | "auditoria"
-  | "clientes";
+  | "clientes"
+  | "ventas";
 export interface NavItem {
   href: string;
   label: string;
@@ -74,6 +76,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   informes: ChartColumn,
   auditoria: ScrollText,
   clientes: Contact,
+  ventas: Receipt,
 };
 
 function isActive(pathname: string, href: string) {

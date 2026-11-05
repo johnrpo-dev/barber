@@ -133,6 +133,7 @@ export async function bookingSettingsSnapshot(tx: Db, locationId: bigint): Promi
       maxActivePerClient: locations.maxActivePerClient,
       address: locations.address,
       mapsUrl: locations.mapsUrl,
+      receiptFooter: locations.receiptFooter,
     })
     .from(locations)
     .where(eq(locations.id, locationId))
@@ -149,6 +150,7 @@ export async function bookingSettingsSnapshot(tx: Db, locationId: bigint): Promi
     maxActivePerClient: text(row.maxActivePerClient),
     address: row.address,
     mapsUrl: row.mapsUrl,
+    receiptFooter: row.receiptFooter,
   };
 }
 

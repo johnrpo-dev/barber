@@ -24,6 +24,8 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   // Cobro y caja (sprint 4): recepción y dueño. En Anulaciones el dueño ve la cola; recepción, las suyas.
   if (can(role, "ledger.post")) {
     items.push({ href: "/panel/caja", label: "Caja", icon: "caja" });
+    // Ventas del día y recibos para reimprimir: en el celular del dueño va a "Más".
+    items.push({ href: "/panel/ventas", label: "Ventas", icon: "ventas", more: can(role, "reports.financial") });
     // El dueño llega a las anulaciones pendientes desde las alertas de Inicio: en el celular van a "Más".
     items.push({ href: "/panel/anulaciones", label: "Anulaciones", icon: "anulaciones", short: "Anular", more: can(role, "reports.financial") });
   }

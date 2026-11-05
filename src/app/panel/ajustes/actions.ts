@@ -58,6 +58,12 @@ const settingsSchema = z.object({
   freeCancelHours: minutes(0, 72, "Las horas para cancelar sin penalidad"),
   noShowGraceMin: minutes(0, 60, "La tolerancia de llegada"),
   maxActivePerClient: minutes(1, 10, "Las citas activas por cliente"),
+  // Recibo impreso (no es factura electrónica).
+  taxId: optionalText(30, "El NIT o la cédula").refine(
+    (v) => v === null || /^[0-9][0-9.\- ]*$/.test(v),
+    "El NIT o la cédula solo lleva números, puntos y guion",
+  ),
+  receiptFooter: optionalText(200, "El mensaje del recibo"),
 });
 
 export async function updateBookingSettingsAction(raw: unknown): Promise<ActionResult> {

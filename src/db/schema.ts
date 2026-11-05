@@ -49,6 +49,11 @@ export const locations = pgTable("locations", {
   publicPhone: text("public_phone"),
   address: text("address"),
   mapsUrl: text("maps_url"),
+  // Encabezado y pie del recibo impreso (no es factura electrónica). Opcionales.
+  /** NIT o cédula del negocio, tal como debe aparecer en el recibo. */
+  taxId: text("tax_id"),
+  /** Mensaje al pie del recibo ("¡Gracias por venir!"). */
+  receiptFooter: text("receipt_footer"),
   /** Citas futuras activas que puede tener un mismo cliente reservando en línea. */
   maxActivePerClient: integer("max_active_per_client").notNull().default(3),
   // Reglas de cobro (sprint 4, docs/sprint-4-cobro-caja.md §1). El servidor las lee al cobrar.
@@ -69,6 +74,8 @@ export const locations = pgTable("locations", {
 }, (t) => [
   check("locations_commission_base_check", sql`${t.commissionBase} in ('net','gross')`),
   check("locations_max_discount_bps_check", sql`${t.maxDiscountBps} between 0 and 10000`),
+  check("locations_tax_id_check", sql`${t.taxId} is null or (length(${t.taxId}) between 1 and 30)`),
+  check("locations_receipt_footer_check", sql`${t.receiptFooter} is null or (length(${t.receiptFooter}) between 1 and 200)`),
   check(
     "locations_cash_review_threshold_check",
     sql`${t.cashReviewThreshold} >= 0 and ${t.cashReviewThreshold} % 100 = 0 and ${t.cashReviewThreshold} <= 10000000000000`,

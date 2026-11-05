@@ -99,6 +99,13 @@
       "when": 1793347189655,
       "tag": "0013_commissions_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793849036070,
+      "tag": "0014_receipt_settings",
+      "breakpoints": true
     }
   ]
 }

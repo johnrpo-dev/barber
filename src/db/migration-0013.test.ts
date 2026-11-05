@@ -88,6 +88,14 @@ describe("migración 0013 sobre datos de antes", () => {
 const AUDIT_STUB = `create table audit_events (id bigint generated always as identity primary key, location_id bigint, occurred_at timestamptz default now(),
   actor_user_id text, actor_staff_id bigint, action text, category text, target_kind text, target_ref text, summary text, changes jsonb)`;
 
+/**
+ * Columnas de migraciones posteriores a 0013 que el esquema de hoy escribe al insertar (p. ej.
+ * createLocation). Se agregan sobre la base en 0012 para usar las funciones de hoy, y se quitan
+ * antes de migrar para que cada migración las cree como en el VPS.
+ */
+const LATER_COLUMNS_STUB = `alter table locations add column tax_id text, add column receipt_footer text`;
+const DROP_LATER_COLUMNS = `alter table locations drop column tax_id, drop column receipt_footer`;
+
 describe("saldos sobre datos de antes de 0013", () => {
   it("las ventas, la anulación y el pago de propinas viejos quedan pendientes e iguales a 2335 y 2380", { timeout: 180_000 }, async () => {
     const old = new PGlite({ extensions: { btree_gist } });
@@ -96,6 +104,7 @@ describe("saldos sobre datos de antes de 0013", () => {
       await migrate(orm as never, { migrationsFolder: upTo0012 });
       const db = orm as unknown as Db;
       await old.exec(AUDIT_STUB);
+      await old.exec(LATER_COLUMNS_STUB);
 
       const shop = await setupShop(db, "Villa vieja");
       await openCashSession(db, { locationId: shop.locationId, counted: fromUnits(0n), idempotencyKey: key("open"), actor: shop.owner });
@@ -129,6 +138,7 @@ describe("saldos sobre datos de antes de 0013", () => {
       });
 
       await old.exec("drop table audit_events");
+      await old.exec(DROP_LATER_COLUMNS);
       await migrate(orm as never, { migrationsFolder });
 
       const { rows: balances } = await old.query<{ commission: string; tips: string; receivable: string }>(
@@ -156,6 +166,7 @@ describe("saldos sobre datos de antes de 0013", () => {
       const orm = drizzle({ client: old, schema });
       await migrate(orm as never, { migrationsFolder: upTo0012 });
       const db = orm as unknown as Db;
+      await old.exec(LATER_COLUMNS_STUB);
       const locationId = await createLocation(db, { name: "Villa vieja" });
       await postEntry(db, {
         locationId,
@@ -171,6 +182,8 @@ describe("saldos sobre datos de antes de 0013", () => {
           ],
         },
       });
+      // Sin las columnas de después: si fallara, que sea por la guarda de 0013 y no por 0014.
+      await old.exec(DROP_LATER_COLUMNS);
       await expect(migrate(orm as never, { migrationsFolder })).rejects.toThrow(/commission_payout|Failed query/);
       const { rows: tables } = await old.query<{ n: string }>(`select count(*)::text as n from information_schema.tables where table_name = 'audit_events'`);
       expect(tables[0]!.n).toBe("0");
