@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { PII_RETENTION_DAYS, READ_AUDIT_RETENTION_DAYS } from "@/domain/clients/retention";
+import { REMINDER_LEAD_MS, REMINDER_MIN_BOOKING_LEAD_MS } from "@/domain/notifications/schedule";
 import { CURRENT_PRIVACY, CURRENT_PRIVACY_VERSION, PRIVACY_VERSIONS, privacyVersion } from "./versions";
 
 /** SHA-256 de JSON.stringify de cada versión publicada. Solo se AGREGAN líneas. */
@@ -10,6 +11,7 @@ const FROZEN: Record<string, string> = {
   "2026-11-02": "cff2321f7abb0ea1e7cb13bda0257b9ef43602d86acd7df2a40a5c0cbae5db92",
   "2026-11-03": "a6f50ef64b79c2545a3baa8ed85365715ca8bc1a8a16f3775cd31ece8947131b",
   "2026-11-05": "86b395f4b3bf4b305eaf671a9c9df8b95dc2a6b48a22721414f385479cb10dc0",
+  "2026-11-05b": "47e71130714a002d18ef21ad8c402e3744d9d7bffa705bb24bdf751e5df0fdd6",
 };
 
 describe("política de privacidad versionada", () => {
@@ -50,9 +52,13 @@ describe("política de privacidad versionada", () => {
     expect(text).toContain("Superintendencia de Industria y Comercio");
   });
 
-  it("la vigente no ofrece recordatorios y nombra a Barbería Villa (sprint 6)", () => {
+  it("la vigente promete un solo recordatorio, con las mismas reglas que el worker, y nombra a Barbería Villa (sprint 6)", () => {
     const text = JSON.stringify(CURRENT_PRIVACY);
-    expect(text).toContain("No te enviamos recordatorios");
+    // Las cifras del texto son las de domain/notifications/schedule.ts: si cambian allá, cambia la política.
+    expect(REMINDER_LEAD_MS).toBe(3 * 3_600_000);
+    expect(REMINDER_MIN_BOOKING_LEAD_MS).toBe(6 * 3_600_000);
+    expect(text).toContain("un único recordatorio unas 3 horas antes");
+    expect(text).toContain("más de 6 horas de anticipación");
     expect(text).toContain("opera Barbería Villa");
   });
 

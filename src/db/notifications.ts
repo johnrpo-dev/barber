@@ -3,7 +3,7 @@ import { addDays, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock
 import { instantLabels, ticketCode } from "@/domain/booking/public-labels";
 import { businessDate } from "@/domain/ledger/business-date";
 import { quotaState } from "@/domain/notifications/quota";
-import { dedupeKey, dueReminders, REMINDER_DEDUPE } from "@/domain/notifications/schedule";
+import { dedupeKey, dueReminders, REMINDER_DEDUPE, REMINDER_LEAD_MS } from "@/domain/notifications/schedule";
 import { firstNameForMessage, type NotificationChannel, TEMPLATE_PARAMS } from "@/domain/notifications/templates";
 import type { Notifier } from "@/lib/notify/ports";
 import { NotifyError } from "@/lib/notify/ports";
@@ -11,7 +11,7 @@ import { describeError } from "@/lib/log";
 import { hasLatestConsent } from "./consents";
 import { activeLinkGeneration } from "./manage-links";
 import { hit } from "./rate-limit";
-import { appointments, clients, locations, notificationEvents, notifications, sales, staffMembers } from "./schema";
+import { appointmentEvents, appointments, clients, locations, notificationEvents, notifications, sales, staffMembers } from "./schema";
 import type { Db } from "./types";
 import { BUSINESS_NAME } from "@/domain/brand";
 
@@ -35,8 +35,8 @@ const STALE_ATTEMPT_MS = 2 * MINUTE_MS;
 const MAX_FAILED = 3;
 /** Lo pendiente de hace más de esto ya no se manda (un recordatorio de anteayer no sirve). */
 const MAX_AGE_MS = 2 * 24 * 60 * MINUTE_MS;
-const NEEDS_LINK: readonly OutboxTemplate[] = ["booking_confirmed", "reminder_24h", "reminder_2h", "appointment_rescheduled"];
-const REMINDERS: readonly OutboxTemplate[] = ["reminder_24h", "reminder_2h"];
+const NEEDS_LINK: readonly OutboxTemplate[] = ["booking_confirmed", "reminder_24h", "reminder_2h", "reminder_same_day", "appointment_rescheduled"];
+const REMINDERS: readonly OutboxTemplate[] = ["reminder_24h", "reminder_2h", "reminder_same_day"];
 
 export interface DeliveryContext {
   /** HMAC del destino (hashForBucket). */
@@ -325,7 +325,10 @@ export async function deliverNotification(db: Db, id: bigint, notifier: Notifier
 
 // ─── Barrido del worker ──────────────────────────────────────────────────────
 
-/** Crea los recordatorios que tocan (solo citas confirmadas con consentimiento vigente). */
+/**
+ * Crea el recordatorio que toca (solo citas confirmadas con consentimiento vigente y apartadas con
+ * más de 6 h de anticipación: ver domain/notifications/schedule.ts).
+ */
 export async function createDueReminders(db: Db, ctx: DeliveryContext, now: Date): Promise<number> {
   const rows = await db
     .select({
@@ -333,6 +336,11 @@ export async function createDueReminders(db: Db, ctx: DeliveryContext, now: Date
       appointmentId: appointments.id,
       publicId: appointments.publicId,
       during: appointments.during,
+      // Cuándo se fijó la hora actual: el último cambio de hora o, si nunca se movió, la creación.
+      scheduledAt: sql<string>`coalesce((
+        select max(e.created_at) from ${appointmentEvents} e
+        where e.location_id = ${appointments.locationId} and e.appointment_id = ${appointments.id} and e.kind = 'rescheduled'
+      ), ${appointments.createdAt})`,
       clientId: clients.id,
       phoneE164: clients.phoneE164,
       email: clients.email,
@@ -343,14 +351,14 @@ export async function createDueReminders(db: Db, ctx: DeliveryContext, now: Date
       and(
         eq(appointments.status, "confirmed"),
         sql`lower(${appointments.during}) > ${new Date(now.getTime() + 30 * MINUTE_MS).toISOString()}::timestamptz`,
-        sql`lower(${appointments.during}) <= ${new Date(now.getTime() + 24 * 60 * MINUTE_MS).toISOString()}::timestamptz`,
+        sql`lower(${appointments.during}) <= ${new Date(now.getTime() + REMINDER_LEAD_MS).toISOString()}::timestamptz`,
         sql`${clients.anonymizedAt} is null`,
         sql`${hasLatestConsent("reminders", appointments.locationId, appointments.clientId)}`,
       ),
     );
 
   const wanted = rows.flatMap((r) =>
-    dueReminders(now, r.during.start).map((kind) => ({ ...r, kind, key: dedupeKey(REMINDER_DEDUPE[kind], r.publicId, r.during.start) })),
+    dueReminders(now, r.during.start, new Date(r.scheduledAt)).map((kind) => ({ ...r, kind, key: dedupeKey(REMINDER_DEDUPE[kind], r.publicId, r.during.start) })),
   );
   if (wanted.length === 0) return 0;
   const existing = new Set(

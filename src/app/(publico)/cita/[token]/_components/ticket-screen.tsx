@@ -13,7 +13,8 @@ import { SlotChooser } from "../../../_components/slot-chooser";
 import { stampFor, Ticket } from "../../../_components/ticket";
 import { isError, linkBtn, safeCall, shortWeekdayDay, type SlotView } from "../../../_lib/ui";
 
-// Ticket + acciones de la cita (calendario, cómo llegar, reprogramar, cancelar).
+// Ticket + acciones de la cita (calendario, cómo llegar, reprogramar, cancelar). Recién reservada,
+// el calendario va primero (veredicto del council, sprint 6).
 // Las acciones que no se permiten no se muestran: se dice por qué.
 
 export function TicketScreen({
@@ -21,11 +22,14 @@ export function TicketScreen({
   ticket,
   today,
   whatsappUrl,
+  justBooked = false,
 }: {
   token: string;
   ticket: TicketView;
   today: string;
   whatsappUrl: string | null;
+  /** Recién reservada: "Agregar al calendario" pasa a ser la acción principal. */
+  justBooked?: boolean;
 }) {
   // Cancelar revoca el enlace: no se recarga la página (daría 404); se muestra el estado aquí.
   const [cancelled, setCancelled] = useState(ticket.status === "cancelled");
@@ -64,9 +68,14 @@ export function TicketScreen({
       ) : (
         <div className="mx-auto flex w-full max-w-[22rem] flex-col gap-3">
           {active ? (
-            <a href={ticket.icsUrl} download className={linkBtn("secondary", "lg", "w-full")}>
-              <CalendarPlus size={18} aria-hidden /> Agregar al calendario
-            </a>
+            // Recién reservada, es lo primero que se ofrece: el calendario del celular avisa una hora
+            // antes (VALARM del .ics) sin que le escribamos de más.
+            <div className="flex flex-col gap-1.5">
+              <a href={ticket.icsUrl} download className={linkBtn(justBooked ? "primary" : "secondary", "lg", "w-full")}>
+                <CalendarPlus size={18} aria-hidden /> Agregar al calendario
+              </a>
+              {justBooked ? <p className="text-center text-sm text-tinta/75">Tu celular te avisa una hora antes.</p> : null}
+            </div>
           ) : null}
           {ticket.mapsUrl ? (
             <a href={ticket.mapsUrl} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "lg", "w-full")}>

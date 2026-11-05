@@ -163,8 +163,8 @@ const startInput = z.object({
   name: z.string().max(120),
   phone: z.string().max(30),
   email: z.union([z.literal(""), z.email("El correo no es válido")]).optional(),
-  // `reminders` se acepta por compatibilidad con formularios viejos pero no cuenta: Barbería Villa no
-  // envía recordatorios (decisión del dueño, sprint 6), solo el código, la confirmación y los avisos.
+  // `reminders` se acepta por compatibilidad con formularios viejos pero no cuenta: el único
+  // recordatorio va dentro de la autorización obligatoria (su texto y la política 2026-11-05b lo dicen).
   consents: z.object({ dataProcessing: z.boolean(), reminders: z.boolean().optional(), marketing: z.boolean() }),
   turnstileToken: z.string().max(2048),
   formId: uuid,
@@ -176,7 +176,9 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
   return runAction(async () => {
     const input = startInput.parse(raw);
     // Lo que se puede validar sin gastar el token de Turnstile ni escribir nada.
-    const consents = { ...input.consents, reminders: false };
+    // Quien acepta la autorización obligatoria acepta también el recordatorio del mismo día: el texto
+    // que firma lo dice. Se guarda como "reminders" para que el worker pueda comprobarlo cita a cita.
+    const consents = { ...input.consents, reminders: input.consents.dataProcessing };
     assertBookingConsent(consents);
     assertValidClientName(input.name);
     if (!publicMobile(input.phone)) throw new InvalidClientError(PUBLIC_MESSAGES.phone);

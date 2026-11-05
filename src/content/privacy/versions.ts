@@ -216,7 +216,53 @@ const V_2026_11_05: PrivacyVersion = {
   }),
 };
 
-export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [V_2026_11_01, V_2026_11_02, V_2026_11_03, V_2026_11_05];
+/**
+ * Sprint 6, segunda del mismo día (veredicto del council, aprobado por el dueño): vuelve UN solo
+ * recordatorio, unas 3 horas antes y solo si la cita se apartó con más de 6 horas. Va dentro de la
+ * finalidad obligatoria (gestionar la cita), no como casilla aparte. Es una finalidad nueva frente a
+ * la versión anterior: quien autorizó con esa no lo recibe hasta que acepte esta (en su próxima
+ * reserva desde un celular nuevo, que vuelve a pedir la autorización).
+ */
+const V_2026_11_05B: PrivacyVersion = {
+  ...V_2026_11_05,
+  version: "2026-11-05b",
+  publishedOn: "2026-11-05",
+  sections: V_2026_11_05.sections.map((section) => {
+    if (section.id === "finalidades") {
+      return {
+        ...section,
+        paragraphs: [
+          "Para gestionar tus citas: reservarlas, reprogramarlas, cancelarlas y atenderte en la barbería.",
+          "Para escribirte por WhatsApp o correo lo necesario: el código que confirma que el celular es tuyo, la confirmación de tu cita, un recordatorio ese mismo día y los avisos de cambios o cancelaciones.",
+          "Estos usos son necesarios para reservar en línea. Sin esta autorización no podemos agendarte por aquí, pero siempre puedes reservar por teléfono.",
+        ],
+      };
+    }
+    if (section.id === "recordatorios") {
+      return {
+        ...section,
+        heading: "Un solo recordatorio, sin mensajes de más",
+        paragraphs: [
+          "Te enviamos un único recordatorio unas 3 horas antes de tu cita, y solo si la reservaste (o la cambiaste) con más de 6 horas de anticipación: si reservas para dentro de un rato, la confirmación basta. No te escribimos nada más antes de la cita.",
+          "Si no quieres el recordatorio, escríbenos a [Correo de habeas data] y lo desactivamos; tu reserva no cambia.",
+          "Las promociones son una autorización aparte, opcional y sin marcar. Puedes aceptarlas o no sin que eso cambie tu reserva, y puedes revocarlas cuando quieras escribiendo a [Correo de habeas data].",
+        ],
+      };
+    }
+    if (section.id === "cambios") {
+      return {
+        ...section,
+        paragraphs: [
+          "Esta política rige desde el 5 de noviembre de 2026 (versión 2026-11-05b). La versión anterior, del mismo día, no incluía recordatorios; esta agrega uno solo, el día de la cita. Si autorizaste con la anterior, no te lo enviamos hasta que aceptes esta.",
+          "Si la cambiamos, publicaremos la versión nueva en esta página con su fecha. Las versiones anteriores siguen disponibles. Si el cambio afecta las finalidades, te pediremos una autorización nueva.",
+        ],
+      };
+    }
+    return section;
+  }),
+};
+
+export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [V_2026_11_01, V_2026_11_02, V_2026_11_03, V_2026_11_05, V_2026_11_05B];
 
 const LATEST = PRIVACY_VERSIONS[PRIVACY_VERSIONS.length - 1]!;
 

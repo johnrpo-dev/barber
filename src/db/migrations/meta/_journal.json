@@ -127,6 +127,13 @@
       "when": 1793856624450,
       "tag": "0017_client_devices_no_revive",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793895080042,
+      "tag": "0018_reminder_same_day",
+      "breakpoints": true
     }
   ]
 }

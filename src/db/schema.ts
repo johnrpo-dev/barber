@@ -709,6 +709,8 @@ export const notifications = pgTable(
         "booking_confirmed",
         "reminder_24h",
         "reminder_2h",
+        // El único recordatorio desde el sprint 6 (migración 0018); los dos de arriba ya no se generan.
+        "reminder_same_day",
         "appointment_rescheduled",
         "appointment_cancelled_client",
         "appointment_cancelled_staff",
@@ -739,7 +741,7 @@ export const notifications = pgTable(
     check("notifications_channel_check", sql`${t.channel} in ('whatsapp','email')`),
     check(
       "notifications_template_check",
-      sql`${t.template} in ('otp','booking_confirmed','reminder_24h','reminder_2h','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff','sale_receipt')`,
+      sql`${t.template} in ('otp','booking_confirmed','reminder_24h','reminder_2h','reminder_same_day','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff','sale_receipt')`,
     ),
     check("notifications_recipient_hash_check", hexCheck(t.recipientHash)),
     index("notifications_send_after_idx").on(t.sendAfter),

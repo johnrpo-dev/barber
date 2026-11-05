@@ -110,7 +110,8 @@ function startInput(phone: string, over: Partial<Parameters<typeof actions.start
     minute,
     name: "Ana María",
     phone,
-    consents: { dataProcessing: true, reminders: true, marketing: false },
+    // Sin casilla de recordatorios: el formulario siempre manda false (ver details-step.tsx).
+    consents: { dataProcessing: true, reminders: false, marketing: false },
     turnstileToken: "ok",
     formId: randomUUID(),
     ...over,
@@ -526,8 +527,9 @@ const CASES: Case[] = [
       expect(consents).toEqual(
         expect.arrayContaining([
           { purpose: "data_processing", granted: true },
-          // Aunque el formulario mande recordatorios marcados, no se guardan: no se envían (sprint 6).
-          { purpose: "reminders", granted: false },
+          // El recordatorio del mismo día va dentro de la autorización obligatoria (sprint 6, política
+          // 2026-11-05b): se guarda concedido junto con ella, aunque no haya casilla aparte.
+          { purpose: "reminders", granted: true },
           { purpose: "marketing", granted: false },
         ]),
       );

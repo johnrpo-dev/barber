@@ -48,6 +48,7 @@ export default async function CitaPage({ params, searchParams }: { params: Param
         ticket={ticket}
         today={portal?.today ?? ticket.startIso.slice(0, 10)}
         whatsappUrl={portal?.location.whatsappUrl ?? null}
+        justBooked={isNew}
       />
     </main>
   );

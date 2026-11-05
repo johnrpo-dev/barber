@@ -8,8 +8,11 @@ import { BUSINESS_NAME } from "@/domain/brand";
 export const NOTIFICATION_TEMPLATES = [
   "otp",
   "booking_confirmed",
+  // Viejas (sprint 3): ya no se generan; siguen aquí por las filas guardadas en el outbox.
   "reminder_24h",
   "reminder_2h",
+  // El único recordatorio: unas 3 h antes, si se reservó con más de 6 h (domain/notifications/schedule.ts).
+  "reminder_same_day",
   "appointment_rescheduled",
   "appointment_cancelled_client",
   "appointment_cancelled_staff",
@@ -27,6 +30,7 @@ export const WHATSAPP_TEMPLATE_NAMES: Record<NotificationTemplate, string> = {
   booking_confirmed: "villa_reserva_confirmada",
   reminder_24h: "villa_recordatorio_24h",
   reminder_2h: "villa_recordatorio_2h",
+  reminder_same_day: "villa_recordatorio",
   appointment_rescheduled: "villa_cita_reprogramada",
   appointment_cancelled_client: "villa_cita_cancelada",
   appointment_cancelled_staff: "villa_cita_cancelada_sede",
@@ -42,6 +46,7 @@ export const TEMPLATE_PARAMS: Record<NotificationTemplate, readonly string[]> = 
   booking_confirmed: ["name", "service", "staff", "date", "time", "ticket", "url"],
   reminder_24h: ["name", "time", "service", "staff", "url"],
   reminder_2h: ["name", "time", "address", "url"],
+  reminder_same_day: ["name", "time", "service", "address", "url"],
   appointment_rescheduled: ["name", "service", "staff", "date", "time", "url"],
   appointment_cancelled_client: ["name", "date", "time", "url"],
   appointment_cancelled_staff: ["name", "date", "time"],
@@ -102,6 +107,14 @@ const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
     subject: `Hoy a las ${p("time")}: te esperamos`,
     paragraphs: [`Hola, ${p("name")}. Tu turno en ${BUSINESS_NAME} es hoy a las ${p("time")}. Estamos en ${p("address")}. ¡Nos vemos!`],
     button: { label: "Ver mi cita", url: p("url") },
+  }),
+  reminder_same_day: (p) => ({
+    subject: `Hoy a las ${p("time")}: tu turno en ${BUSINESS_NAME}`,
+    paragraphs: [
+      `Hola, ${p("name")}. Te esperamos hoy a las ${p("time")} para tu ${p("service")}. Estamos en ${p("address")}.`,
+      "Si al final no puedes venir, avísanos desde el botón y le damos el turno a otra persona.",
+    ],
+    button: { label: "Ver o cancelar mi cita", url: p("url") },
   }),
   appointment_rescheduled: (p) => ({
     subject: `Cita reprogramada: ${p("date")} a las ${p("time")}`,

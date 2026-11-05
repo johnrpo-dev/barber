@@ -327,21 +327,31 @@ describe("enlace de gestión y el panel", () => {
 });
 
 describe("barrido", () => {
-  it("crea el recordatorio de 24 h solo con consentimiento y lo suprime si la cita se movió", async () => {
-    const yes = await booked(20, { reminders: true });
-    const no = await booked(20.5, { reminders: false });
-    const none = await booked(21);
+  const HOUR = 60 * MINUTE_MS;
+  /** El barrido como si fueran 2 h antes de la cita (el reloj del worker se pasa explícito). */
+  const twoHoursBefore = (start: Date) => new Date(start.getTime() - 2 * HOUR);
+
+  it("un solo recordatorio el mismo día: con consentimiento, reservado con más de 6 h, y suprimido si la cita se movió", async () => {
+    const yes = await booked(8, { reminders: true });
+    const no = await booked(8.25, { reminders: false });
+    const none = await booked(8.5);
+    // Apartada para dentro de 3 h: la confirmación acaba de salir; otro mensaje sería de más.
+    const late = await booked(3, { reminders: true });
     const n = new MemoryNotifier();
-    await scanNotifications(db, n, ctxWith());
-    const rem = (b: { publicId: string; start: Date }) => dedupeKey("rem24", b.publicId, b.start);
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(yes.start));
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(late.start));
+    const rem = (b: { publicId: string; start: Date }) => dedupeKey("rem", b.publicId, b.start);
     const keys = (await db.select({ key: notifications.dedupeKey }).from(notifications)).map((r) => r.key);
     expect(keys).toContain(rem(yes));
     expect(keys).not.toContain(rem(no));
     expect(keys).not.toContain(rem(none));
-    expect(n.sent.filter((s) => s.template === "reminder_24h").map((s) => s.to)).toEqual([yes.phone]);
+    expect(keys).not.toContain(rem(late));
+    expect(n.sent.filter((s) => s.template === "reminder_same_day").map((s) => s.to)).toEqual([yes.phone]);
+    // Ni el de 24 h ni el de 2 h: ya no se generan.
+    expect(n.sent.some((s) => s.template === "reminder_24h" || s.template === "reminder_2h")).toBe(false);
 
     // Otro cliente con consentimiento: se reprograma antes de entregar y el viejo queda suprimido.
-    const moved = await booked(22, { reminders: true });
+    const moved = await booked(9, { reminders: true });
     const oldKey = rem(moved);
     const params = await messageParams(db, { locationId: location, appointmentId: moved.appointmentId });
     await enqueueNotification(db, {
@@ -349,32 +359,49 @@ describe("barrido", () => {
       appointmentId: moved.appointmentId,
       clientId: moved.clientId,
       channel: "whatsapp",
-      template: "reminder_24h",
+      template: "reminder_same_day",
       recipientHash: bucketHash(moved.phone, PEPPER),
       dedupeKey: oldKey,
       params,
     });
+    const newStart = new Date(moved.start.getTime() + 60 * MINUTE_MS);
     await rescheduleAppointment(db, {
       locationId: location,
       appointmentId: moved.appointmentId,
-      start: new Date(moved.start.getTime() + 60 * MINUTE_MS),
+      start: newStart,
       staffId: moved.staffId,
       actor: { userId: "seed", role: "owner", staffId: moved.staffId },
       allowOutsideHours: true,
     });
     const before = n.sent.length;
-    await scanNotifications(db, n, ctxWith());
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(newStart));
     const [old] = await db.select({ id: notifications.id }).from(notifications).where(eq(notifications.dedupeKey, oldKey));
     expect(await kinds(old!.id)).toEqual(["suppressed"]);
-    // El nuevo horario sí genera su recordatorio.
-    expect(n.sent.slice(before).some((s) => s.template === "reminder_24h" && s.to === moved.phone)).toBe(true);
+    // El nuevo horario (fijado con unas 10 h de anticipación) sí genera su recordatorio.
+    expect(n.sent.slice(before).some((s) => s.template === "reminder_same_day" && s.to === moved.phone)).toBe(true);
+  });
+
+  it("reprogramada a última hora: la hora nueva se fijó con menos de 6 h y no hay recordatorio", async () => {
+    const b = await booked(20, { reminders: true });
+    const newStart = new Date(Math.ceil((Date.now() + 4 * HOUR) / (15 * MINUTE_MS)) * 15 * MINUTE_MS);
+    await rescheduleAppointment(db, {
+      locationId: location,
+      appointmentId: b.appointmentId,
+      start: newStart,
+      staffId: b.staffId,
+      actor: { userId: "seed", role: "owner", staffId: b.staffId },
+      allowOutsideHours: true,
+    });
+    const n = new MemoryNotifier();
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(newStart));
+    expect(n.sent.filter((s) => s.to === b.phone && s.template === "reminder_same_day")).toHaveLength(0);
   });
 
   it("no manda dos veces aunque el barrido corra seguido", async () => {
     const b = await booked(23, { reminders: true });
     const n = new MemoryNotifier();
-    await scanNotifications(db, n, ctxWith());
-    await scanNotifications(db, n, ctxWith());
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(b.start));
+    await scanNotifications(db, n, ctxWith(), new Date(twoHoursBefore(b.start).getTime() + MINUTE_MS));
     expect(n.sent.filter((s) => s.to === b.phone)).toHaveLength(1);
   });
 });
