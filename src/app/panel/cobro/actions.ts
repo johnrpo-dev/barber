@@ -11,7 +11,10 @@ import { canDiscount } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, minorText, moneyLabel } from "@/lib/labels";
+import { describeError } from "@/lib/log";
+import { bucketHash, publicConfig } from "@/lib/public-readiness";
 import { requirePermission } from "@/lib/session";
+import { enqueueSaleReceipt } from "@/db/receipts";
 
 // Cobro (docs/sprint-4-cobro-caja.md §9). La sede, los precios, las comisiones, los medios de pago,
 // las reglas y el día contable salen de la base; del navegador solo llegan las elecciones.
@@ -146,6 +149,24 @@ export interface Receipt {
   tips: { staffName: string; amountLabel: string }[];
   payments: { label: string; amountLabel: string }[];
   businessDate: string;
+  /** Si se pidió enviar el recibo al cliente, por dónde quedó en cola (null: no tiene cómo recibirlo). */
+  receiptSent: "whatsapp" | "email" | null;
+  receiptRequested: boolean;
+}
+
+/**
+ * Deja el recibo en el outbox (lo entrega el worker). Va DESPUÉS del cobro y fuera de su
+ * transacción: el mensaje no es dinero, y si falla el cobro ya quedó bien hecho. La clave de la
+ * notificación es la venta, así que reintentar el cobro no lo duplica.
+ */
+async function queueReceipt(conn: Db, locationId: bigint, publicId: string): Promise<"whatsapp" | "email" | null> {
+  try {
+    const config = publicConfig();
+    return await enqueueSaleReceipt(conn, { locationId, publicId, channels: config.channels, hash: (v) => bucketHash(v, config.otpPepper) });
+  } catch (err) {
+    console.error("[cobro] no se pudo dejar el recibo en cola", describeError(err));
+    return null;
+  }
 }
 
 const clientInput = z.discriminatedUnion("kind", [
@@ -171,6 +192,8 @@ const checkoutInput = z
     .min(1, "Elige cómo paga el cliente")
     .max(5, "Demasiados pagos"),
   idempotencyKey: idempotencyKeySchema,
+  /** Quien cobra le preguntó al cliente y quiere enviarle el recibo por WhatsApp o correo. */
+  sendReceipt: z.boolean().optional(),
 })
   .refine((v) => v.appointmentId === null || v.extras.length <= 19, { message: "Demasiados servicios", path: ["extras"] })
   .refine((v) => v.appointmentId === null || v.client === undefined, { message: "El cliente de una cita es el de la cita", path: ["client"] })
@@ -205,6 +228,8 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
     const sale = await saleDetail(conn, staff.locationId, saleId);
     if (!sale) throw new Error(`La venta ${saleId} no se encontró después de cobrar`);
     refresh();
+    const receiptRequested = input.sendReceipt === true;
+    const receiptSent = receiptRequested ? await queueReceipt(conn, staff.locationId, sale.publicId) : null;
     // El recibo se arma con lo guardado: un reintento con la misma clave devuelve exactamente lo mismo.
     const change = sale.payments.reduce((acc, p) => acc + (p.change ?? 0n), 0n);
     return {
@@ -216,6 +241,8 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
       tips: sale.tips.map((t) => ({ staffName: t.staffName, amountLabel: absLabel(t.amount) })),
       payments: sale.payments.map((p) => ({ label: p.label, amountLabel: moneyLabel(p.amount) })),
       businessDate: sale.businessDate,
+      receiptSent,
+      receiptRequested,
     };
   });
 }

@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Input, Label, Radio, RadioGroup, TextField, ToggleButton, ToggleButtonGroup } from "react-aria-components";
 import { CheckoutError, priceCheckout, type PaymentKind } from "@/domain/sales/checkout";
 import { format, fromUnits, money, PESO, percentOf } from "@/domain/money";
-import { FieldMessage, FormError } from "../_manage/controls";
+import { FieldMessage, FormError, Toggle } from "../_manage/controls";
 import { callAction, MoneyField, newKey, NETWORK_ERROR, unitsOf } from "../_components/money-field";
 import { SelectField } from "../_components/select-field";
 import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
@@ -220,7 +220,10 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
   const [extraTipStaff, setExtraTipStaff] = useState<string[]>([]);
   const walkIn = view.appointmentId === null;
   const [client, setClient] = useState<ClientChoice>({ kind: "none", name: "" });
-  const usable = (m: Method) => m.kind !== "cash" || cashOpen;
+  // Recibo por WhatsApp o correo: solo si hay cliente; quien cobra le pregunta y lo deja marcado.
+  const hasClient = walkIn ? client.kind !== "none" : view.clientName !== null;
+  const [sendReceipt, setSendReceipt] = useState(true);
+  const usable =(m: Method) => m.kind !== "cash" || cashOpen;
   const defaultMethod = (view.methods.find((m) => m.kind === "cash" && cashOpen) ?? view.methods.find((m) => m.kind !== "cash"))?.id ?? "";
   const [split, setSplit] = useState(false);
   const [rows, setRows] = useState<PayRow[]>([{ uid: uid(), methodId: defaultMethod, digits: "", tendered: "" }]);
@@ -498,6 +501,7 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         };
       }),
       idempotencyKey: idempotencyKey.current,
+      sendReceipt: hasClient && sendReceipt,
     };
     setPending(true);
     const res = await callAction(() => checkoutAction(payload));
@@ -721,6 +725,15 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         ) : null}
         {change > 0n ? <TotalRow label="Cambio para el cliente" value={fmt(change)} strong /> : null}
       </dl>
+
+      {hasClient ? (
+        <Toggle isSelected={sendReceipt} onChange={setSendReceipt}>
+          <span className="flex flex-col">
+            <span>Enviar el recibo al cliente</span>
+            <span className="text-xs font-normal text-tinta/70">Por WhatsApp, o por correo si no tiene celular. Pregúntale antes.</span>
+          </span>
+        </Toggle>
+      ) : null}
 
       <div ref={summaryRef} tabIndex={-1} className="outline-none">
         <FormError message={errors.summary ?? null} />
@@ -1196,6 +1209,16 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
         </h3>
         <p className="text-sm text-tinta/70">{longDate(receipt.businessDate)}</p>
       </div>
+
+      {receipt.receiptRequested ? (
+        <p role="status" className="rounded-xl border border-tinta/10 bg-hueso/50 px-4 py-3 text-sm">
+          {receipt.receiptSent === "whatsapp"
+            ? "El recibo va en camino al WhatsApp del cliente."
+            : receipt.receiptSent === "email"
+              ? "El recibo va en camino al correo del cliente."
+              : "No se pudo enviar el recibo: el cliente no tiene celular ni correo registrados. Puedes imprimirlo o compartirlo."}
+        </p>
+      ) : null}
 
       {receipt.changeLabel ? (
         <div className="flex items-baseline justify-between rounded-xl bg-botella px-4 py-3 text-hueso">

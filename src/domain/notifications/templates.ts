@@ -11,6 +11,8 @@ export const NOTIFICATION_TEMPLATES = [
   "appointment_rescheduled",
   "appointment_cancelled_client",
   "appointment_cancelled_staff",
+  // Recibo de una venta (no es factura electrónica). Solo si quien cobra lo pide con el cliente presente.
+  "sale_receipt",
 ] as const;
 export type NotificationTemplate = (typeof NOTIFICATION_TEMPLATES)[number];
 
@@ -26,6 +28,7 @@ export const WHATSAPP_TEMPLATE_NAMES: Record<NotificationTemplate, string> = {
   appointment_rescheduled: "villa_cita_reprogramada",
   appointment_cancelled_client: "villa_cita_cancelada",
   appointment_cancelled_staff: "villa_cita_cancelada_sede",
+  sale_receipt: "villa_recibo",
 };
 
 /**
@@ -40,6 +43,7 @@ export const TEMPLATE_PARAMS: Record<NotificationTemplate, readonly string[]> = 
   appointment_rescheduled: ["name", "service", "staff", "date", "time", "url"],
   appointment_cancelled_client: ["name", "date", "time", "url"],
   appointment_cancelled_staff: ["name", "date", "time"],
+  sale_receipt: ["name", "number", "date", "items", "total", "payment"],
 };
 
 const MAX_FIRST_NAME = 30;
@@ -120,6 +124,18 @@ const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
     subject: `Cancelamos tu cita del ${p("date")}`,
     paragraphs: [`Lo sentimos, ${p("name")}. Tuvimos que cancelar tu cita del ${p("date")} a las ${p("time")}. Escríbenos y te buscamos otro turno.`],
   }),
+  sale_receipt: (p) => ({
+    subject: `Tu recibo de Villa: ${p("total")}`,
+    paragraphs: [`Gracias por venir, ${p("name")}. Este es el recibo N.º ${p("number")} del ${p("date")}: ${p("items")}. Total ${p("total")}, pagado con ${p("payment")}.`],
+    rows: [
+      ["Recibo N.º", p("number")],
+      ["Fecha", p("date")],
+      ["Servicios", p("items")],
+      ["Total", p("total")],
+      ["Pagado con", p("payment")],
+    ],
+    footer: "Documento no válido como factura.",
+  }),
 };
 
 /** Sin saltos de línea ni controles: nada de inyección de cabeceras en el asunto. */
@@ -154,7 +170,7 @@ function html(copy: EmailCopy): string {
     `<p style="margin:0 0 4px;font-size:24px">Villa</p><div style="height:2px;background:${C.laton};margin:0 0 24px"></div>` +
     `<div style="background:${C.papel};border-radius:16px;padding:24px;font-family:system-ui,sans-serif;font-size:16px;line-height:1.5">` +
     `${paragraphs}${rows}${button}${footer}</div>` +
-    `<p style="margin:16px 0 0;font-family:system-ui,sans-serif;font-size:13px;opacity:.7">Villa Barbería. Mensaje de servicio sobre tu cita.</p>` +
+    `<p style="margin:16px 0 0;font-family:system-ui,sans-serif;font-size:13px;opacity:.7">Villa Barbería. Mensaje de servicio sobre tu visita.</p>` +
     `</div></body></html>`
   );
 }

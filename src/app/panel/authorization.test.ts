@@ -1998,6 +1998,47 @@ describe("recibos de venta", () => {
     expect(await ventas.loadSalesOfDay({ date: "ayer" })).toMatchObject({ ok: true, data: { businessDate: today } });
   });
 
+  it("al cobrar con 'enviar el recibo', queda en cola por WhatsApp; reintentar no lo duplica", async () => {
+    const id = await chairAppointment();
+    const units = String((await servicePrice()) / 100n);
+    const idempotencyKey = `cobro-recibo-${uniq()}`;
+    const pay = () =>
+      cobro.checkoutAction({
+        appointmentId: String(id),
+        extras: [],
+        discounts: [],
+        tips: [],
+        payments: [{ methodId: String(A.methods.card), amountUnits: units }],
+        idempotencyKey,
+        sendReceipt: true,
+      });
+    await signInAs(A.users.reception);
+    const first = await pay();
+    expect(first).toMatchObject({ ok: true, data: { receiptRequested: true, receiptSent: "whatsapp" } });
+    expect(await pay()).toMatchObject({ ok: true, data: { receiptSent: "whatsapp" } });
+    if (!first.ok) return;
+    const { rows } = await client.query<{ n: string }>(`select count(*)::text as n from notifications where dedupe_key = $1`, [`sale_receipt:${first.data.publicId}`]);
+    expect(rows[0]!.n).toBe("1");
+  });
+
+  it("sin pedirlo, no se encola nada", async () => {
+    const id = await chairAppointment();
+    const units = String((await servicePrice()) / 100n);
+    await signInAs(A.users.reception);
+    const res = await cobro.checkoutAction({
+      appointmentId: String(id),
+      extras: [],
+      discounts: [],
+      tips: [],
+      payments: [{ methodId: String(A.methods.card), amountUnits: units }],
+      idempotencyKey: `cobro-sin-${uniq()}`,
+    });
+    expect(res).toMatchObject({ ok: true, data: { receiptRequested: false, receiptSent: null } });
+    if (!res.ok) return;
+    const { rows } = await client.query<{ n: string }>(`select count(*)::text as n from notifications where dedupe_key = $1`, [`sale_receipt:${res.data.publicId}`]);
+    expect(rows[0]!.n).toBe("0");
+  });
+
   it("una venta anulada se reimprime con el sello y sale marcada en la lista", async () => {
     const saleId = await seedSale();
     const publicId = await salePublicId(saleId);

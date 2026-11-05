@@ -688,6 +688,8 @@ export const notifications = pgTable(
         "appointment_rescheduled",
         "appointment_cancelled_client",
         "appointment_cancelled_staff",
+        // Recibo de una venta (migración 0015): sin cita obligatoria; la venta va en dedupe_key.
+        "sale_receipt",
       ],
     }).notNull(),
     /** HMAC del destino, para contar cuotas sin guardar el número. */
@@ -713,7 +715,7 @@ export const notifications = pgTable(
     check("notifications_channel_check", sql`${t.channel} in ('whatsapp','email')`),
     check(
       "notifications_template_check",
-      sql`${t.template} in ('otp','booking_confirmed','reminder_24h','reminder_2h','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff')`,
+      sql`${t.template} in ('otp','booking_confirmed','reminder_24h','reminder_2h','appointment_rescheduled','appointment_cancelled_client','appointment_cancelled_staff','sale_receipt')`,
     ),
     check("notifications_recipient_hash_check", hexCheck(t.recipientHash)),
     index("notifications_send_after_idx").on(t.sendAfter),

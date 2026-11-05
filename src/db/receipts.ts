@@ -1,5 +1,9 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
-import { locations, saleLines, salePayments, sales, saleTips, staffMembers } from "./schema";
+import { instantLabels } from "@/domain/booking/public-labels";
+import { format, money } from "@/domain/money";
+import { firstNameForMessage, type NotificationChannel } from "@/domain/notifications/templates";
+import { enqueueNotification, preferredChannel } from "./notifications";
+import { clients, locations, saleLines, salePayments, sales, saleTips, staffMembers } from "./schema";
 import type { Db } from "./types";
 
 // Recibo impreso de una venta y el historial para reimprimir. No es factura electrónica.
@@ -160,4 +164,69 @@ export async function salesOfDay(db: Db, input: { locationId: bigint; businessDa
     services: bySale.get(r.id)?.services ?? [],
     staffNames: bySale.get(r.id)?.staffNames ?? [],
   }));
+}
+
+// ─── Envío del recibo al cliente ─────────────────────────────────────────────
+
+const MAX_ITEMS_TEXT = 120;
+
+/** "Corte, Barba y propina", recortado para que quepa en una variable de WhatsApp. */
+function itemsText(services: string[], hasTips: boolean): string {
+  const all = hasTips ? [...services, "propina"] : services;
+  const text = all.length > 1 ? `${all.slice(0, -1).join(", ")} y ${all.at(-1)}` : (all[0] ?? "Venta");
+  return [...text].length > MAX_ITEMS_TEXT ? `${[...text].slice(0, MAX_ITEMS_TEXT - 1).join("")}…` : text;
+}
+
+/**
+ * Deja en el outbox el recibo de una venta para su cliente (lo entrega el worker, a lo sumo una
+ * vez). WhatsApp si tiene celular y el canal existe; si no, correo. Devuelve el canal, o null si
+ * la venta no tiene cliente, está anonimizado, no tiene cómo recibirlo o está anulada.
+ * La clave `sale_receipt:<ULID>` hace que un reintento del cobro no lo duplique.
+ * Sin cita no hay enlace: el mensaje lleva el resumen, no un link al panel.
+ */
+export async function enqueueSaleReceipt(
+  db: Db,
+  input: { locationId: bigint; publicId: string; channels: readonly NotificationChannel[]; hash: (value: string) => string },
+): Promise<NotificationChannel | null> {
+  const [row] = await db
+    .select({
+      appointmentId: sales.appointmentId,
+      clientId: clients.id,
+      clientName: clients.name,
+      phoneE164: clients.phoneE164,
+      email: clients.email,
+      anonymizedAt: clients.anonymizedAt,
+    })
+    .from(sales)
+    .innerJoin(clients, and(eq(clients.locationId, sales.locationId), eq(clients.id, sales.clientId)))
+    .where(and(eq(sales.locationId, input.locationId), eq(sales.publicId, input.publicId)));
+  if (!row || row.anonymizedAt) return null;
+  const target = preferredChannel(row, input.channels);
+  if (!target) return null;
+
+  const receipt = await saleReceipt(db, { locationId: input.locationId, publicId: input.publicId });
+  if (!receipt || receipt.status !== "paid") return null;
+  const { dateLabel, timeLabel } = instantLabels(receipt.createdAt, receipt.location.timeZone);
+
+  await enqueueNotification(db, {
+    locationId: input.locationId,
+    appointmentId: row.appointmentId,
+    clientId: row.clientId,
+    channel: target.channel,
+    template: "sale_receipt",
+    recipientHash: input.hash(target.to),
+    dedupeKey: `sale_receipt:${input.publicId}`,
+    params: {
+      name: firstNameForMessage(row.clientName) || "cliente",
+      number: input.publicId.slice(-8),
+      date: `${dateLabel}, ${timeLabel}`,
+      items: itemsText(
+        receipt.lines.map((l) => l.description),
+        receipt.tipLines.length > 0,
+      ),
+      total: format(money(receipt.totalPaid)),
+      payment: [...new Set(receipt.payments.map((p) => p.label))].join(" y "),
+    },
+  });
+  return target.channel;
 }

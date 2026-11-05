@@ -11,7 +11,7 @@ import { describeError } from "@/lib/log";
 import { hasLatestConsent } from "./consents";
 import { activeLinkGeneration } from "./manage-links";
 import { hit } from "./rate-limit";
-import { appointments, clients, locations, notificationEvents, notifications, staffMembers } from "./schema";
+import { appointments, clients, locations, notificationEvents, notifications, sales, staffMembers } from "./schema";
 import type { Db } from "./types";
 
 // Outbox de mensajes al cliente (sprint-3-reserva-publica.md §5). La web escribe la intención
@@ -257,6 +257,15 @@ export async function deliverNotification(db: Db, id: bigint, notifier: Notifier
     if (n.template === "appointment_rescheduled" && (!startIso || !n.dedupeKey.endsWith(`:${startIso}`))) return suppress("stale_start");
     if ((n.template === "booking_confirmed" || n.template === "appointment_rescheduled") && ctxRow.status === "cancelled") {
       return suppress("cancelled");
+    }
+    if (n.template === "sale_receipt") {
+      // La venta va en la clave (sale_receipt:<ULID>): si se anuló antes de salir, no se manda.
+      const publicId = n.dedupeKey.slice("sale_receipt:".length);
+      const [sale] = await tx
+        .select({ status: sales.status })
+        .from(sales)
+        .where(and(eq(sales.locationId, n.locationId), eq(sales.publicId, publicId)));
+      if (sale?.status !== "paid") return suppress("sale_not_paid");
     }
 
     const params: Record<string, string> = { ...n.params };
