@@ -22,7 +22,8 @@ import { addExpense } from "@/db/expenses";
 import type { Db } from "@/db/types";
 import { money, sum } from "@/domain/money";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
-import { CashError } from "@/domain/sales/cash";
+import { formatDateLabel } from "@/domain/booking/public-labels";
+import { CashError, sessionIsFromEarlierDay } from "@/domain/sales/cash";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
@@ -53,6 +54,11 @@ export interface CashView {
   expectedOpeningLabel: string | null;
   session: null | {
     id: string;
+    /**
+     * El turno quedó abierto de un día anterior ("lunes 3 de noviembre"): no recibe efectivo de hoy.
+     * Se cierra contando y luego se abre la caja de hoy. null si es de hoy.
+     */
+    staleDayLabel: string | null;
     openedAtLabel: string;
     openedBy: string;
     /** Conteo a ciegas: null para quien no tiene cash.review (el servidor nunca lo manda). */
@@ -97,6 +103,8 @@ export interface CashView {
   canCloseDay: boolean;
   canReopenDay: boolean;
   /** Citas de hoy en la silla o terminadas, sin cobrar: lo primero que ve quien cobra. */
+  /** Día anterior con movimientos y sin cerrar (cierre tardío o se olvidó): se cierra desde Caja. */
+  pendingDay: null | { date: string; label: string };
   toCharge: { appointmentId: string; timeLabel: string; clientName: string | null; serviceName: string; staffName: string; priceLabel: string; inChair: boolean }[];
   daySales: {
     saleId: string;
@@ -124,7 +132,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
   const staff = await requirePermission("ledger.post");
   return runAction(async () => {
     // Todo en UNA transacción REPEATABLE READ de solo lectura (L3): una sola foto del libro.
-    const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge } = await cashViewData(database(), staff.locationId);
+    const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay } = await cashViewData(database(), staff.locationId);
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -146,6 +154,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       }
       session = {
         id: summary.id.toString(),
+        staleDayLabel: sessionIsFromEarlierDay(summary.businessDate, day.businessDate) ? formatDateLabel(summary.businessDate) : null,
         openedAtLabel: atLabel(summary.openedAt, tz, day.businessDate),
         openedBy: summary.openedBy,
         expectedMinor: blind ? null : minorText(summary.expected),
@@ -209,6 +218,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       canBankExpense: can(staff.role, "expenses.bank"),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
+      pendingDay: pendingDay ? { date: pendingDay, label: formatDateLabel(pendingDay) } : null,
       toCharge: toCharge.map((a) => ({
         appointmentId: a.appointmentId.toString(),
         timeLabel: atLabel(a.start, tz, day.businessDate),

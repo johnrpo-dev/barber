@@ -16,7 +16,7 @@ import {
 import { format, type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { recordAudit } from "./audit";
-import { type ActorRef, cashShortError, ledgerCash, lockStaff, openSession, requireOpenDay, requireOpenSession, today } from "./cash";
+import { type ActorRef, cashShortError, ledgerCash, lockStaff, requireOpenDay, requireOpenSession, sessionOpenOn, today } from "./cash";
 import { postEntry, reverseEntry } from "./ledger";
 import { cashMovements, commissionSettlementLines, commissionSettlements, locations, staffAdvances, staffMembers } from "./schema";
 import { serializable } from "./serializable";
@@ -383,7 +383,7 @@ export async function previewSettlement(db: Db, opts: SettlementOptions): Promis
   const positiveGross = draft.gross.minor > 0n ? draft.gross.minor : 0n;
   const maxDeduction = receivable < positiveGross ? receivable : positiveGross;
 
-  const session = await openSession(db, opts.locationId);
+  const session = await sessionOpenOn(db, opts.locationId, day.businessDate);
   const cash = await ledgerCash(db, opts.locationId);
 
   const previewToken = requestHash({
@@ -416,7 +416,7 @@ export async function previewSettlement(db: Db, opts: SettlementOptions): Promis
     adjustments: opts.adjustments,
     tipsIncluded: opts.includeTips || draft.tips.minor < 0n,
     tipsMandatory: draft.tips.minor < 0n,
-    cash: { sessionOpen: Boolean(session), enough: draft.payout.minor <= cash },
+    cash: { sessionOpen: session, enough: draft.payout.minor <= cash },
     previewToken,
   };
 }
@@ -466,7 +466,7 @@ export async function settleCommissions(
     const payout = draft.payout.minor;
     const paidFrom: PaidFrom | null = payout === 0n ? null : cmd.paidFrom;
     // Un pago de $0 no mueve dinero: no pide caja abierta.
-    const session = paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para pagar en efectivo") : null;
+    const session = paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para pagar en efectivo", now) : null;
     if (session && payout > (await ledgerCash(tx, cmd.locationId))) throw cashShortError(cmd.actor);
 
     const posted = await postEntry(tx, {
@@ -594,7 +594,7 @@ export async function reverseSettlement(
     }
 
     const day = await requireOpenDay(tx, cmd.locationId, cmd.now ?? new Date(), (m) => new SettlementError(m));
-    const session = st!.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir el efectivo de vuelta") : null;
+    const session = st!.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir el efectivo de vuelta", cmd.now) : null;
     const reversal = await reverseEntry(tx, {
       locationId: cmd.locationId,
       entryId: st!.journalEntryId,
@@ -670,7 +670,7 @@ export async function giveAdvance(
     if (!person.active) throw new SettlementError(`${person.name} ya no está activo en la sede`);
     const now = cmd.now ?? new Date();
     const day = await requireOpenDay(tx, cmd.locationId, now, (m) => new SettlementError(m));
-    const session = cmd.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para entregar el anticipo") : null;
+    const session = cmd.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para entregar el anticipo", now) : null;
     const entry = staffAdvanceEntry(cmd.amount, cmd.paidFrom, {
       businessDate: day,
       memo: `Anticipo a ${person.name}`,
@@ -776,7 +776,7 @@ export async function reverseAdvance(
       throw new SettlementError("Este anticipo ya se descontó en una liquidación; revierte esa liquidación primero");
     }
     const day = await requireOpenDay(tx, cmd.locationId, cmd.now ?? new Date(), (m) => new SettlementError(m));
-    const session = advance!.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir el efectivo de vuelta") : null;
+    const session = advance!.paidFrom === "cash" ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir el efectivo de vuelta", cmd.now) : null;
     const reversal = await reverseEntry(tx, {
       locationId: cmd.locationId,
       entryId: advance!.journalEntryId,
@@ -833,7 +833,7 @@ export async function staffCommissionDetail(
     .where(and(eq(staffMembers.locationId, input.locationId), eq(staffMembers.id, input.staffId)));
   if (!person) return null;
   const day = await today(db, input.locationId, input.now ?? new Date());
-  const session = await openSession(db, input.locationId);
+  const session = await sessionOpenOn(db, input.locationId, day.businessDate);
   const settlements = await db
     .select({
       publicId: commissionSettlements.publicId,
@@ -869,7 +869,7 @@ export async function staffCommissionDetail(
     staff: { id: input.staffId, name: person.name, active: person.active },
     businessDate: day.businessDate,
     dayClosed: day.closed,
-    cashSessionOpen: Boolean(session),
+    cashSessionOpen: session,
     lastCutoffDate: await lastCutoff(db, input.locationId, input.staffId),
     settlements: settlements.map((s) => ({ ...s, canReverse: s.number === latestActive })),
     advances: advances.map((a) => ({ ...a, canReverse: a.status === "active" && receivable >= a.amount })),

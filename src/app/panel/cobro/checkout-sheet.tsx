@@ -425,7 +425,8 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
       onReload();
       return;
     }
-    if (starts("Abre la caja para recibir efectivo")) {
+    // "La caja del … sigue abierta": quedó abierta de otro día y no recibe efectivo de hoy.
+    if (starts("Abre la caja para recibir efectivo") || starts("La caja del ")) {
       setCashOpen(false);
       setErrors({ payments: message });
       focusSoon(null);
@@ -645,9 +646,9 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
 
         {!cashOpen && cashMethod ? (
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-tinta/10 bg-hueso/60 px-3 py-2 text-sm text-tinta/80">
-            <Lock size={14} aria-hidden /> La caja está cerrada: no se recibe efectivo.
+            <Lock size={14} aria-hidden /> La caja de hoy no está abierta: no se recibe efectivo.
             <Link href="/panel/caja" className="inline-flex min-h-11 items-center font-semibold text-cuero underline underline-offset-4">
-              Abrir caja
+              Ir a Caja
             </Link>
           </p>
         ) : null}

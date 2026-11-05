@@ -237,7 +237,7 @@ export async function decideVoid(
     // devolución bajaba 1105 por debajo de cero y la apertura siguiente inventaba un sobrante en 5310
     // (C1). La base también lo exige al hacer COMMIT (0011: 1105 >= 0).
     const session =
-      cashInSale > 0n ? await requireOpenSession(tx, input.locationId, "Abre la caja para devolver el efectivo de esta venta") : undefined;
+      cashInSale > 0n ? await requireOpenSession(tx, input.locationId, "Abre la caja para devolver el efectivo de esta venta", input.now) : undefined;
     if (session && cashInSale > (await ledgerCash(tx, input.locationId))) {
       throw new VoidError(
         `En la caja no hay ${format(money(cashInSale))} para devolver esta venta en efectivo. La devolución sale de la caja: espera a tener ese efectivo en el turno.`,

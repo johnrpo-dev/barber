@@ -53,7 +53,7 @@ const MOVEMENT_LABEL: Record<Session["movements"][number]["kind"], string> = {
 };
 
 type SheetState =
-  | { kind: "open" | "close" | "expense" | "tips" | "deposit" | "closeDay" | "reopen" }
+  | { kind: "open" | "close" | "expense" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
   | { kind: "void"; sale: DaySale }
   | null;
 
@@ -92,7 +92,13 @@ export function CashBoard({ initial }: { initial: CashView }) {
   );
 
   const s = view.session;
+  /** La caja quedó abierta de un día anterior: no recibe efectivo de hoy hasta cerrarla contando. */
+  const stale = s?.staleDayLabel ?? null;
   const closeSheet = () => setSheet(null);
+  const startClose = () => {
+    void refresh();
+    setSheet({ kind: "close" });
+  };
 
   return (
     <>
@@ -103,6 +109,10 @@ export function CashBoard({ initial }: { initial: CashView }) {
           view.dayClosed ? (
             <Chip tone="muted" icon={<Lock size={14} aria-hidden />}>
               Día cerrado
+            </Chip>
+          ) : stale ? (
+            <Chip tone="primary" icon={<TriangleAlert size={14} aria-hidden />}>
+              Caja de otro día
             </Chip>
           ) : s ? (
             <Chip tone="success" icon={<LockOpen size={14} aria-hidden />}>
@@ -128,6 +138,24 @@ export function CashBoard({ initial }: { initial: CashView }) {
           </div>
           <Btn className="shrink-0" onPress={() => setSheet({ kind: "open" })}>
             <LockOpen size={18} aria-hidden /> Abrir caja
+          </Btn>
+        </div>
+      ) : null}
+      {/* Se olvidó cerrar la caja: se cierra tarde contando, y después se abre la de hoy (sin reabrir nada). */}
+      {stale && !view.dayClosed ? (
+        <div role="alert" className="flex flex-col gap-3 rounded-xl border border-alerta/30 bg-alerta/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <TriangleAlert size={20} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
+            <div className="flex flex-col gap-0.5">
+              <p className="font-semibold">La caja del {stale} sigue abierta</p>
+              <p className="text-sm text-tinta/80">
+                Ciérrala contando el efectivo y después abre la de hoy. Así las ventas de cada día no se mezclan. Mientras tanto solo se cobra con
+                tarjeta, transferencia o billetera.
+              </p>
+            </div>
+          </div>
+          <Btn className="shrink-0" onPress={startClose}>
+            <Lock size={18} aria-hidden /> Cerrar esa caja
           </Btn>
         </div>
       ) : null}
@@ -239,7 +267,15 @@ export function CashBoard({ initial }: { initial: CashView }) {
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="flex flex-col gap-1">
               <h2 id="turno" className="flex items-center gap-2 font-display text-2xl leading-tight">
-                <LockOpen size={20} className="text-botella" aria-hidden /> Caja abierta
+                {stale ? (
+                  <>
+                    <TriangleAlert size={20} className="text-alerta" aria-hidden /> Caja del {stale}
+                  </>
+                ) : (
+                  <>
+                    <LockOpen size={20} className="text-botella" aria-hidden /> Caja abierta
+                  </>
+                )}
               </h2>
               <p className="text-sm text-tinta/70">
                 Desde las <span className="monto">{s.openedAtLabel}</span> · {s.openedBy}
@@ -308,21 +344,16 @@ export function CashBoard({ initial }: { initial: CashView }) {
           ) : null}
 
           <div className="grid grid-cols-2 gap-2">
-            <Btn variant="secondary" onPress={() => setSheet({ kind: "expense" })} isDisabled={view.dayClosed}>
+            <Btn variant="secondary" onPress={() => setSheet({ kind: "expense" })} isDisabled={view.dayClosed || !!stale}>
               <Receipt size={18} aria-hidden /> Registrar gasto
             </Btn>
-            <Btn variant="secondary" onPress={() => setSheet({ kind: "tips" })} isDisabled={view.dayClosed || view.tipsOwed.length === 0}>
+            <Btn variant="secondary" onPress={() => setSheet({ kind: "tips" })} isDisabled={view.dayClosed || !!stale || view.tipsOwed.length === 0}>
               <HandCoins size={18} aria-hidden /> Pagar propinas
             </Btn>
-            <Btn variant="secondary" onPress={() => setSheet({ kind: "deposit" })} isDisabled={view.dayClosed}>
+            <Btn variant="secondary" onPress={() => setSheet({ kind: "deposit" })} isDisabled={view.dayClosed || !!stale}>
               <Landmark size={18} aria-hidden /> Consignar
             </Btn>
-            <Btn
-              onPress={() => {
-                void refresh();
-                setSheet({ kind: "close" });
-              }}
-            >
+            <Btn onPress={startClose}>
               <Lock size={18} aria-hidden /> Cerrar caja
             </Btn>
           </div>
@@ -409,6 +440,17 @@ export function CashBoard({ initial }: { initial: CashView }) {
           <h2 id="dia" className="font-display text-2xl leading-tight">
             Día contable
           </h2>
+          {view.pendingDay && view.canCloseDay ? (
+            <div className="flex flex-col gap-2 rounded-xl border border-cuero/30 bg-cuero/5 p-4">
+              <p className="text-sm">
+                <span className="font-semibold">El {view.pendingDay.label} quedó sin cerrar.</span>{" "}
+                {stale ? "Primero cierra la caja de ese día." : "Ciérralo para que nadie registre más movimientos en esa fecha."}
+              </p>
+              <Btn variant="secondary" className="self-start" isDisabled={!!stale} onPress={() => setSheet({ kind: "closePendingDay" })}>
+                <CalendarCheck size={18} aria-hidden /> Cerrar el {view.pendingDay.label}
+              </Btn>
+            </div>
+          ) : null}
           {view.dayClosed ? (
             <>
               <p className="text-sm text-tinta/80">El día {longDate(view.businessDate)} está cerrado: no acepta cobros ni movimientos.</p>
@@ -451,7 +493,19 @@ export function CashBoard({ initial }: { initial: CashView }) {
         <OpenForm view={view} onDone={done} onCancel={closeSheet} />
       </Sheet>
       <Sheet isOpen={sheet?.kind === "close"} onOpenChange={(o) => !o && closeSheet()} title="Cerrar caja" description="Cuenta el efectivo que hay en la caja.">
-        {sheet?.kind === "close" ? <CloseForm session={s} blind={view.blindCount} onClosed={() => void refresh()} onDone={done} onCancel={closeSheet} /> : null}
+        {sheet?.kind === "close" ? (
+          <CloseForm
+            session={s}
+            blind={view.blindCount}
+            onClosed={() => void refresh()}
+            onDone={done}
+            onOpenToday={() => {
+              toast("Caja cerrada");
+              setSheet({ kind: "open" });
+            }}
+            onCancel={closeSheet}
+          />
+        ) : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "expense"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto">
         <ExpenseForm view={view} onDone={done} onCancel={closeSheet} />
@@ -467,6 +521,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
       </Sheet>
       <Sheet isOpen={sheet?.kind === "closeDay"} onOpenChange={(o) => !o && closeSheet()} title="¿Cerrar el día?">
         <CloseDayForm businessDate={view.businessDate} onDone={done} onCancel={closeSheet} />
+      </Sheet>
+      <Sheet isOpen={sheet?.kind === "closePendingDay"} onOpenChange={(o) => !o && closeSheet()} title="¿Cerrar ese día?">
+        {view.pendingDay ? <CloseDayForm businessDate={view.pendingDay.date} onDone={done} onCancel={closeSheet} /> : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "reopen"} onOpenChange={(o) => !o && closeSheet()} title="Reabrir el día" description="Queda registrado con tu nombre, la hora y el motivo.">
         <ReopenDayForm businessDate={view.businessDate} onDone={done} onCancel={closeSheet} />
@@ -621,6 +678,7 @@ function CloseForm({
   blind,
   onClosed,
   onDone,
+  onOpenToday,
   onCancel,
 }: {
   session: Session | null;
@@ -628,6 +686,8 @@ function CloseForm({
   blind: boolean;
   onClosed: () => void;
   onDone: (m: string) => void;
+  /** Tras cerrar tarde la caja de otro día: pasa directo a abrir la de hoy. */
+  onOpenToday: () => void;
   onCancel: () => void;
 }) {
   // Al cerrar, la vista se refresca y la sesión desaparece: se conserva la última para el resumen.
@@ -688,7 +748,7 @@ function CloseForm({
         <div className="flex flex-col items-center gap-2 text-center" role="status">
           <CheckCircle2 size={36} className="text-botella" aria-hidden />
           <h3 ref={summaryRef} tabIndex={-1} className="font-display text-2xl outline-none">
-            Caja cerrada
+            {session?.staleDayLabel ? `Caja del ${session.staleDayLabel} cerrada` : "Caja cerrada"}
           </h3>
         </div>
         <dl className="flex flex-col gap-2 rounded-xl border border-tinta/10 bg-hueso/40 p-4 text-sm">
@@ -711,9 +771,21 @@ function CloseForm({
             La diferencia supera el límite de la sede: el dueño revisará este cierre.
           </p>
         ) : null}
-        <Btn size="lg" onPress={() => onDone("Caja cerrada")}>
-          Listo
-        </Btn>
+        {session?.staleDayLabel ? (
+          <>
+            <p className="text-sm text-tinta/80">El cierre quedó en el {session.staleDayLabel}. Ahora abre la caja de hoy contando la base.</p>
+            <Btn size="lg" onPress={onOpenToday}>
+              <LockOpen size={18} aria-hidden /> Abrir la caja de hoy
+            </Btn>
+            <Btn variant="ghost" onPress={() => onDone("Caja cerrada")}>
+              Después
+            </Btn>
+          </>
+        ) : (
+          <Btn size="lg" onPress={() => onDone("Caja cerrada")}>
+            Listo
+          </Btn>
+        )}
       </div>
     );
   }
@@ -807,7 +879,7 @@ function ExpenseForm({ view, onDone, onCancel }: { view: CashView; onDone: (m: s
   // Un gasto de banco pide confirmar identidad (el servidor decide); el reintento usa la misma clave.
   const reauth = useReauth({ description: "Un gasto pagado del banco cambia las cuentas sin pasar por la caja." });
   const invalid = useFieldErrors<"category" | "amount" | "description">();
-  const cashOk = view.session !== null;
+  const cashOk = view.session !== null && view.session.staleDayLabel === null;
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [paidFrom, setPaidFrom] = useState<"cash" | "bank">(cashOk ? "cash" : "bank");

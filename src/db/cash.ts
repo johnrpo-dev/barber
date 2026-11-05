@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
 import { businessDate } from "@/domain/ledger/business-date";
-import { cashAdjustmentEntry, cashDepositEntry, CashError, tipPayoutEntry } from "@/domain/sales/cash";
+import { cashAdjustmentEntry, cashDepositEntry, CashError, sessionIsFromEarlierDay, staleSessionMessage, tipPayoutEntry } from "@/domain/sales/cash";
 import { format, type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { can, type Role } from "@/domain/staff/roles";
@@ -79,6 +79,8 @@ const sessionColumns = {
   openedBy: cashSessions.openedBy,
   openedAt: cashSessions.openedAt,
   openingCounted: cashSessions.openingCounted,
+  /** Día contable del turno: la fecha local de la sede al abrirlo. */
+  businessDate: sql<string>`((${cashSessions.openedAt} at time zone (select l.timezone from locations l where l.id = ${cashSessions.locationId}))::date)::text`,
 };
 
 /** La caja abierta de la sede. `lock`: la toma FOR UPDATE (cobro en efectivo, gastos, cierre). */
@@ -91,9 +93,26 @@ export async function openSession(db: Db, locationId: bigint, opts: { lock?: boo
   return row;
 }
 
-export async function requireOpenSession(db: Db, locationId: bigint, message = "Abre la caja primero"): Promise<{ id: bigint }> {
+/** ¿Hay caja abierta de ese día? Una que quedó abierta de un día anterior no cuenta: no recibe efectivo. */
+export async function sessionOpenOn(db: Db, locationId: bigint, day: string): Promise<boolean> {
+  const session = await openSession(db, locationId);
+  return Boolean(session) && !sessionIsFromEarlierDay(session!.businessDate, day);
+}
+
+/**
+ * La caja abierta HOY, bloqueada. Un turno que quedó abierto de un día anterior no recibe efectivo
+ * de hoy (sus ventas se mezclarían): primero se cierra con conteo (closeCashSession lo permite).
+ */
+export async function requireOpenSession(
+  db: Db,
+  locationId: bigint,
+  message = "Abre la caja primero",
+  now: Date = new Date(),
+): Promise<{ id: bigint }> {
   const session = await openSession(db, locationId, { lock: true });
   if (!session) throw new CashError(message);
+  const day = await today(db, locationId, now);
+  if (sessionIsFromEarlierDay(session.businessDate, day.businessDate)) throw new CashError(staleSessionMessage(session.businessDate));
   return session;
 }
 
@@ -213,20 +232,27 @@ export async function closeCashSession(
         created: false,
       };
     }
-    const session = await requireOpenSession(tx, input.locationId, "La caja no está abierta");
+    // Aquí sí vale un turno de un día anterior: cerrarlo tarde es justo lo que hay que hacer.
+    const session = await openSession(tx, input.locationId, { lock: true });
+    if (!session) throw new CashError("La caja no está abierta");
     const now = input.now ?? new Date();
-    // Con la caja bloqueada, ningún cobro ni gasto en efectivo se cruza: el esperado es exacto.
+    const late = sessionIsFromEarlierDay(session.businessDate, (await today(tx, input.locationId, now)).businessDate);
+    // Con la caja bloqueada, ningún cobro ni gasto en efectivo se cruza: el esperado es exacto. En un
+    // cierre tardío tampoco entró efectivo hoy (requireOpenSession lo impide): es el saldo del día del turno.
     const expected = await ledgerCash(tx, input.locationId);
+    // El ajuste del cierre va al día del turno: un faltante de ayer es de ayer. Ese día sigue abierto
+    // (la base no deja cerrarlo con caja abierta), pero se comprueba igual.
     const adjustment = cashAdjustmentEntry({ expected: money(expected), counted: input.counted }, note ?? undefined, {
-      businessDate: "0000-00-00",
-      memo: "Cierre de caja",
+      businessDate: session.businessDate,
+      memo: late ? `Cierre de caja del ${session.businessDate} (tardío)` : "Cierre de caja",
       idempotencyKey: `cash-close:${input.idempotencyKey}`,
     });
     let closingEntryId: bigint | null = null;
     if (adjustment) {
-      const day = await requireOpenDay(tx, input.locationId, now, (m) => new CashError(m));
-      closingEntryId = (await postEntry(tx, { locationId: input.locationId, createdBy: input.actor.userId, entry: { ...adjustment, businessDate: day } }))
-        .entryId;
+      if (await isDayClosed(tx, input.locationId, session.businessDate)) {
+        throw new CashError(`El día ${session.businessDate} ya está cerrado. El dueño debe reabrirlo para registrar el cierre de caja.`);
+      }
+      closingEntryId = (await postEntry(tx, { locationId: input.locationId, createdBy: input.actor.userId, entry: adjustment })).entryId;
     }
     const difference = input.counted.minor - expected;
     // La hora del cierre y la marca de revisión (|diferencia| > umbral de la sede) las pone la base
@@ -252,7 +278,7 @@ export async function closeCashSession(
       action: "cash.close",
       targetKind: "cash_session",
       targetRef: session.id.toString(),
-      summary: `Cerró la caja con ${format(input.counted)} contados (diferencia ${format(money(difference))})`,
+      summary: `${late ? `Cerró tarde la caja del ${session.businessDate}` : "Cerró la caja"} con ${format(input.counted)} contados (diferencia ${format(money(difference))})`,
     });
     return { sessionId: session.id, expected, counted: input.counted.minor, difference, needsReview: closed?.needsReview ?? false, created: true };
   });
@@ -383,7 +409,7 @@ export async function payTips(
     if (replay !== undefined) return { movementId: replay, created: false };
     // Primero la persona (mismo orden que liquidar): un pago de propinas y una liquidación van en fila.
     const person = await lockStaff(tx, input.locationId, input.staffId);
-    const session = await requireOpenSession(tx, input.locationId, "Abre la caja para pagar propinas en efectivo");
+    const session = await requireOpenSession(tx, input.locationId, "Abre la caja para pagar propinas en efectivo", input.now);
     const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new CashError(m));
     const owed = (await tipsOwed(tx, input.locationId)).find((t) => t.staffId === input.staffId)?.owed ?? 0n;
     if (input.amount.minor > owed) throw new CashError(`El pago supera las propinas que se le deben a ${person.name} (${format(money(owed))})`);
@@ -426,7 +452,7 @@ export async function cashDeposit(
   return serializable(db, async (tx) => {
     const replay = await movementReplay(tx, input.locationId, input.idempotencyKey, hash);
     if (replay !== undefined) return { movementId: replay, created: false };
-    const session = await requireOpenSession(tx, input.locationId, "Abre la caja para consignar");
+    const session = await requireOpenSession(tx, input.locationId, "Abre la caja para consignar", input.now);
     const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new CashError(m));
     if (input.amount.minor > (await ledgerCash(tx, input.locationId))) throw cashShortError(input.actor);
     const description = "Consignación al banco";
@@ -477,13 +503,15 @@ async function readDayEntries(tx: Db, locationId: bigint, day: string): Promise<
   return BigInt(row?.n ?? "0");
 }
 
-/** Cierra el día: solo sin caja abierta (también lo exige la base) y nunca un día que no ha llegado. */
+/** Cierra el día: sin caja abierta de ese día o antes (también lo exige la base, 0020) y nunca un día que no ha llegado. */
 export async function closeBusinessDay(db: Db, input: { locationId: bigint; businessDate: string; actor: ActorRef; now?: Date }): Promise<void> {
   if (!DATE.test(input.businessDate)) throw new CashError("Fecha inválida");
   await serializable(db, async (tx) => {
     const day = await today(tx, input.locationId, input.now ?? new Date());
     if (input.businessDate > day.businessDate) throw new CashError("No se puede cerrar un día que no ha llegado");
-    if (await openSession(tx, input.locationId)) throw new CashError("Cierra la caja antes de cerrar el día");
+    // La caja abierta de un día POSTERIOR no impide cerrar este (cierre tardío); la de este día o antes, sí.
+    const session = await openSession(tx, input.locationId);
+    if (session && session.businessDate <= input.businessDate) throw new CashError("Cierra la caja antes de cerrar el día");
     if (await isDayClosed(tx, input.locationId, input.businessDate)) throw new CashError("El día ya está cerrado");
     await readDayEntries(tx, input.locationId, input.businessDate);
     await closeDay(tx, { locationId: input.locationId, businessDate: input.businessDate, createdBy: input.actor.userId });
@@ -527,6 +555,8 @@ export type MovementKind = "sale" | "expense" | "tip_payout" | "cash_deposit" | 
 
 export interface SessionSummary {
   id: bigint;
+  /** Día contable del turno (fecha local de la apertura). */
+  businessDate: string;
   openedAt: Date;
   openedBy: string;
   openingCounted: bigint;
@@ -593,10 +623,9 @@ export async function sessionSummary(db: Db, locationId: bigint): Promise<Sessio
           ne(salePayments.kind, "cash"),
           eq(sales.status, "paid"),
           gte(sales.createdAt, session.openedAt),
-          // El día contable de la apertura acota las ventas por el índice (location_id, business_date) (L6).
-          sql`${sales.businessDate} >= (select (cs.opened_at at time zone l.timezone)::date
-                                          from cash_sessions cs join locations l on l.id = cs.location_id
-                                         where cs.id = ${session.id})`,
+          // Solo las ventas del día del turno (por el índice location_id, business_date; L6): si el
+          // turno quedó abierto de ayer, lo que se cobre hoy con tarjeta no se le suma.
+          eq(sales.businessDate, session.businessDate),
         ),
       )
       .groupBy(salePayments.label)
@@ -607,6 +636,7 @@ export async function sessionSummary(db: Db, locationId: bigint): Promise<Sessio
   for (const v of byKind.values()) accounted += v;
   return {
     id: session.id,
+    businessDate: session.businessDate,
     openedAt: session.openedAt,
     openedBy: session.openedByName ?? "Personal",
     openingCounted: session.openingCounted,
@@ -705,6 +735,23 @@ export async function daySales(db: Db, locationId: bigint, day: string) {
  * lectura (L3): el esperado, el desglose, las propinas y las ventas salen de la misma foto del libro,
  * así que un cobro que entra a mitad de la lectura no deja la pantalla descuadrada.
  */
+/**
+ * El día anterior más reciente (última semana) con asientos y sin cerrar: queda así cuando la caja
+ * se cerró tarde o nadie cerró el día. Desde Caja se cierra sin reabrir nada.
+ */
+export async function lastUnclosedPastDay(db: Db, locationId: bigint, today: string): Promise<string | null> {
+  const [row] = rowsOf<{ day: string | null }>(
+    await db.execute(sql`
+      select max(d.day)::text as day
+        from (select distinct e.business_date as day from journal_entries e
+               where e.location_id = ${locationId}::bigint
+                 and e.business_date < ${today}::date and e.business_date >= ${today}::date - 7) d
+       where not ledger_day_is_closed(${locationId}::bigint, d.day)
+    `),
+  );
+  return row?.day ?? null;
+}
+
 export async function cashViewData(db: Db, locationId: bigint, now: Date = new Date()) {
   return db.transaction(
     async (txRaw) => {
@@ -718,7 +765,8 @@ export async function cashViewData(db: Db, locationId: bigint, now: Date = new D
       const ledger = await ledgerCash(tx, locationId);
       const flagged = await sessionsNeedingReview(tx, locationId);
       const toCharge = await appointmentsToCharge(tx, locationId, day.businessDate);
-      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged, toCharge };
+      const pendingDay = await lastUnclosedPastDay(tx, locationId, day.businessDate);
+      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged, toCharge, pendingDay };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );

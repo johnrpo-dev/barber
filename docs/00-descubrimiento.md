@@ -150,6 +150,7 @@ Qué pasa al confirmar: en **una sola transacción** la venta queda `paid` y sel
 2. Se cuenta el efectivo.
 3. Si hay diferencia, se registra como `cash_adjustment` con nota obligatoria.
 4. El día queda bloqueado.
+5. Si se olvidó cerrar la caja, al otro día se cierra contando (el ajuste queda en el día del turno) y se abre la de hoy, sin reabrir nada ni mezclar las ventas de los dos días.
 
 **Liquidar comisiones**
 1. Se elige barbero y periodo.

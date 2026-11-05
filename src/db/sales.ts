@@ -13,7 +13,7 @@ import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { canDiscount, type Role } from "@/domain/staff/roles";
 import { changeStatus } from "./appointments";
 import { recordAudit } from "./audit";
-import { openSession, requireOpenSession } from "./cash";
+import { requireOpenSession, sessionOpenOn } from "./cash";
 import { checkoutRulesOf } from "./checkout-settings";
 import { findOrCreateClient } from "./clients";
 import { isDayClosed, postEntry } from "./ledger";
@@ -248,7 +248,7 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
 
     // El efectivo exige la caja abierta, bloqueada: un cierre no se cruza con este cobro.
     const hasCash = priced.payments.some((p) => p.kind === "cash");
-    const session = hasCash ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir efectivo") : null;
+    const session = hasCash ? await requireOpenSession(tx, cmd.locationId, "Abre la caja para recibir efectivo", now) : null;
 
     if (appt?.status === "in_chair") {
       await changeStatus(tx, {
@@ -466,7 +466,7 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
       .from(paymentMethods)
       .where(and(eq(paymentMethods.locationId, input.locationId), eq(paymentMethods.active, true)))
       .orderBy(asc(paymentMethods.id)),
-    openSession(db, input.locationId),
+    sessionOpenOn(db, input.locationId, day),
     isDayClosed(db, input.locationId, day),
     paidSaleForAppointment(db, input.locationId, input.appointmentId),
   ]);
@@ -478,7 +478,7 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
     extraServices,
     staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
     methods,
-    cashSessionOpen: Boolean(session),
+    cashSessionOpen: session,
     dayClosed,
     paid,
   };
@@ -505,7 +505,7 @@ export async function walkInCheckoutContext(db: Db, input: { locationId: bigint;
       .from(paymentMethods)
       .where(and(eq(paymentMethods.locationId, input.locationId), eq(paymentMethods.active, true)))
       .orderBy(asc(paymentMethods.id)),
-    openSession(db, input.locationId),
+    sessionOpenOn(db, input.locationId, day),
     isDayClosed(db, input.locationId, day),
   ]);
   const doing = await serviceIdsByStaff(db, input.locationId);
@@ -515,7 +515,7 @@ export async function walkInCheckoutContext(db: Db, input: { locationId: bigint;
     services: services_,
     staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
     methods,
-    cashSessionOpen: Boolean(session),
+    cashSessionOpen: session,
     dayClosed,
   };
 }

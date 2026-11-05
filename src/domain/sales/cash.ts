@@ -1,5 +1,6 @@
 import { ACCOUNTS, type AccountCode, CHART_OF_ACCOUNTS } from "../ledger/accounts";
 import type { JournalEntryDraft } from "../ledger/entry";
+import { formatDateLabel } from "../booking/public-labels";
 import { type Money, money, subtract } from "../money";
 
 // Movimientos de caja y gastos (docs/sprint-4-cobro-caja.md §3 y §4). Funciones puras que arman
@@ -138,4 +139,20 @@ export function needsCashReview(difference: Money, threshold: Money): boolean {
   if (threshold.minor < 0n) throw new CashError("El umbral de revisión no puede ser negativo");
   const size = difference.minor < 0n ? -difference.minor : difference.minor;
   return size > threshold.minor;
+}
+
+// ─── Turno de un día ─────────────────────────────────────────────────────────
+
+/**
+ * Un turno de caja es del día contable en que se abrió (fecha local de la sede). Si alguien olvida
+ * cerrarlo, al otro día sigue abierto pero ya no recibe efectivo: se cierra con conteo (el ajuste va
+ * al día del turno, que sigue abierto porque la base no deja cerrar un día con caja abierta) y se
+ * abre el de hoy. Así las ventas de dos días nunca quedan en el mismo turno.
+ */
+export function sessionIsFromEarlierDay(sessionDay: string, today: string): boolean {
+  return sessionDay < today;
+}
+
+export function staleSessionMessage(sessionDay: string): string {
+  return `La caja del ${formatDateLabel(sessionDay)} sigue abierta. Ciérrala en Caja contando el efectivo y abre la de hoy.`;
 }

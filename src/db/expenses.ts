@@ -59,7 +59,7 @@ export async function addExpense(
       .from(expenseCategories)
       .where(and(eq(expenseCategories.locationId, input.locationId), eq(expenseCategories.id, input.categoryId), eq(expenseCategories.active, true)));
     if (!category) throw new CashError("La categoría del gasto no existe o está desactivada");
-    const session = input.paidFrom === "cash" ? await requireOpenSession(tx, input.locationId, "Abre la caja para registrar un gasto de caja") : null;
+    const session = input.paidFrom === "cash" ? await requireOpenSession(tx, input.locationId, "Abre la caja para registrar un gasto de caja", input.now) : null;
     const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new CashError(m));
     if (session && input.amount.minor > (await ledgerCash(tx, input.locationId))) throw cashShortError(input.actor);
 

@@ -171,7 +171,15 @@ Al cerrar:
 2. Diferencia = contado − esperado. Si no es cero, la nota es obligatoria y se registra el asiento de ajuste.
 3. El turno queda cerrado.
 
-El cierre del **día contable** (`closeDay`) solo se permite sin caja abierta.
+El cierre del **día contable** (`closeDay`) solo se permite sin caja abierta de ese día o de antes (migración 0020: la caja de un día posterior no lo impide).
+
+**Cierre tardío (se olvidó cerrar la caja).** Un turno pertenece al día contable en que se abrió (fecha local de `opened_at`).
+
+- Si sigue abierto otro día, es "caja de otro día": no recibe efectivo de hoy (cobro, gasto, propinas, consignación, liquidación, anticipo ni devolución). Lo exige `requireOpenSession`. Tarjeta, transferencia y billetera siguen funcionando.
+- Se cierra contando, como siempre. El ajuste del cierre va al **día del turno**, con el memo "Cierre de caja del AAAA-MM-DD (tardío)". El resumen del turno solo suma las ventas de ese día.
+- Enseguida se abre la caja de hoy; no hace falta reabrir ningún día.
+- El día que quedó sin cerrar aparece en Caja ("El … quedó sin cerrar") y se cierra desde ahí, aunque ya esté abierta la caja de hoy.
+- Se descartó cerrar la caja sola a medianoche (no habría conteo) y tener dos cajas abiertas (1105 es un solo saldo).
 
 ## 5. Concurrencia e idempotencia
 
