@@ -386,9 +386,9 @@ Decisión del dueño (2026-11-04): **el dominio y el servidor son lo último**. 
 
 | Sprint | Contenido |
 |---|---|
-| **6. Pendientes del MVP y finanzas** | Repetir la auditoría de seguridad sobre las últimas correcciones; borrado de memos y `discount_reason` en la supresión de datos del cliente; eventos de auditoría atómicos (L11). Venta de productos con inventario básico; gastos recurrentes y cuentas por pagar. **Hecho:** recibo imprimible (tirilla 58/80 mm o A4) con reimpresión desde Ventas; NIT y pie del recibo en Ajustes (no es factura electrónica). |
+| **6. Pendientes del MVP y productos** | Repetir la auditoría de seguridad sobre lo último (recibos, Ventas, envío del recibo); borrado de memos y `discount_reason` en la supresión de datos del cliente; eventos de auditoría atómicos (L11). Venta de productos con inventario básico (existencias, costo de venta en el libro, ajuste por conteo). **Hecho:** recibo imprimible (tirilla 58/80 mm o A4) con reimpresión desde Ventas; NIT y pie del recibo en Ajustes (no es factura electrónica); envío del recibo al cliente por WhatsApp o correo al cobrar. |
 | **7. Agenda ampliada** | Varios servicios en una cita, citas recurrentes, lista de espera, notas y preferencias del cliente, historial del cliente, restricción por inasistencias. |
-| **8. Reportes y controles** | Reportes por barbero y servicio, tasa de no-show, anulaciones con aprobación avanzada y alertas. Opcionales: QR del 2FA, descuento del 100 % sin propina. |
+| **8. Gastos y controles** | Gastos recurrentes y cuentas por pagar (salen del sprint 6). Alertas al dueño de anulaciones y descuadres de caja. Opcionales: QR del 2FA, descuento del 100 % sin propina. **Ya existían desde el sprint 5:** reportes por barbero y por servicio, tasa de no-show y anulación con aprobación del dueño. |
 | **9. Lanzamiento** | VPS, dominio, bucket de copias, cuentas de WhatsApp, Turnstile y Resend; despliegue con el runbook, restauración de prueba, CSP Report-Only y luego enforce, pentest, pruebas con la barbería real. |
 
 La verificación en Meta (sprint 0) puede iniciarse en cualquier momento; conviene no dejarla para el sprint 9 porque tarda días o semanas.
