@@ -29,6 +29,13 @@ export const allowsDevFallbacks = () => process.env.NODE_ENV === "development" |
  */
 export const revealsCodeOnScreen = (config: { whatsapp: unknown }) => allowsDevFallbacks() && !config.whatsapp;
 
+/**
+ * Las fotos de referencia de la portada (src/content/portal-photos: de Unsplash, no del local) solo
+ * se ven en desarrollo o con PORTAL_REFERENCE_PHOTOS=1, para la demo en un staging. En producción,
+ * sin la variable, nunca: serían fotos ajenas presentadas como de la barbería.
+ */
+export const showsReferencePhotos = () => allowsDevFallbacks() || process.env.PORTAL_REFERENCE_PHOTOS === "1";
+
 export interface PublicConfig {
   otpPepper: string;
   manageLinkSecret: string;

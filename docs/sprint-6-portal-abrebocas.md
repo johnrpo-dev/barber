@@ -52,6 +52,16 @@ Villa, y que después siguiera siendo la página real de la barbería. Amplía, 
 - Todo va dentro de `@media (prefers-reduced-motion: no-preference)` y se anula al imprimir.
 - Sin soporte del navegador, todo se ve igual, solo que sin animación.
 
+**Fotos de referencia** (`src/content/portal-photos`):
+- Son 7 fotos de Unsplash (licencia libre). **No son de Barbería Villa**; el autor de cada una queda en el manifiesto.
+- Hero: en el celular, la foto va debajo del texto; en pantallas anchas, a la derecha con el ticket de muestra montado encima.
+- "El local": un mosaico de 6 fotos, con 2 columnas en el celular y 4 en pantallas anchas.
+- Se sirven con `next/image` desde el propio servidor: nada de terceros y la CSP no cambia. Next genera AVIF o WebP según el ancho y muestra un desenfoque mientras cargan.
+- Solo se ven con `showsReferencePhotos()`: en desarrollo, o con `PORTAL_REFERENCE_PHOTOS=1` en el staging de la demo. En producción, sin la variable, desaparecen el hero con foto y la galería (hay una prueba de esto). Presentar fotos ajenas como del local sería engañar al cliente.
+- Mientras sean de referencia, la del hero lleva la marca "Foto de referencia" y la galería lo dice en su subtítulo.
+- Para cambiarlas por las reales: se reemplazan los archivos con el mismo nombre y `reference` pasa a `false`.
+- El equipo sigue con iniciales: poner caras de desconocidos sobre nombres de barberos, aunque sea de prueba, se presta a confusión. Las fotos del equipo entran cuando haya autorización escrita de cada barbero.
+
 **Sin dependencias nuevas y sin JS nuevo.** Las únicas islas siguen siendo la barra fija y el botón de la cabecera.
 
 **`seed-demo`:**
@@ -72,7 +82,7 @@ Villa, y que después siguiera siendo la página real de la barbería. Amplía, 
 
 ## Lo que falta y no es código
 
-- **Fotos reales:** la fachada, el local y cortes hechos ahí, con permiso del dueño, y autorización escrita de cada barbero si sale su cara. Sin fotos la página es tipográfica, y así se presenta.
+- **Fotos reales:** la fachada, el local y cortes hechos ahí, con permiso del dueño, y autorización escrita de cada barbero si sale su cara. Hoy hay fotos de referencia que solo salen en desarrollo o en la demo. Sin fotos reales, en producción la página vuelve a ser tipográfica.
 - **Para la reunión:** la página pública es la vitrina, pero lo que diferencia al sistema de Weibook es la caja, el cierre del día y la liquidación a barberos que siempre cuadran. Hay que mostrar eso con los datos de la barbería.
 - **Lo que no se debe prometer:** menos inasistencias ni más ventas sin medirlo, que reemplaza a Weibook desde el primer día (mejor correr los dos en paralelo un mes), ni soporte 24/7.
 - **Tener respuesta a "¿y si usted desaparece?":** código, documentación y un plan de continuidad.

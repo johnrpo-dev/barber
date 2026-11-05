@@ -12,6 +12,7 @@ import {
   publicBookingReadiness,
   publicConfig,
   revealsCodeOnScreen,
+  showsReferencePhotos,
 } from "./public-readiness";
 import { FakeVerifier, TurnstileVerifier } from "./turnstile";
 
@@ -111,6 +112,14 @@ describe("configuración pública", () => {
       // El código de verificación nunca sale en pantalla fuera de desarrollo, con o sin WhatsApp.
       expect(revealsCodeOnScreen({ whatsapp: null })).toBe(false);
       expect(revealsCodeOnScreen({ whatsapp: { token: "t", phoneNumberId: "1" } })).toBe(false);
+      // Las fotos de referencia (de Unsplash, no del local) no salen en producción sin pedirlas.
+      vi.stubEnv("PORTAL_REFERENCE_PHOTOS", "");
+      expect(showsReferencePhotos()).toBe(false);
+      vi.stubEnv("PORTAL_REFERENCE_PHOTOS", "true");
+      expect(showsReferencePhotos()).toBe(false);
+      vi.stubEnv("PORTAL_REFERENCE_PHOTOS", "1");
+      expect(showsReferencePhotos()).toBe(true);
+      vi.stubEnv("PORTAL_REFERENCE_PHOTOS", "");
       expect(publicBookingReadiness()).toMatchObject({ ready: false, devFallbacks: false, channels: [] });
       expect(() => publicConfig()).toThrow(/no está disponible/);
       expect(() => new FakeVerifier()).toThrow();

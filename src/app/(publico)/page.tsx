@@ -1,7 +1,10 @@
 import { ArrowRight, ChevronDown, MapPin, MessageCircle, Phone } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
+import { GALLERY_PHOTOS, HERO_PHOTO, type PortalPhoto } from "@/content/portal-photos";
 import { addDays, isoWeekday } from "@/domain/booking/clock";
 import { formatDateLabel } from "@/domain/booking/public-labels";
+import { showsReferencePhotos } from "@/lib/public-readiness";
 import { getPortal, telHref } from "./_lib/portal";
 import { cx, linkBtn, plural } from "./_lib/ui";
 import { StickyCta } from "./_components/cta";
@@ -30,11 +33,27 @@ export default async function HomePage() {
   const featuredIds = new Set(featured.map((s) => s.id));
   const rest = (portal?.services ?? []).filter((s) => !featuredIds.has(s.id));
 
+  // Fotos: las de referencia (Unsplash) solo en desarrollo o en el staging de la demo.
+  const photoAllowed = (p: PortalPhoto) => !p.reference || showsReferencePhotos();
+  const heroPhoto = photoAllowed(HERO_PHOTO) ? HERO_PHOTO : null;
+  const gallery = GALLERY_PHOTOS.filter(photoAllowed);
+  const ticketData = {
+    code: "V-4K7Q",
+    timeLabel: "10:30 a. m.",
+    dateLabel: portal ? formatDateLabel(addDays(portal.today, 1)) : null,
+    serviceName: featured[0]?.name ?? "Corte",
+    staffName: portal?.staff[0]?.name ?? null,
+    durationMin: featured[0]?.durationMin ?? 40,
+    priceLabel: featured[0]?.priceLabel ?? null,
+    address: location?.address ?? null,
+    stamp: { label: "Confirmada", tone: "confirmed" as const },
+  };
+
   return (
     <main>
       {/* ─── Hero: la franja oscura ───────────────────────────────────────── */}
       <section id={HERO_ID} aria-labelledby="inicio-h" className="banda-tinta">
-        <div className="mx-auto max-w-2xl px-4 pb-12 pt-10 md:pt-16 lg:grid lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-center lg:gap-16 lg:pb-20">
+        <div className="mx-auto max-w-2xl px-4 pb-12 pt-10 md:pt-16 lg:grid lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-center lg:gap-16 lg:pb-20">
           <div className="flex flex-col gap-5">
             <p className="entrar text-xs font-semibold uppercase tracking-[0.2em] text-hueso/70">
               Barbería
@@ -106,24 +125,31 @@ export default async function HomePage() {
             ) : null}
           </div>
 
-          {/* Ticket de muestra, solo decorativo y solo en pantallas anchas: en el celular empujaría la carta. */}
-          <div aria-hidden className="entrar hidden [animation-delay:200ms] lg:block">
-            <Ticket
-              headingId="ticket-muestra-h"
-              className="rotate-2 text-tinta"
-              data={{
-                code: "V-4K7Q",
-                timeLabel: "10:30 a. m.",
-                dateLabel: portal ? formatDateLabel(addDays(portal.today, 1)) : null,
-                serviceName: featured[0]?.name ?? "Corte",
-                staffName: portal?.staff[0]?.name ?? null,
-                durationMin: featured[0]?.durationMin ?? 40,
-                priceLabel: featured[0]?.priceLabel ?? null,
-                address: location?.address ?? null,
-                stamp: { label: "Confirmada", tone: "confirmed" },
-              }}
-            />
-          </div>
+          {heroPhoto ? (
+            // Con foto: debajo del texto en el celular; a la derecha en pantallas anchas, con el
+            // ticket de muestra montado encima (solo decorativo).
+            <div className="entrar relative mt-10 [animation-delay:200ms] lg:mt-0">
+              <div className="relative aspect-[4/3] overflow-hidden rounded-2xl ring-1 ring-laton/50 lg:aspect-[4/5]">
+                <Image
+                  src={heroPhoto.src}
+                  alt={heroPhoto.alt}
+                  fill
+                  sizes="(min-width: 1024px) 24rem, (min-width: 672px) 40rem, 100vw"
+                  placeholder="blur"
+                  className="object-cover"
+                />
+                {heroPhoto.reference ? <ReferenceTag /> : null}
+              </div>
+              <div aria-hidden className="absolute -bottom-16 -left-20 hidden w-[19rem] origin-bottom-left scale-[0.8] lg:block">
+                <Ticket headingId="ticket-muestra-h" className="-rotate-3 text-tinta" data={ticketData} />
+              </div>
+            </div>
+          ) : (
+            // Sin foto: el ticket solo, y solo en pantallas anchas (en el celular empujaría la carta).
+            <div aria-hidden className="entrar hidden [animation-delay:200ms] lg:block">
+              <Ticket headingId="ticket-muestra-h" className="rotate-2 text-tinta" data={ticketData} />
+            </div>
+          )}
         </div>
       </section>
 
@@ -157,6 +183,31 @@ export default async function HomePage() {
               </ul>
             </details>
           ) : null}
+        </section>
+      ) : null}
+
+      {/* ─── El local ─────────────────────────────────────────────────────── */}
+      {gallery.length > 0 ? (
+        <section aria-labelledby="local-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
+          <SectionHeading id="local-h" title="El local">
+            {gallery.some((p) => p.reference)
+              ? "Fotos de referencia: aquí van las de la barbería."
+              : "Pasa cuando quieras: aquí te esperamos."}
+          </SectionHeading>
+          <ul role="list" className="mt-6 grid auto-rows-[10.5rem] grid-cols-2 gap-2 sm:auto-rows-[13rem] lg:grid-cols-4 lg:gap-3">
+            {gallery.map((photo, i) => (
+              <li key={photo.src.src} className={cx("revelar relative overflow-hidden rounded-xl bg-tinta/10", GALLERY_LAYOUT[i % GALLERY_LAYOUT.length])}>
+                <Image
+                  src={photo.src}
+                  alt={photo.alt}
+                  fill
+                  sizes="(min-width: 1024px) 36rem, (min-width: 672px) 40rem, 100vw"
+                  placeholder="blur"
+                  className="object-cover transition-transform duration-500 ease-[var(--ease-villa)] hover:scale-[1.03]"
+                />
+              </li>
+            ))}
+          </ul>
         </section>
       ) : null}
 
@@ -239,6 +290,19 @@ const STEPS = [
   { title: "Escoge barbero y hora", body: "Solo ves turnos libres de verdad. Si te da igual el barbero, te damos el primero libre." },
   { title: "Confirma por WhatsApp", body: "Te llega un código, lo escribes y tu turno queda apartado." },
 ] as const;
+
+// Mosaico de la galería: en el celular, 2 columnas; en pantallas anchas, 4 (ver el orden en
+// src/content/portal-photos). Las filas tienen alto fijo y cada foto se recorta con object-cover.
+const GALLERY_LAYOUT = ["col-span-2 lg:row-span-2", "row-span-2", "row-span-2", "col-span-2", "", ""] as const;
+
+/** Marca visible en las fotos que no son del local (para que nadie las tome por reales). */
+function ReferenceTag() {
+  return (
+    <span className="absolute right-3 top-3 rounded-full bg-tinta/80 px-2.5 py-1 text-xs font-semibold text-hueso">
+      Foto de referencia
+    </span>
+  );
+}
 
 function SectionHeading({ id, title, children }: { id: string; title: string; children?: React.ReactNode }) {
   return (
