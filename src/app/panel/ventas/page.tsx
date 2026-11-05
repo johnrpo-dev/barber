@@ -3,8 +3,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { addDays } from "@/domain/booking/clock";
 import { dayLong, plural } from "../_components/dates";
-import { cx, PageHeader } from "../_components/ui";
-import { card, FormError } from "../_manage/controls";
+import { card, cx } from "../_components/classes";
+import { PageHeader } from "../_components/ui";
+import { FormError } from "../_manage/controls";
 import { loadSalesOfDay } from "./actions";
 
 export const metadata: Metadata = { title: "Ventas · Villa" };

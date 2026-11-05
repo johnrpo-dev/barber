@@ -1,6 +1,6 @@
 import { CalendarCheck, Check, DoorOpen, Hourglass, type LucideIcon, Scissors, UserX, X } from "lucide-react";
 import { type AppointmentStatus, STATUS_LABELS } from "@/domain/booking/status";
-import { cx } from "../../_components/ui";
+import { cx } from "../../_components/classes";
 
 // Cada estado se distingue por forma, ícono y palabra, nunca solo por color.
 

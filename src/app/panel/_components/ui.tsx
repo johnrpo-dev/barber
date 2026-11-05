@@ -7,7 +7,7 @@ import { Button, type ButtonProps, Dialog, Heading, I18nProvider, Modal, ModalOv
 // Piezas compartidas del panel. Todo lo interactivo es de react-aria-components (teclado,
 // lector de pantalla y táctil resueltos); aquí solo se les da la piel "Navaja y Cuero".
 
-const cx = (...c: (string | false | null | undefined)[]) => c.filter(Boolean).join(" ");
+import { cx } from "./classes";
 
 // ─── Botones ─────────────────────────────────────────────────────────────────
 

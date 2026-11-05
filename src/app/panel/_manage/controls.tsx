@@ -8,7 +8,7 @@ import { cx, field } from "../_components/ui";
 // Controles de las pantallas de gestión del dueño (servicios y personal), con la piel de ui.tsx.
 // Candidatos a subir a _components/ui.tsx cuando otra pantalla los necesite.
 
-export const card = "rounded-xl border border-tinta/10 bg-papel";
+export { card } from "../_components/classes";
 
 /** Interruptor accesible: el estado se dice en texto, no solo con color. */
 export function Toggle({
