@@ -13,6 +13,8 @@ const LINK_VARIANTS = {
   success: "bg-botella text-hueso hover:bg-botella/90",
   secondary: "border border-tinta/20 bg-papel text-tinta hover:border-tinta/40",
   ghost: "text-tinta hover:bg-tinta/5",
+  // Sobre la franja oscura (.banda-tinta): borde hueso, que sí se ve sobre tinta.
+  onDark: "border border-hueso/40 text-hueso hover:border-hueso/70 hover:bg-hueso/5",
 } as const;
 
 const LINK_SIZES = { sm: "h-11 px-3 text-sm", md: "h-11 px-4 text-sm", lg: "h-12 px-5 text-base", xl: "h-14 px-6 text-lg" } as const;

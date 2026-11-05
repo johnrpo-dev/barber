@@ -19,6 +19,9 @@ export interface PortalView {
   services: { id: string /* uuid */; name: string; durationMin: number; priceLabel: string /* "$35.000" */ }[];
   staff: { id: string /* uuid */; name: string; initials: string }[];
   hours: { weekday: 1 | 2 | 3 | 4 | 5 | 6 | 7; label: string /* "Lunes" */; ranges: string[] /* ["9:00 a. m. – 7:00 p. m."] */ }[];
+  openNow: { open: boolean; label: string /* "Abierto ahora · cierra a las 9:00 p. m." */ };
+  featured: string[]; // ids de services, lo más pedido primero (máx. 6)
+  featuredByDemand: boolean; // false: aún sin citas, es el orden del catálogo
   today: string; // yyyy-MM-dd en la zona de la sede
   maxAdvanceDays: number;
   holdMin: number;

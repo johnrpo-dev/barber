@@ -1,139 +1,211 @@
-import { MapPin, MessageCircle, Phone } from "lucide-react";
+import { ArrowRight, ChevronDown, MapPin, MessageCircle, Phone } from "lucide-react";
 import Link from "next/link";
-import { isoWeekday } from "@/domain/booking/clock";
+import { addDays, isoWeekday } from "@/domain/booking/clock";
+import { formatDateLabel } from "@/domain/booking/public-labels";
 import { getPortal, telHref } from "./_lib/portal";
-import { cx, linkBtn } from "./_lib/ui";
+import { cx, linkBtn, plural } from "./_lib/ui";
 import { StickyCta } from "./_components/cta";
 import { primaryCta } from "./_components/portal-chrome";
 import { Ticket } from "./_components/ticket";
+import type { PortalView } from "./data";
 
-// Inicio: la página de la sede. Server Component; el único JS de cliente es la barra fija.
-// Se pinta por petición (lee la base; ver layout.tsx).
+// Inicio: la página de la sede (docs/sprint-6-portal-abrebocas.md). Server Component; el único JS de
+// cliente son la barra fija y el botón de la cabecera. El movimiento es CSS (globals.css: .entrar,
+// .revelar) y se apaga con "reducir movimiento". Se pinta por petición (lee la base; ver layout.tsx).
 export const dynamic = "force-dynamic";
 
 const HERO_ID = "inicio-hero";
+
+type Service = PortalView["services"][number];
 
 export default async function HomePage() {
   const portal = await getPortal();
   const cta = primaryCta(portal);
   const enabled = portal?.enabled ?? false;
   const location = portal?.location;
-  const todayWeekday = portal ? isoWeekday(portal.today) : null;
   const whatsapp = location?.whatsappUrl ?? null;
-  const tel = telHref(location?.publicPhone);
-  const sample = portal?.services[0];
+
+  const byId = new Map(portal?.services.map((s) => [s.id, s]) ?? []);
+  const featured = (portal?.featured ?? []).map((id) => byId.get(id)).filter((s): s is Service => Boolean(s));
+  const featuredIds = new Set(featured.map((s) => s.id));
+  const rest = (portal?.services ?? []).filter((s) => !featuredIds.has(s.id));
 
   return (
     <main>
-      {/* ─── Hero ─────────────────────────────────────────────────────────── */}
-      <section id={HERO_ID} aria-labelledby="inicio-h" className="mx-auto max-w-2xl px-4 pb-12 pt-10 md:pt-16 lg:grid lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-center lg:gap-16">
-        <div className="flex flex-col gap-5">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-botella">
-            Barbería de barrio{location?.address ? ` · ${location.address}` : ""}
-          </p>
-          <h1 id="inicio-h" className="font-display text-5xl leading-[1.05] md:text-6xl lg:text-7xl">
-            Corte fino, sin afán.
-          </h1>
-          <p className="max-w-[40ch] text-lg text-tinta/80">
-            {enabled ? "Reserva en un minuto. Te confirmamos por WhatsApp." : "Llámanos o escríbenos y te buscamos un turno."}
-          </p>
-          <div aria-hidden className="h-px w-16 bg-laton" />
-          <div className="flex flex-wrap gap-3">
-            {cta ? (
-              cta.external ? (
-                <a href={cta.href} className={linkBtn("primary", "xl")}>
-                  {cta.href.startsWith("tel:") ? <Phone size={20} aria-hidden /> : null}
-                  {cta.label}
-                </a>
-              ) : (
-                <Link href={cta.href} className={linkBtn("primary", "xl")}>
-                  {cta.label}
-                </Link>
-              )
+      {/* ─── Hero: la franja oscura ───────────────────────────────────────── */}
+      <section id={HERO_ID} aria-labelledby="inicio-h" className="banda-tinta">
+        <div className="mx-auto max-w-2xl px-4 pb-12 pt-10 md:pt-16 lg:grid lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-center lg:gap-16 lg:pb-20">
+          <div className="flex flex-col gap-5">
+            <p className="entrar text-xs font-semibold uppercase tracking-[0.2em] text-hueso/70">
+              Barbería
+              {location?.address ? (
+                <>
+                  {" · "}
+                  {location.mapsUrl ? (
+                    <a
+                      href={location.mapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="-my-3 inline-block py-3 underline decoration-hueso/60 underline-offset-4 hover:decoration-hueso"
+                    >
+                      {location.address}
+                      <span className="sr-only"> (cómo llegar; el mapa se abre en una pestaña nueva)</span>
+                    </a>
+                  ) : (
+                    location.address
+                  )}
+                </>
+              ) : null}
+            </p>
+
+            {portal ? (
+              <p className="entrar inline-flex w-fit items-center gap-2 rounded-full border border-hueso/25 px-3 py-1.5 text-sm [animation-delay:60ms]">
+                <span aria-hidden className={cx("size-2 rounded-full", portal.openNow.open ? "bg-laton" : "bg-hueso/40")} />
+                {portal.openNow.label}
+              </p>
             ) : null}
-            {whatsapp && cta?.href !== whatsapp ? (
-              <a href={whatsapp} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "xl")}>
-                <MessageCircle size={20} aria-hidden /> Escríbenos
-              </a>
+
+            <h1 id="inicio-h" className="font-display text-[clamp(2.75rem,12vw,4.75rem)] leading-[0.95] tracking-[-0.02em] text-balance">
+              Corte fino, sin afán.
+            </h1>
+            <p className="entrar max-w-[40ch] text-lg text-hueso/80 [animation-delay:120ms]">
+              {enabled
+                ? "Elige servicio, barbero y hora en un minuto. Te confirmamos por WhatsApp."
+                : "Llámanos o escríbenos y te buscamos un turno."}
+            </p>
+
+            <div className="entrar flex flex-wrap items-center gap-3 [animation-delay:180ms]">
+              {cta ? (
+                cta.external ? (
+                  <a href={cta.href} className={linkBtn("primary", "xl", "ring-1 ring-laton")}>
+                    {cta.href.startsWith("tel:") ? <Phone size={20} aria-hidden /> : null}
+                    {cta.label}
+                  </a>
+                ) : (
+                  <Link href={cta.href} className={linkBtn("primary", "xl", "ring-1 ring-laton")}>
+                    Reservar mi turno
+                    <ArrowRight size={20} aria-hidden />
+                  </Link>
+                )
+              ) : null}
+              {whatsapp && cta?.href !== whatsapp ? (
+                <a href={whatsapp} target="_blank" rel="noopener noreferrer" className={linkBtn("onDark", "lg")}>
+                  <MessageCircle size={18} aria-hidden /> Escribir por WhatsApp
+                  <span className="sr-only"> (se abre en una pestaña nueva)</span>
+                </a>
+              ) : null}
+            </div>
+            {!portal ? <p className="text-sm text-hueso/70">Muy pronto podrás reservar desde aquí.</p> : null}
+
+            {portal && portal.services.length > 0 ? (
+              <dl className="entrar mt-3 grid grid-cols-3 divide-x divide-hueso/15 border-t border-hueso/15 pt-5 [animation-delay:240ms]">
+                <HeroFact label="Barberos" value={String(portal.staff.length)} first />
+                <HeroFact label="Servicios" value={String(portal.services.length)} />
+                {enabled ? <HeroFact label="En línea" value="24/7" /> : null}
+              </dl>
             ) : null}
           </div>
-          {!portal ? <p className="text-sm text-tinta/70">Muy pronto podrás reservar desde aquí.</p> : null}
-        </div>
-        {/* Ticket de muestra, solo decorativo. */}
-        <div aria-hidden className="hidden lg:block">
-          <Ticket
-            headingId="ticket-muestra-h"
-            className="rotate-2"
-            data={{
-              code: "V-4K7Q",
-              timeLabel: "3:30 p. m.",
-              dateLabel: "jueves 30 de octubre",
-              serviceName: sample?.name ?? "Corte clásico",
-              staffName: portal?.staff[0]?.name ?? null,
-              durationMin: sample?.durationMin ?? 45,
-              priceLabel: sample?.priceLabel ?? null,
-              address: location?.address ?? null,
-              stamp: { label: "Confirmada", tone: "confirmed" },
-            }}
-          />
+
+          {/* Ticket de muestra, solo decorativo y solo en pantallas anchas: en el celular empujaría la carta. */}
+          <div aria-hidden className="entrar hidden [animation-delay:200ms] lg:block">
+            <Ticket
+              headingId="ticket-muestra-h"
+              className="rotate-2 text-tinta"
+              data={{
+                code: "V-4K7Q",
+                timeLabel: "10:30 a. m.",
+                dateLabel: portal ? formatDateLabel(addDays(portal.today, 1)) : null,
+                serviceName: featured[0]?.name ?? "Corte",
+                staffName: portal?.staff[0]?.name ?? null,
+                durationMin: featured[0]?.durationMin ?? 40,
+                priceLabel: featured[0]?.priceLabel ?? null,
+                address: location?.address ?? null,
+                stamp: { label: "Confirmada", tone: "confirmed" },
+              }}
+            />
+          </div>
         </div>
       </section>
 
-      {/* ─── La carta ─────────────────────────────────────────────────────── */}
-      {portal && portal.services.length > 0 ? (
-        <section aria-labelledby="carta-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
-          <h2 id="carta-h" className="font-display text-3xl">
-            La carta
-          </h2>
-          <ul className="mt-4 grid gap-x-12 md:grid-cols-2">
-            {portal.services.map((s) => {
-              const row = (
-                <>
-                  <span className="flex items-baseline gap-3">
-                    <span className="font-semibold">{s.name}</span>
-                    <span aria-hidden className="min-w-6 flex-1 translate-y-[-0.25em] border-b-2 border-dotted border-laton/60" />
-                    <span className="monto font-semibold">{s.priceLabel}</span>
-                  </span>
-                  <span className="text-sm text-tinta/70">{s.durationMin} min</span>
-                </>
-              );
-              return (
-                <li key={s.id} className="border-b border-tinta/10">
-                  {enabled ? (
-                    <Link href={`/reservar?servicio=${encodeURIComponent(s.id)}`} className="flex min-h-11 flex-col gap-0.5 py-3 hover:bg-tinta/[0.03]">
-                      {row}
-                      <span className="sr-only">, reservar</span>
-                    </Link>
-                  ) : (
-                    <div className="flex flex-col gap-0.5 py-3">{row}</div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+      {/* ─── Lo que más piden ─────────────────────────────────────────────── */}
+      {portal && featured.length > 0 ? (
+        <section aria-labelledby="carta-h" className="mx-auto max-w-2xl px-4 pb-6 pt-14 lg:max-w-6xl">
+          <SectionHeading id="carta-h" title={portal.featuredByDemand ? "Lo que más piden" : "La carta"}>
+            {portal.featuredByDemand ? "Los servicios más reservados de los últimos dos meses." : "Precio y duración, sin sorpresas."}
+          </SectionHeading>
+          <ol role="list" className="mt-6 grid gap-x-12 md:grid-cols-2">
+            {featured.map((s, i) => (
+              <li key={s.id} className="revelar border-b border-tinta/10">
+                <ServiceRow service={s} enabled={enabled} number={String(i + 1).padStart(2, "0")} />
+              </li>
+            ))}
+          </ol>
+          {rest.length > 0 ? (
+            <details className="group mt-6">
+              <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-2 font-semibold text-cuero underline underline-offset-4 [&::-webkit-details-marker]:hidden">
+                Otros servicios ({rest.length})
+                <ChevronDown size={18} aria-hidden className="transition-transform group-open:rotate-180" />
+              </summary>
+              <ul role="list" className="mt-2 grid gap-x-12 md:grid-cols-2">
+                {[...rest]
+                  .sort((a, b) => a.name.localeCompare(b.name, "es"))
+                  .map((s) => (
+                    <li key={s.id} className="border-b border-tinta/10">
+                      <ServiceRow service={s} enabled={enabled} />
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          ) : null}
         </section>
       ) : null}
 
-      {/* ─── Barberos ─────────────────────────────────────────────────────── */}
+      {/* ─── Así reservas ─────────────────────────────────────────────────── */}
+      {enabled ? (
+        <section aria-labelledby="pasos-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
+          <SectionHeading id="pasos-h" title="Así reservas">
+            Sin llamar, sin descargar nada y sin crear cuenta.
+          </SectionHeading>
+          <ol role="list" className="mt-6 grid gap-3 md:grid-cols-3">
+            {STEPS.map((step, i) => (
+              <li key={step.title} className="revelar flex gap-4 rounded-xl border border-tinta/10 bg-papel p-5 md:flex-col md:gap-3">
+                <span aria-hidden className="monto font-display text-4xl leading-none text-cuero">
+                  {i + 1}
+                </span>
+                <span className="flex flex-col gap-1">
+                  <span className="font-semibold">{step.title}</span>
+                  <span className="text-sm text-tinta/75">{step.body}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+          <p className="mt-4 text-sm text-tinta/75">¿Ya reservaste desde este celular? Te reconocemos y no te pedimos el código otra vez.</p>
+        </section>
+      ) : null}
+
+      {/* ─── El equipo ────────────────────────────────────────────────────── */}
       {portal && portal.staff.length > 0 ? (
         <section aria-labelledby="barberos-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
-          <h2 id="barberos-h" className="font-display text-3xl">
-            Barberos
-          </h2>
-          <ul className="-mx-4 mt-4 flex snap-x gap-3 overflow-x-auto px-4 pb-2 [scrollbar-width:none] md:mx-0 md:grid md:grid-cols-3 md:overflow-visible md:px-0 lg:grid-cols-4">
+          <SectionHeading id="barberos-h" title="El equipo">
+            {plural(portal.staff.length, "barbero", "barberos")}. Elige con quién, o déjanos asignarte el primero libre.
+          </SectionHeading>
+          <ul role="list" className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             {portal.staff.map((p) => {
               const card = (
                 <>
-                  <span aria-hidden className="grid h-14 w-14 place-items-center rounded-full bg-botella font-semibold text-hueso">
+                  <span
+                    aria-hidden
+                    className="grid size-14 place-items-center rounded-full bg-tinta font-display text-xl text-hueso ring-2 ring-laton ring-offset-2 ring-offset-papel"
+                  >
                     {p.initials}
                   </span>
-                  <span className="font-semibold">{p.name}</span>
-                  {enabled ? <span className="text-sm font-semibold text-cuero">Reservar con {p.name.split(/\s+/)[0]}</span> : null}
+                  <span className="font-semibold leading-tight">{p.name}</span>
+                  {enabled ? <span className="mt-auto text-sm font-semibold text-cuero">Reservar con {p.name.split(/\s+/)[0]}</span> : null}
                 </>
               );
-              const cls = "flex h-full flex-col items-start gap-2 rounded-xl border border-tinta/10 bg-papel p-4";
+              const cls = "flex h-full flex-col items-start gap-3 rounded-xl border border-tinta/10 bg-papel p-4";
               return (
-                <li key={p.id} className="w-44 shrink-0 snap-start md:w-auto">
+                <li key={p.id} className="revelar">
                   {enabled ? (
                     <Link href={`/reservar?barbero=${encodeURIComponent(p.id)}`} className={cx(cls, "transition-colors hover:border-tinta/30")}>
                       {card}
@@ -149,59 +221,7 @@ export default async function HomePage() {
       ) : null}
 
       {/* ─── Horario y ubicación ──────────────────────────────────────────── */}
-      {portal ? (
-        <section aria-labelledby="horario-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
-          <h2 id="horario-h" className="font-display text-3xl">
-            Horario y ubicación
-          </h2>
-          <div className="mt-4 grid gap-8 md:grid-cols-2">
-            <dl className="grid grid-cols-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-tinta/10 bg-papel text-sm">
-              {[...portal.hours]
-                .sort((a, b) => a.weekday - b.weekday)
-                .map((h) => {
-                  const isToday = h.weekday === todayWeekday;
-                  return (
-                    <div key={h.weekday} className={cx("col-span-2 grid grid-cols-subgrid gap-x-6 px-4 py-2.5", isToday && "bg-botella/10 font-semibold text-botella")}>
-                      <dt>
-                        {h.label}
-                        {isToday ? <span className="sr-only"> (hoy)</span> : null}
-                      </dt>
-                      <dd className="monto">{h.ranges.length ? h.ranges.join(" · ") : "Cerrado"}</dd>
-                    </div>
-                  );
-                })}
-            </dl>
-            <div className="flex flex-col gap-4">
-              {location?.address ? (
-                <p className="flex items-start gap-2 text-base">
-                  <MapPin size={20} aria-hidden className="mt-0.5 shrink-0 text-botella" />
-                  {location.address}
-                </p>
-              ) : null}
-              {location?.publicPhone && tel ? (
-                <p className="flex items-center gap-2 text-base">
-                  <Phone size={20} aria-hidden className="shrink-0 text-botella" />
-                  <a href={tel} className="monto font-semibold underline underline-offset-4">
-                    {location.publicPhone}
-                  </a>
-                </p>
-              ) : null}
-              <div className="flex flex-wrap gap-3">
-                {location?.mapsUrl ? (
-                  <a href={location.mapsUrl} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "lg")}>
-                    <MapPin size={18} aria-hidden /> Cómo llegar
-                  </a>
-                ) : null}
-                {whatsapp ? (
-                  <a href={whatsapp} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "lg")}>
-                    <MessageCircle size={18} aria-hidden /> WhatsApp
-                  </a>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
+      {portal ? <HoursAndPlace portal={portal} whatsapp={whatsapp} /> : null}
 
       {/* Espacio para que la barra fija no tape el final en móvil. */}
       {cta ? (
@@ -211,5 +231,119 @@ export default async function HomePage() {
         </>
       ) : null}
     </main>
+  );
+}
+
+const STEPS = [
+  { title: "Elige el servicio", body: "Con el precio y la duración a la vista." },
+  { title: "Escoge barbero y hora", body: "Solo ves turnos libres de verdad. Si te da igual el barbero, te damos el primero libre." },
+  { title: "Confirma por WhatsApp", body: "Te llega un código, lo escribes y tu turno queda apartado." },
+] as const;
+
+function SectionHeading({ id, title, children }: { id: string; title: string; children?: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div aria-hidden className="h-px w-12 bg-laton" />
+      <h2 id={id} className="font-display text-3xl md:text-4xl">
+        {title}
+      </h2>
+      {children ? <p className="max-w-[52ch] text-tinta/75">{children}</p> : null}
+    </div>
+  );
+}
+
+function HeroFact({ label, value, first }: { label: string; value: string; first?: boolean }) {
+  return (
+    <div className={cx("flex flex-col gap-1", first ? "pr-3" : "px-3")}>
+      <dt className="text-xs font-semibold uppercase tracking-[0.16em] text-hueso/65">{label}</dt>
+      <dd className="monto font-display text-2xl leading-none md:text-3xl">{value}</dd>
+    </div>
+  );
+}
+
+function ServiceRow({ service: s, enabled, number }: { service: Service; enabled: boolean; number?: string }) {
+  const row = (
+    <>
+      {number ? (
+        <span aria-hidden className="monto w-8 shrink-0 pt-0.5 font-display text-xl text-cuero">
+          {number}
+        </span>
+      ) : null}
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="flex items-baseline gap-3">
+          <span className="font-semibold">{s.name}</span>
+          <span aria-hidden className="min-w-6 flex-1 translate-y-[-0.25em] border-b-2 border-dotted border-laton/60" />
+          <span className="monto font-semibold">{s.priceLabel}</span>
+        </span>
+        <span className="text-sm text-tinta/70">{s.durationMin} min</span>
+      </span>
+    </>
+  );
+  return enabled ? (
+    <Link href={`/reservar?servicio=${encodeURIComponent(s.id)}`} className="flex min-h-11 gap-3 py-3.5 hover:bg-tinta/[0.03]">
+      {row}
+      <span className="sr-only">, reservar</span>
+    </Link>
+  ) : (
+    <div className="flex gap-3 py-3.5">{row}</div>
+  );
+}
+
+function HoursAndPlace({ portal, whatsapp }: { portal: PortalView; whatsapp: string | null }) {
+  const todayWeekday = isoWeekday(portal.today);
+  const location = portal.location;
+  const tel = telHref(location.publicPhone);
+  return (
+    <section aria-labelledby="horario-h" className="mx-auto max-w-2xl px-4 py-10 lg:max-w-6xl">
+      <SectionHeading id="horario-h" title="Horario y ubicación" />
+      <div className="mt-6 grid gap-8 md:grid-cols-2">
+        <dl className="grid grid-cols-[auto_minmax(0,1fr)] overflow-hidden rounded-xl border border-tinta/10 bg-papel text-sm">
+          {[...portal.hours]
+            .sort((a, b) => a.weekday - b.weekday)
+            .map((h) => {
+              const isToday = h.weekday === todayWeekday;
+              return (
+                <div key={h.weekday} className={cx("col-span-2 grid grid-cols-subgrid gap-x-6 px-4 py-2.5", isToday && "bg-botella/10 font-semibold text-botella")}>
+                  <dt>
+                    {h.label}
+                    {isToday ? <span className="sr-only"> (hoy)</span> : null}
+                  </dt>
+                  <dd className="monto">{h.ranges.length ? h.ranges.join(" · ") : "Cerrado"}</dd>
+                </div>
+              );
+            })}
+        </dl>
+        <div className="flex flex-col gap-4">
+          {location.address ? (
+            <p className="flex items-start gap-2 text-base">
+              <MapPin size={20} aria-hidden className="mt-0.5 shrink-0 text-botella" />
+              {location.address}
+            </p>
+          ) : null}
+          {location.publicPhone && tel ? (
+            <p className="flex items-center gap-2 text-base">
+              <Phone size={20} aria-hidden className="shrink-0 text-botella" />
+              <a href={tel} className="monto font-semibold underline underline-offset-4">
+                {location.publicPhone}
+              </a>
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-3">
+            {location.mapsUrl ? (
+              <a href={location.mapsUrl} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "lg")}>
+                <MapPin size={18} aria-hidden /> Cómo llegar
+                <span className="sr-only"> (se abre en una pestaña nueva)</span>
+              </a>
+            ) : null}
+            {whatsapp ? (
+              <a href={whatsapp} target="_blank" rel="noopener noreferrer" className={linkBtn("secondary", "lg")}>
+                <MessageCircle size={18} aria-hidden /> WhatsApp
+                <span className="sr-only"> (se abre en una pestaña nueva)</span>
+              </a>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }

@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { BookingError } from "@/domain/booking/appointment";
 import { activeLimitReached, clientCanCancel, clientCanReschedule, type ClientDecision } from "@/domain/booking/client-policy";
-import { addDays, datesBetween, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
+import { addDays, datesBetween, isoWeekday, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { merge } from "@/domain/booking/interval";
+import { openStatus, openStatusLabel } from "@/domain/booking/open-status";
 import {
   dayPeriod,
   formatClock,
@@ -1179,17 +1180,42 @@ export interface PortalData {
   services: { id: string; name: string; durationMin: number; priceLabel: string }[];
   staff: { id: string; name: string; initials: string }[];
   hours: { weekday: Weekday; label: string; ranges: string[] }[];
+  /** "Abierto ahora · cierra a las 9:00 p. m." (hora local de la sede). */
+  openNow: { open: boolean; label: string };
+  /** Hasta FEATURED_COUNT servicios (ids públicos) para la portada, los más pedidos primero. */
+  featured: string[];
+  /** true si el orden de `featured` sale de citas reales; false si es el orden del catálogo. */
+  featuredByDemand: boolean;
   today: string;
   maxAdvanceDays: number;
   holdMin: number;
 }
 
+export const FEATURED_COUNT = 6;
+const DEMAND_WINDOW_DAYS = 60;
+
+/**
+ * Citas en firme por servicio desde hace DEMAND_WINDOW_DAYS días (incluye las futuras ya confirmadas).
+ * No cuentan las retenciones sin verificar ("pending": cualquiera las crea desde la web), las
+ * canceladas ni los "no vino". Suma en SQL; usa el índice (location_id, lower(during)).
+ */
+async function serviceDemand(db: Db, locationId: bigint, now: Date): Promise<Map<bigint, number>> {
+  const since = new Date(now.getTime() - DEMAND_WINDOW_DAYS * 24 * 60 * MINUTE_MS);
+  const rows = await db
+    .select({ serviceId: appointments.serviceId, n: sql<number>`count(*)::int` })
+    .from(appointments)
+    .where(and(eq(appointments.locationId, locationId), inArray(appointments.status, ["confirmed", "arrived", "in_chair", "completed"]), sql`lower(${appointments.during}) >= ${since.toISOString()}::timestamptz`))
+    .groupBy(appointments.serviceId);
+  return new Map(rows.map((r) => [r.serviceId, Number(r.n)]));
+}
+
 export async function loadPortalData(db: Db, location: PublicLocation, now: Date): Promise<PortalData> {
   const serviceRows = await db
-    .select({ id: services.publicId, name: services.name, durationMin: services.durationMin, price: services.price })
+    .select({ internalId: services.id, id: services.publicId, name: services.name, durationMin: services.durationMin, price: services.price })
     .from(services)
     .where(and(eq(services.locationId, location.id), eq(services.active, true)))
     .orderBy(asc(services.name));
+  const demand = await serviceDemand(db, location.id, now);
 
   const scheduleRows = await db
     .select({
@@ -1210,10 +1236,20 @@ export async function loadPortalData(db: Db, location: PublicLocation, now: Date
   for (const r of scheduleRows) {
     if (r.bookableOnline && !staff.has(r.staffId)) staff.set(r.staffId, { id: r.publicId, name: r.name, initials: initials(r.name) });
   }
-  const hours = ([1, 2, 3, 4, 5, 6, 7] as const).map((weekday) => {
-    const ranges = merge(scheduleRows.filter((r) => r.weekday === weekday).map((r) => ({ start: r.startMin, end: r.endMin })));
-    return { weekday, label: WEEKDAY_LABELS[weekday], ranges: ranges.map((r) => `${formatClock(r.start)} – ${formatClock(r.end)}`) };
-  });
+  const week = ([1, 2, 3, 4, 5, 6, 7] as const).map((weekday) => ({
+    weekday,
+    ranges: merge(scheduleRows.filter((r) => r.weekday === weekday).map((r) => ({ start: r.startMin, end: r.endMin }))),
+  }));
+  const hours = week.map(({ weekday, ranges }) => ({
+    weekday,
+    label: WEEKDAY_LABELS[weekday],
+    ranges: ranges.map((r) => `${formatClock(r.start)} – ${formatClock(r.end)}`),
+  }));
+  const local = localParts(now, location.timeZone);
+  const status = openStatus(week, isoWeekday(local.date), local.minute);
+
+  // Lo más pedido primero; sin citas, el orden del catálogo (el de creación).
+  const ranked = [...serviceRows].sort((a, b) => (demand.get(b.internalId) ?? 0) - (demand.get(a.internalId) ?? 0) || (a.internalId < b.internalId ? -1 : 1));
 
   const phone = location.publicPhone ? normalizePhone(location.publicPhone) : null;
   return {
@@ -1227,6 +1263,9 @@ export async function loadPortalData(db: Db, location: PublicLocation, now: Date
     services: serviceRows.map((s) => ({ id: s.id, name: s.name, durationMin: s.durationMin, priceLabel: format(money(s.price)) })),
     staff: [...staff.values()],
     hours,
+    openNow: { open: status.open, label: openStatusLabel(status) },
+    featured: ranked.slice(0, FEATURED_COUNT).map((s) => s.id),
+    featuredByDemand: ranked.some((s) => (demand.get(s.internalId) ?? 0) > 0),
     today: businessDate(now, location.timeZone),
     maxAdvanceDays: location.maxAdvanceDays,
     holdMin: location.holdMin,

@@ -1,4 +1,4 @@
-// Datos de prueba para recorrer la app en local: servicios, cuatro barberos con horario, teléfono de
+// Datos de prueba para recorrer la app en local: servicios, diez barberos con horario, teléfono de
 // la sede y reserva en línea abierta. Se puede ejecutar varias veces: no duplica (busca por nombre).
 // No toca el libro contable. Se niega a correr en producción.
 // Uso: npm run db:seed-demo
@@ -16,13 +16,26 @@ import type { Db } from "./types";
 const LOCATION_NAME = "Barbería Villa";
 const DEMO_PHONE = "+573122325994"; // Solo para pruebas.
 
+// Catálogo de la demo: los servicios que Barbería Villa publica hoy en su página de reservas (precio y
+// duración de nov. 2026), en el orden de lo más pedido allá: sin citas, la portada usa este orden.
 // Precios en pesos enteros; comisión del barbero en puntos básicos (5000 = 50 %).
 const SERVICES = [
-  { name: "Corte", durationMin: 40, bufferMin: 5, priceUnits: 25_000n, commissionBps: 5000 },
-  { name: "Corte + barba", durationMin: 60, bufferMin: 5, priceUnits: 35_000n, commissionBps: 5000 },
-  { name: "Barba", durationMin: 30, bufferMin: 5, priceUnits: 15_000n, commissionBps: 5000 },
-  { name: "Corte + cera", durationMin: 50, bufferMin: 5, priceUnits: 30_000n, commissionBps: 5000 },
+  { name: "Corte de cabello hombre o niño", durationMin: 30, bufferMin: 5, priceUnits: 22_000n, commissionBps: 5000 },
+  { name: "Corte de cabello y barba", durationMin: 60, bufferMin: 5, priceUnits: 30_000n, commissionBps: 5000 },
+  { name: "Manicure tradicional dama", durationMin: 45, bufferMin: 5, priceUnits: 30_000n, commissionBps: 5000 },
+  { name: "Corte de cabello y barba (tarjeta Gold)", durationMin: 60, bufferMin: 5, priceUnits: 28_000n, commissionBps: 5000 },
+  { name: "Pedicure tradicional dama", durationMin: 50, bufferMin: 5, priceUnits: 30_000n, commissionBps: 5000 },
+  { name: "Corte de cabello (tarjeta Gold)", durationMin: 35, bufferMin: 5, priceUnits: 20_000n, commissionBps: 5000 },
+  { name: "Pigmento en barba", durationMin: 20, bufferMin: 5, priceUnits: 12_000n, commissionBps: 5000 },
+  { name: "Cejas con cuchilla", durationMin: 15, bufferMin: 0, priceUnits: 4_000n, commissionBps: 5000 },
+  { name: "Aplicación de tinte", durationMin: 20, bufferMin: 5, priceUnits: 13_000n, commissionBps: 5000 },
+  { name: "Barba con vapor", durationMin: 35, bufferMin: 5, priceUnits: 20_000n, commissionBps: 5000 },
+  { name: "Barba sencilla", durationMin: 30, bufferMin: 5, priceUnits: 15_000n, commissionBps: 5000 },
+  { name: "Barba sencilla con marcada", durationMin: 40, bufferMin: 5, priceUnits: 17_000n, commissionBps: 5000 },
 ] as const;
+
+const ADDRESS = "Calle 9Sur #53-71, Medellín";
+const MAPS_URL = "https://www.google.com/maps/search/?api=1&query=Calle%209Sur%20%2353-71%2C%20Medell%C3%ADn";
 
 const h = (hours: number, minutes = 0) => hours * 60 + minutes;
 
@@ -37,11 +50,19 @@ function week(start: number, lunch: number, end: number, sunday = false): Schedu
   return blocks;
 }
 
+// Nombres inventados: los del equipo real son datos personales (Ley 1581) y no van al repositorio.
+// Diez perfiles con turnos escalonados: entre todos cubren de 8:00 a. m. a 9:00 p. m.
 const BARBERS = [
   { name: "Andrés Gómez", schedule: week(h(9), h(13), h(19)) },
   { name: "Camilo Restrepo", schedule: week(h(10), h(14), h(20)) },
   { name: "Julián Ríos", schedule: week(h(9), h(12), h(18), true) },
   { name: "Mateo Cardona", schedule: week(h(11), h(15), h(20), true) },
+  { name: "Santiago Vélez", schedule: week(h(8), h(12), h(17)) },
+  { name: "Daniel Ospina", schedule: week(h(12), h(16), h(21)) },
+  { name: "Felipe Arango", schedule: week(h(8), h(13), h(17)) },
+  { name: "Esteban Muñoz", schedule: week(h(12), h(17), h(21), true) },
+  { name: "Laura Henao", schedule: week(h(8), h(12), h(17)) },
+  { name: "Sara Montoya", schedule: week(h(12), h(15), h(21)) },
 ] as const;
 
 /**
@@ -106,8 +127,15 @@ async function main() {
 
   const settings = await locationSettings(d, locationId);
   const { name: _name, ...rest } = settings;
-  await updateLocationSettings(d, locationId, { ...rest, publicPhone: DEMO_PHONE, publicBookingEnabled: true });
-  console.log(`Sede: teléfono ${DEMO_PHONE} y reserva en línea abierta.`);
+  await updateLocationSettings(d, locationId, {
+    ...rest,
+    // La dirección y el mapa solo se llenan si están vacíos: el seed no pisa datos reales.
+    address: rest.address ?? ADDRESS,
+    mapsUrl: rest.mapsUrl ?? MAPS_URL,
+    publicPhone: DEMO_PHONE,
+    publicBookingEnabled: true,
+  });
+  console.log(`Sede: dirección, teléfono ${DEMO_PHONE} y reserva en línea abierta.`);
 
   await client.$client.end();
 }

@@ -70,8 +70,44 @@ html {
 }
 
 :focus-visible {
-  outline: 3px solid var(--color-cuero);
+  /* --focus lo cambia cada superficie: el cuero no se ve sobre tinta (2,4:1). */
+  outline: 3px solid var(--focus, var(--color-cuero));
   outline-offset: 2px;
+}
+
+/* Franja oscura del portal (hero de la portada). Texto en hueso (15:1); el latón sigue siendo solo
+   filete o borde, nunca texto. */
+.banda-tinta {
+  background: var(--color-tinta);
+  color: var(--color-hueso);
+  --focus: var(--color-hueso);
+}
+
+/* Movimiento de la portada, solo CSS y solo si el usuario no pidió menos movimiento. Fuera de estos
+   bloques todo se ve de entrada: sin soporte de animation-timeline, simplemente no hay animación. */
+@keyframes subir {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* Entrada escalonada del hero (el H1 no: retrasaría el LCP). */
+  .entrar {
+    animation: subir 480ms var(--ease-villa) both;
+  }
+  /* Filas que aparecen al entrar en pantalla. */
+  @supports (animation-timeline: view()) {
+    .revelar {
+      animation: subir linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 60%;
+    }
+  }
 }
 
 /* Hoja de impresión (comprobantes): fondo blanco y márgenes cortos, que sirven en A4 y en tirilla
@@ -80,6 +116,10 @@ html {
   html,
   body {
     background: #fff;
+  }
+  .entrar,
+  .revelar {
+    animation: none !important;
   }
   @page {
     margin: 8mm;
