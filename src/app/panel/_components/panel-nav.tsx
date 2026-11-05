@@ -116,9 +116,12 @@ export function PanelNav({
         aria-label="Principal"
         className="fixed inset-y-0 left-0 z-40 hidden w-[72px] flex-col border-r border-tinta/10 bg-papel lg:flex xl:w-[232px] print:hidden"
       >
-        <div className="flex h-16 items-center justify-center gap-2 border-b border-tinta/10 xl:justify-start xl:px-5">
-          <span className="font-display text-2xl">V</span>
-          <span className="hidden font-display text-2xl xl:inline">illa</span>
+        {/* Riel angosto: solo la inicial; barra ancha (xl): la palabra completa, sin partirla. */}
+        <div className="flex h-16 items-center justify-center border-b border-tinta/10 font-display text-2xl xl:justify-start xl:px-5">
+          <span className="xl:hidden" aria-hidden>
+            V
+          </span>
+          <span className="sr-only xl:not-sr-only">Villa</span>
         </div>
         <ul className="flex flex-1 flex-col gap-1 overflow-y-auto p-2">
           {items.map((item) => {
