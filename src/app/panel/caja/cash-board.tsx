@@ -159,7 +159,12 @@ export function CashBoard({ initial }: { initial: CashView }) {
           </Btn>
         </div>
       ) : null}
-      {view.dayClosed ? <p className={cx(card, "p-4 text-sm text-tinta/80")}>El día está cerrado: no acepta cobros ni movimientos.</p> : null}
+      {view.dayClosed ? (
+        <p className={cx(card, "p-4 text-sm text-tinta/80")}>
+          El día de hoy está cerrado: no se puede abrir la caja ni cobrar.{" "}
+          {view.canReopenDay ? "Si se cerró por error, reábrelo abajo en Día contable." : "Si se cerró por error, pídele al dueño que lo reabra en Caja."}
+        </p>
+      ) : null}
 
       {/* Cobrar: la acción principal de la pantalla */}
       <section aria-labelledby="cobrar" className="flex flex-col gap-2">
@@ -520,7 +525,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
         {sheet?.kind === "void" ? <VoidRequestForm sale={sheet.sale} onDone={done} onCancel={closeSheet} /> : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "closeDay"} onOpenChange={(o) => !o && closeSheet()} title="¿Cerrar el día?">
-        <CloseDayForm businessDate={view.businessDate} onDone={done} onCancel={closeSheet} />
+        <CloseDayForm businessDate={view.businessDate} isToday onDone={done} onCancel={closeSheet} />
       </Sheet>
       <Sheet isOpen={sheet?.kind === "closePendingDay"} onOpenChange={(o) => !o && closeSheet()} title="¿Cerrar ese día?">
         {view.pendingDay ? <CloseDayForm businessDate={view.pendingDay.date} onDone={done} onCancel={closeSheet} /> : null}
@@ -1128,7 +1133,18 @@ function VoidRequestForm({ sale, onDone, onCancel }: { sale: DaySale; onDone: (m
 
 // ─── Día contable ────────────────────────────────────────────────────────────
 
-function CloseDayForm({ businessDate, onDone, onCancel }: { businessDate: string; onDone: (m: string) => void; onCancel: () => void }) {
+function CloseDayForm({
+  businessDate,
+  isToday = false,
+  onDone,
+  onCancel,
+}: {
+  businessDate: string;
+  /** Cerrar el día de HOY deja a la sede sin cobrar ni abrir caja el resto del día: se advierte. */
+  isToday?: boolean;
+  onDone: (m: string) => void;
+  onCancel: () => void;
+}) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -1147,9 +1163,18 @@ function CloseDayForm({ businessDate, onDone, onCancel }: { businessDate: string
       <p className="text-sm text-tinta/80">
         {longDate(businessDate)} queda cerrado: no se aceptan más cobros, gastos ni movimientos en esta fecha. Solo el dueño puede reabrirlo.
       </p>
+      {isToday ? (
+        <p role="alert" className="flex items-start gap-2 rounded-xl border border-alerta/30 bg-alerta/5 p-3 text-sm">
+          <TriangleAlert size={18} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
+          <span>
+            Es el día de <strong>hoy</strong>. Ciérralo solo al terminar la jornada: después nadie podrá abrir la caja ni cobrar hoy. Para terminar un
+            turno basta con cerrar la caja.
+          </span>
+        </p>
+      ) : null}
       <FormError message={error} />
       <Actions pending={pending} onCancel={onCancel}>
-        <CalendarCheck size={18} aria-hidden /> Sí, cerrar el día
+        <CalendarCheck size={18} aria-hidden /> {isToday ? "Sí, terminó la jornada" : "Sí, cerrar el día"}
       </Actions>
     </Form>
   );

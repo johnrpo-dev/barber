@@ -1807,6 +1807,25 @@ describe("conteo a ciegas", () => {
     expect(closed).toMatchObject({ ok: true, data: { needsReview: false, differenceLabel: expect.any(String), expectedLabel: expect.any(String) } });
   });
 
+  it("recepción abre y cierra la caja, y el historial de ventas del día registra quién lo hizo", async () => {
+    await cashDrawer(false);
+    const units = String((await ledgerCash(db, A.location)) / 100n);
+    await signInAs(A.users.reception);
+    expect(await caja.openCashSessionAction({ countedUnits: units, idempotencyKey: `abrir-${uniq()}` })).toMatchObject({ ok: true });
+    expect(await caja.closeCashSessionAction({ countedUnits: units, note: "Fin del turno", idempotencyKey: `cerrar-${uniq()}` })).toMatchObject({ ok: true });
+
+    await signInAs(A.users.owner);
+    const history = await ventas.loadSalesHistory({});
+    expect(history.ok).toBe(true);
+    const today = history.ok ? history.data.days.find((d) => d.date === businessDate(new Date(), TZ)) : undefined;
+    expect(today?.shifts).toContainEqual({
+      openedBy: expect.stringMatching(/^Persona reception/),
+      openedTime: expect.stringMatching(/^\d{2}:\d{2}$/),
+      closedBy: expect.stringMatching(/^Persona reception/),
+      closedLabel: expect.stringMatching(/^\d{2}:\d{2}$/),
+    });
+  });
+
   it("el dueño ve los cierres marcados y los da por revisados una sola vez", async () => {
     const id = await flaggedSession();
     await signInAs(A.users.owner);

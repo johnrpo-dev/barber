@@ -12,7 +12,7 @@ import { loadSalesHistory } from "../actions";
 export const metadata: Metadata = { title: "Historial de ventas · Villa" };
 
 // Historial de ventas del dueño: una fila por día del periodo con lo cobrado, en efectivo y por
-// otros medios, y las propinas; el total del periodo arriba. Todo sumado en SQL. Tocar un día
+// otros medios, las propinas y quién abrió y cerró la caja; el total del periodo arriba. Todo sumado en SQL. Tocar un día
 // abre sus ventas una por una (/panel/ventas?dia=…). Sin datos de clientes.
 
 const backLink =
@@ -74,6 +74,18 @@ export default async function SalesHistoryPage({ searchParams }: { searchParams:
                         {d.voided > 0 ? <> · <span className="monto">{plural(d.voided, "anulada", "anuladas")}</span></> : null}
                         {" · "}Efectivo <span className="monto">{d.cashLabel}</span> · Otros <span className="monto">{d.otherLabel}</span>
                       </span>
+                      {d.shifts.map((c, i) => (
+                        <span key={i} className="truncate text-xs text-tinta/70">
+                          Caja: abrió {c.openedBy} <span className="monto">{c.openedTime}</span>
+                          {c.closedLabel ? (
+                            <>
+                              {" · "}cerró {c.closedBy} <span className="monto">{c.closedLabel}</span>
+                            </>
+                          ) : (
+                            " · sigue abierta"
+                          )}
+                        </span>
+                      ))}
                     </span>
                     <span className="monto shrink-0 font-semibold">{d.totalLabel}</span>
                     <ChevronRight size={18} className="shrink-0 text-tinta/50" aria-hidden />

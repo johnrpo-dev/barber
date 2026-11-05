@@ -7,7 +7,7 @@ import { db } from "@/db/client";
 import { paidSalesCount, saleReceipt, salesOfDay } from "@/db/receipts";
 import type { Db } from "@/db/types";
 import { isUlid } from "@/db/ulid";
-import { salesByDay } from "@/db/history";
+import { cashSessionsInPeriod, salesByDay } from "@/db/history";
 import { readOnlySnapshot } from "@/db/reports";
 import { formatPhone } from "@/domain/clients/client";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
@@ -16,6 +16,7 @@ import { can } from "@/domain/staff/roles";
 import { type ActionResult, runAction } from "@/lib/action";
 import { absLabel, moneyLabel, timeLabel } from "@/lib/labels";
 import { requirePermission } from "@/lib/session";
+import { dayShort } from "../_components/dates";
 
 // Ventas y recibo impreso (no es factura electrónica). Quien cobra (ledger.post) ve las ventas de
 // HOY y reimprime sus recibos; el dueño (reports.financial) ve cualquier día. Un id que no es ULID,
@@ -131,7 +132,17 @@ export async function loadSalesOfDay(raw: z.input<typeof dayInput>): Promise<Act
 
 export interface SalesHistoryView {
   period: HistoryPeriodView;
-  days: { date: string; paid: number; voided: number; totalLabel: string; tipsLabel: string; cashLabel: string; otherLabel: string }[];
+  days: {
+    date: string;
+    paid: number;
+    voided: number;
+    totalLabel: string;
+    tipsLabel: string;
+    cashLabel: string;
+    otherLabel: string;
+    /** Turnos de caja abiertos ese día: quién abrió y quién cerró, con la hora (registro del día). */
+    shifts: { openedBy: string; openedTime: string; closedBy: string | null; closedLabel: string | null }[];
+  }[];
   total: { paid: number; voided: number; totalLabel: string; tipsLabel: string; cashLabel: string; otherLabel: string };
 }
 
@@ -148,16 +159,43 @@ export async function loadSalesHistory(raw: z.input<typeof historyInput>): Promi
     return readOnlySnapshot(database(), async (tx) => {
       const day = await today(tx, staff.locationId);
       const period = historyPeriod(day.businessDate, input.from, input.to);
-      const data = await salesByDay(tx, { locationId: staff.locationId, from: period.from, to: period.to });
+      const q = { locationId: staff.locationId, from: period.from, to: period.to };
+      const data = await salesByDay(tx, q);
+      const { sessions } = await cashSessionsInPeriod(tx, q);
       const labels = (r: { total: bigint; tips: bigint; cash: bigint; other: bigint }) => ({
         totalLabel: moneyLabel(r.total),
         tipsLabel: moneyLabel(r.tips),
         cashLabel: moneyLabel(r.cash),
         otherLabel: moneyLabel(r.other),
       });
+      // Turnos por día de apertura, del primero al último del día. Un día con caja y sin ventas también se lista.
+      const shiftsByDay = new Map<string, SalesHistoryView["days"][number]["shifts"]>();
+      for (const c of [...sessions].reverse()) {
+        const list = shiftsByDay.get(c.openedDate) ?? [];
+        list.push({
+          openedBy: c.openedBy,
+          openedTime: c.openedTime,
+          closedBy: c.closedBy,
+          // Un cierre tardío (otro día) lleva la fecha.
+          closedLabel: c.closedTime === null ? null : c.closedDate === c.openedDate ? c.closedTime : `${dayShort(c.closedDate!)} ${c.closedTime}`,
+        });
+        shiftsByDay.set(c.openedDate, list);
+      }
+      const zero = labels({ total: 0n, tips: 0n, cash: 0n, other: 0n });
+      const days: SalesHistoryView["days"] = data.days.map((r) => ({
+        date: r.businessDate!,
+        paid: r.paid,
+        voided: r.voided,
+        ...labels(r),
+        shifts: shiftsByDay.get(r.businessDate!) ?? [],
+      }));
+      for (const [date, shifts] of shiftsByDay) {
+        if (!days.some((d) => d.date === date)) days.push({ date, paid: 0, voided: 0, ...zero, shifts });
+      }
+      days.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
       return {
         period,
-        days: data.days.map((r) => ({ date: r.businessDate!, paid: r.paid, voided: r.voided, ...labels(r) })),
+        days,
         total: { paid: data.total.paid, voided: data.total.voided, ...labels(data.total) },
       };
     });
