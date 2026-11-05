@@ -174,7 +174,49 @@ const V_2026_11_03: PrivacyVersion = {
   }),
 };
 
-export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [V_2026_11_01, V_2026_11_02, V_2026_11_03];
+/**
+ * Sprint 6: el nombre del negocio es "Barbería Villa" y ya no hay recordatorios antes de la cita
+ * (decisión del dueño): solo el código, la confirmación y los avisos si la cita cambia o se cancela.
+ * Las finalidades se reducen, no se amplían: no hace falta pedir una autorización nueva.
+ */
+const V_2026_11_05: PrivacyVersion = {
+  ...V_2026_11_03,
+  version: "2026-11-05",
+  publishedOn: "2026-11-05",
+  sections: V_2026_11_03.sections.map((section) => {
+    if (section.id === "responsable") {
+      return {
+        ...section,
+        paragraphs: [
+          "El responsable del tratamiento de tus datos es [Razón social], identificada con NIT [NIT], con domicilio en [Dirección], que opera Barbería Villa.",
+          ...section.paragraphs.slice(1),
+        ],
+      };
+    }
+    if (section.id === "recordatorios") {
+      return {
+        ...section,
+        heading: "Sin recordatorios ni mensajes de más",
+        paragraphs: [
+          "No te enviamos recordatorios antes de tu cita. Solo te escribimos para lo necesario: el código que confirma tu celular, la confirmación de tu cita y un aviso si tu cita cambia o se cancela. Si lo pides en la barbería, también te enviamos el recibo de tu visita.",
+          "Las promociones son una autorización aparte, opcional y sin marcar. Puedes aceptarlas o no sin que eso cambie tu reserva, y puedes revocarlas cuando quieras escribiendo a [Correo de habeas data].",
+        ],
+      };
+    }
+    if (section.id === "cambios") {
+      return {
+        ...section,
+        paragraphs: [
+          "Esta política rige desde el 5 de noviembre de 2026. La versión anterior (3 de noviembre de 2026) ofrecía recordatorios antes de la cita; ya no los enviamos. Las demás finalidades no cambiaron.",
+          "Si la cambiamos, publicaremos la versión nueva en esta página con su fecha. Las versiones anteriores siguen disponibles. Si el cambio afecta las finalidades, te pediremos una autorización nueva.",
+        ],
+      };
+    }
+    return section;
+  }),
+};
+
+export const PRIVACY_VERSIONS: readonly PrivacyVersion[] = [V_2026_11_01, V_2026_11_02, V_2026_11_03, V_2026_11_05];
 
 const LATEST = PRIVACY_VERSIONS[PRIVACY_VERSIONS.length - 1]!;
 

@@ -7,7 +7,7 @@ import { createLocation } from "./ledger";
 import { locations } from "./schema";
 import type { Db } from "./types";
 
-const VILLA = { name: "Villa Barbería", timezone: "America/Bogota", currency: "COP" } as const;
+const VILLA = { name: "Barbería Villa", timezone: "America/Bogota", currency: "COP" } as const;
 
 async function main() {
   const client = db();

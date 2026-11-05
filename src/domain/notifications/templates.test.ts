@@ -50,9 +50,9 @@ describe("plantillas", () => {
   });
 
   it("los asuntos siguen el texto del diseño", () => {
-    expect(renderEmail("otp", paramsFor("otp")).subject).toBe("Tu código de Villa: 042917");
+    expect(renderEmail("otp", paramsFor("otp")).subject).toBe("Tu código de Barbería Villa: 042917");
     expect(renderEmail("booking_confirmed", paramsFor("booking_confirmed")).subject).toBe("Cita confirmada: martes 10 de noviembre a las 3:00 p. m.");
-    expect(renderEmail("reminder_24h", paramsFor("reminder_24h")).subject).toBe("Mañana a las 3:00 p. m.: tu turno en Villa");
+    expect(renderEmail("reminder_24h", paramsFor("reminder_24h")).subject).toBe("Mañana a las 3:00 p. m.: tu turno en Barbería Villa");
     expect(renderEmail("reminder_2h", paramsFor("reminder_2h")).subject).toBe("Hoy a las 3:00 p. m.: te esperamos");
     expect(renderEmail("appointment_cancelled_staff", paramsFor("appointment_cancelled_staff")).subject).toBe(
       "Cancelamos tu cita del martes 10 de noviembre",
@@ -61,7 +61,7 @@ describe("plantillas", () => {
 
   it("la confirmación lleva el ticket como tabla y el botón a la cita", () => {
     const m = renderEmail("booking_confirmed", paramsFor("booking_confirmed"));
-    expect(m.text).toContain("¡Listo, Andrés! Tu cita en Villa quedó confirmada: Corte clásico con Juan");
+    expect(m.text).toContain("¡Listo, Andrés! Tu cita en Barbería Villa quedó confirmada: Corte clásico con Juan");
     expect(m.text).toContain("Código de turno: V-0427");
     expect(m.html).toContain("<table");
     expect(m.html).toContain('href="https://villa.test/cita/abc"');
@@ -76,7 +76,7 @@ describe("plantillas", () => {
   it("falta un parámetro, enlace raro o salto de línea: no se envía nada raro", () => {
     expect(() => renderEmail("reminder_2h", { name: "Ana", time: "3:00 p. m.", url: "https://villa.test/c" })).toThrow(/address/);
     expect(() => renderEmail("reminder_2h", paramsFor("reminder_2h", { url: "javascript:alert(1)" }))).toThrow(/http/);
-    expect(renderEmail("otp", { code: "123456\r\nBcc: x@y.co" }).subject).toBe("Tu código de Villa: 123456 Bcc: x@y.co");
+    expect(renderEmail("otp", { code: "123456\r\nBcc: x@y.co" }).subject).toBe("Tu código de Barbería Villa: 123456 Bcc: x@y.co");
   });
 
   it("propiedad: todo parámetro declarado aparece en el texto y el HTML lo escapa", () => {

@@ -2,6 +2,7 @@ import { buildIcs } from "@/domain/booking/ics";
 import { describeError } from "@/lib/log";
 import { publicConfig } from "@/lib/public-readiness";
 import { loadTicketWithId } from "../../../data";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // "Agregar al calendario" desde el ticket. Cualquier token malo da el mismo 404, sin pistas.
 
@@ -35,7 +36,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ tok
     start: new Date(ticket.startIso),
     end: new Date(ticket.endIso),
     now: new Date(),
-    summary: `${ticket.serviceName} en Villa`,
+    summary: `${ticket.serviceName} en ${BUSINESS_NAME}`,
     description: [
       `${ticket.serviceName} con ${ticket.staffName}. Turno ${ticket.code}.`,
       manageUrl ? `Para reprogramar o cancelar: ${manageUrl}` : null,

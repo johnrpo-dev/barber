@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { loadTicket } from "../../data";
 import { getPortal } from "../../_lib/portal";
 import { TicketScreen } from "./_components/ticket-screen";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Enlace de gestión de una cita. Token desconocido, vencido, revocado o de otra sede: el mismo 404.
 export const dynamic = "force-dynamic";
@@ -36,7 +37,7 @@ export default async function CitaPage({ params, searchParams }: { params: Param
         ) : (
           <>
             <h1 className="font-display text-4xl leading-tight">Hola, {ticket.clientFirstName}</h1>
-            <p className="text-tinta/80">Esta es tu cita en Villa.</p>
+            <p className="text-tinta/80">Esta es tu cita en {BUSINESS_NAME}.</p>
           </>
         )}
         <div aria-hidden className="mx-auto mt-1 h-px w-16 bg-laton" />

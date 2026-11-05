@@ -286,7 +286,7 @@ describe("códigos de verificación en la cuota", () => {
     expect(await checkQuotaAlert(db, { caps: { globalPerDay: total }, alert }, now, fresh)).toBe(0);
     expect(await checkQuotaAlert(db, { caps: { globalPerDay: total }, alert }, now, location)).toBe(1);
     expect(await checkQuotaAlert(db, { caps: { globalPerDay: total }, alert }, now, location)).toBe(0);
-    expect(subjects).toEqual([`Villa: van ${total} de ${total} mensajes hoy`]);
+    expect(subjects).toEqual([`Barbería Villa: van ${total} de ${total} mensajes hoy`]);
   });
 });
 

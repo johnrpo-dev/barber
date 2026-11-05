@@ -13,7 +13,7 @@ import { locations, services, staffMembers } from "./schema";
 import { addStaffMember, setWeeklySchedule } from "./staff";
 import type { Db } from "./types";
 
-const LOCATION_NAME = "Villa Barbería";
+const LOCATION_NAME = "Barbería Villa";
 const DEMO_PHONE = "+573122325994"; // Solo para pruebas.
 
 // Precios en pesos enteros; comisión del barbero en puntos básicos (5000 = 50 %).

@@ -9,6 +9,7 @@ const FROZEN: Record<string, string> = {
   "2026-11-01": "3fffb583876d66b7785506b89cc926028547f7a4fe94ac15a761ea027d26cf65",
   "2026-11-02": "cff2321f7abb0ea1e7cb13bda0257b9ef43602d86acd7df2a40a5c0cbae5db92",
   "2026-11-03": "a6f50ef64b79c2545a3baa8ed85365715ca8bc1a8a16f3775cd31ece8947131b",
+  "2026-11-05": "86b395f4b3bf4b305eaf671a9c9df8b95dc2a6b48a22721414f385479cb10dc0",
 };
 
 describe("política de privacidad versionada", () => {
@@ -47,6 +48,12 @@ describe("política de privacidad versionada", () => {
     expect(text).toContain("10 días hábiles");
     expect(text).toContain("15 días hábiles");
     expect(text).toContain("Superintendencia de Industria y Comercio");
+  });
+
+  it("la vigente no ofrece recordatorios y nombra a Barbería Villa (sprint 6)", () => {
+    const text = JSON.stringify(CURRENT_PRIVACY);
+    expect(text).toContain("No te enviamos recordatorios");
+    expect(text).toContain("opera Barbería Villa");
   });
 
   it("propiedad: solo se encuentran versiones publicadas", () => {

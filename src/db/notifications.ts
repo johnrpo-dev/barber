@@ -13,6 +13,7 @@ import { activeLinkGeneration } from "./manage-links";
 import { hit } from "./rate-limit";
 import { appointments, clients, locations, notificationEvents, notifications, sales, staffMembers } from "./schema";
 import type { Db } from "./types";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Outbox de mensajes al cliente (sprint-3-reserva-publica.md §5). La web escribe la intención
 // dentro de la transacción del dominio; el worker la entrega A LO SUMO UNA VEZ:
@@ -422,7 +423,7 @@ async function alertSedeNearQuota(db: Db, loc: { id: bigint; timeZone: string; n
   // El contador de límites sirve de bandera "ya avisé hoy": solo el primer golpe envía.
   if ((await hit(db, `alert:quota:${loc.id}`, localMinuteToInstant(today, 0, loc.timeZone))) !== 1) return false;
   await ctx.alert(
-    `Villa: van ${global} de ${ctx.caps.globalPerDay} mensajes hoy`,
+    `${BUSINESS_NAME}: van ${global} de ${ctx.caps.globalPerDay} mensajes hoy`,
     `La sede ${loc.name} ya envió ${global} mensajes hoy (${today}). Al llegar a ${ctx.caps.globalPerDay}, los demás quedan suprimidos hasta mañana.`,
     `alert:quota:${loc.id}:${today}`,
   );

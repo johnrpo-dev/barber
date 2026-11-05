@@ -233,17 +233,17 @@ Todos usan `role="alert"`, salvo los vacíos, que usan `status`.
 | Plantilla | Texto |
 |---|---|
 | Código (autenticación, texto fijo de Meta) | "{{1}} es tu código de verificación. Por tu seguridad, no lo compartas." Pie: "Este código caduca en 5 minutos." Botón "Copiar código" |
-| Confirmación | "¡Listo, {{1}}! Tu cita en Villa quedó confirmada: {{2}} con {{3}}, el {{4}} a las {{5}}. Tu código de turno es {{6}}. Si necesitas reprogramar o cancelar, usa el botón." Botón "Ver mi cita" |
-| Recordatorio 24 h | "Hola, {{1}}. Te esperamos mañana a las {{2}} en Villa para tu {{3}} con {{4}}. Si no puedes venir, avísanos desde el botón y liberamos el turno." |
-| Recordatorio 2 h | "Hola, {{1}}. Tu turno en Villa es hoy a las {{2}}. Estamos en {{3}}. ¡Nos vemos!" |
+| Confirmación | "¡Listo, {{1}}! Tu cita en Barbería Villa quedó confirmada: {{2}} con {{3}}, el {{4}} a las {{5}}. Tu código de turno es {{6}}. Si necesitas reprogramar o cancelar, usa el botón." Botón "Ver mi cita" |
+| ~~Recordatorio 24 h~~ | *Sin uso desde el sprint 6: Barbería Villa no envía recordatorios (decisión del dueño). No hace falta pedirla a Meta.* |
+| ~~Recordatorio 2 h~~ | *Sin uso desde el sprint 6, igual que la de 24 h.* |
 | Cancelación (por el cliente) | "Hola, {{1}}. Cancelamos tu cita del {{2}} a las {{3}}. Cuando quieras volver, reserva desde el botón." |
 | Cancelación (por la barbería) | "Lo sentimos, {{1}}. Tuvimos que cancelar tu cita del {{2}} a las {{3}}. Escríbenos y te buscamos otro turno." |
 
-**Correo** (remitente "Villa Barbería", HTML sencillo sobre hueso, con el ticket como tabla):
+**Correo** (remitente "Barbería Villa", HTML sencillo sobre hueso, con el ticket como tabla):
 
-- **Código:** asunto "Tu código de Villa: {{1}}".
+- **Código:** asunto "Tu código de Barbería Villa: {{1}}".
 - **Confirmación:** asunto "Cita confirmada: {{1}} a las {{2}}", con el .ics adjunto.
-- **Recordatorios:** asuntos "Mañana a las {{1}}: tu turno en Villa" y "Hoy a las {{1}}: te esperamos".
+- **Recordatorios:** sin uso desde el sprint 6 (no se envían).
 - **Cancelación:** asunto "Cancelamos tu cita del {{1}}".
 - Los correos de servicio no llevan promociones.
 

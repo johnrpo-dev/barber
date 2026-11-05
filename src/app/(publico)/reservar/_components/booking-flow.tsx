@@ -15,6 +15,7 @@ import { ServiceStep, StaffPicker } from "./choice-steps";
 import { CodeStep, type Hold } from "./code-step";
 import { type Details, DetailsStep } from "./details-step";
 import { KnownStep } from "./known-step";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Flujo de reserva pública en una sola página, con los menos pasos posibles:
 //   primera vez:    Servicio → Hora (con el barbero ahí mismo) → Tus datos → Código
@@ -195,7 +196,7 @@ export function BookingFlow({
   // ─── Título del documento y foco en cada cambio de paso ──────────────────
   const meta = STEP_META[s.step];
   useEffect(() => {
-    document.title = `${meta.title} · Reservar · Villa`;
+    document.title = `${meta.title} · Reservar · ${BUSINESS_NAME}`;
     if (focusOnStep.current) {
       focusOnStep.current = false;
       headingRef.current?.focus();

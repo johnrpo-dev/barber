@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { PortalView } from "../data";
 import { telHref } from "../_lib/portal";
 import { HeaderCta, type Cta } from "./cta";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Cabecera y pie del portal público (docs/sprint-3-diseno-portal.md §0).
 
@@ -21,7 +22,7 @@ export function PortalHeader({ portal }: { portal: PortalView | null }) {
     <header className="print:hidden">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4">
         <Link href="/" className="font-display text-2xl leading-none text-tinta">
-          Villa
+          {BUSINESS_NAME}
           <span className="sr-only">, inicio</span>
         </Link>
         {headerCta ? <HeaderCta cta={headerCta} /> : null}
@@ -36,7 +37,7 @@ export function PortalFooter({ portal }: { portal: PortalView | null }) {
     <footer className="mt-16 border-t border-tinta/10 bg-papel print:hidden">
       <div className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8 text-sm md:flex-row md:items-end md:justify-between">
         <div className="flex flex-col gap-1">
-          <p className="font-display text-xl">{portal?.location.name ?? "Villa"}</p>
+          <p className="font-display text-xl">{portal?.location.name ?? BUSINESS_NAME}</p>
           {portal?.location.address ? <p className="text-tinta/80">{portal.location.address}</p> : null}
         </div>
         <nav aria-label="Pie de página" className="flex items-center gap-1">

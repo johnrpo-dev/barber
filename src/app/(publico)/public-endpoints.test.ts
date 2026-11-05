@@ -490,7 +490,7 @@ const CASES: Case[] = [
         expect(otp).toMatchObject({ params: { code: "[redacted]" }, channel: "whatsapp" });
         const events = await db.select({ kind: notificationEvents.kind }).from(notificationEvents).where(eq(notificationEvents.notificationId, otp!.id)).orderBy(notificationEvents.id);
         expect(events.map((e) => e.kind)).toEqual(["attempt", "sent"]);
-        expect(state.alerts).toEqual([`Villa: van ${Number(sent) + 1} de ${Number(sent) + 1} mensajes hoy`]);
+        expect(state.alerts).toEqual([`Barbería Villa: van ${Number(sent) + 1} de ${Number(sent) + 1} mensajes hoy`]);
 
         newBrowser();
         const held = await heldAndSent();
@@ -526,7 +526,8 @@ const CASES: Case[] = [
       expect(consents).toEqual(
         expect.arrayContaining([
           { purpose: "data_processing", granted: true },
-          { purpose: "reminders", granted: true },
+          // Aunque el formulario mande recordatorios marcados, no se guardan: no se envían (sprint 6).
+          { purpose: "reminders", granted: false },
           { purpose: "marketing", granted: false },
         ]),
       );

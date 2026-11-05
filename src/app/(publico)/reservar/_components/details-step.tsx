@@ -9,10 +9,12 @@ import { FieldMessage, useFieldErrors } from "@/app/panel/_manage/controls";
 import { ErrorSummary, type SummaryItem } from "../../_components/error-summary";
 import { formatPhone, phoneDigits } from "../../_lib/ui";
 import { useTurnstile } from "./turnstile";
+import { BUSINESS_NAME } from "@/domain/brand";
 
-// Paso "Tus datos": a la vista solo nombre, celular, la autorización obligatoria (Ley 1581) y la de
-// recordatorios; el correo y las promociones esperan en "Más opciones". Ninguna casilla viene
-// marcada. "Recibir código" corre Turnstile y entrega el token al flujo, que crea la retención.
+// Paso "Tus datos": a la vista solo nombre, celular y la autorización obligatoria (Ley 1581); el
+// correo y las promociones esperan en "Más opciones". Ninguna casilla viene marcada. No hay
+// recordatorios: el cliente recibe el código, la confirmación y los avisos si su cita cambia
+// (decisión del dueño, sprint 6). "Recibir código" corre Turnstile y entrega el token al flujo, que crea la retención.
 // Es la única vez: después este navegador queda recordado y no se vuelve a pedir.
 
 export interface Details {
@@ -165,16 +167,13 @@ export function DetailsStep({
           isRequired
           errorId="error-dataProcessing"
         >
-          Autorizo a Villa a tratar mis datos para gestionar mi cita. <span className="text-tinta/70">(Obligatoria)</span>
+          Autorizo a {BUSINESS_NAME} a tratar mis datos para gestionar mi cita. <span className="text-tinta/70">(Obligatoria)</span>
         </ConsentBox>
         {errors.dataProcessing ? (
           <p id="error-dataProcessing" className={cx(field.error, "pl-9")}>
             {errors.dataProcessing}
           </p>
         ) : null}
-        <ConsentBox name="reminders" isSelected={value.consents.reminders} onChange={(on) => setConsent("reminders", on)}>
-          Quiero recordatorios de mi cita por WhatsApp o correo.
-        </ConsentBox>
         <p className="pt-1 text-sm text-tinta/70">
           Puedes cambiar esto cuando quieras. Lee nuestra{" "}
           <a href="/privacidad" target="_blank" rel="noopener" className="font-semibold text-cuero underline underline-offset-4">
@@ -215,7 +214,7 @@ export function DetailsStep({
             <FieldMessage>{errors.email}</FieldMessage>
           </TextField>
           <ConsentBox name="marketing" isSelected={value.consents.marketing} onChange={(on) => setConsent("marketing", on)}>
-            Quiero recibir promociones y novedades de Villa.
+            Quiero recibir promociones y novedades de {BUSINESS_NAME}.
           </ConsentBox>
         </div>
       </div>

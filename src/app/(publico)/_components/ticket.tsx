@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import type { AppointmentStatus } from "@/domain/booking/status";
 import { cx, splitTime } from "../_lib/ui";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Ticket de turno: la pieza memorable del portal (docs/sprint-3-diseno-portal.md §2).
 // Sin estado ni efectos: sirve en Server Components (la página de la cita, la muestra del
@@ -77,8 +78,8 @@ export function Ticket({
             <span className="text-xs font-semibold uppercase tracking-[0.2em] text-tinta/70">Turno</span>
             <span className="monto font-display text-3xl leading-tight">{data.code ?? EMPTY}</span>
           </h2>
-          <span className="pt-1 font-display text-lg text-botella" aria-hidden>
-            Villa
+          <span className="pt-1 text-right font-display text-lg leading-tight text-botella" aria-hidden>
+            {BUSINESS_NAME}
           </span>
         </header>
         <div

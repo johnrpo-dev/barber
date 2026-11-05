@@ -163,7 +163,9 @@ const startInput = z.object({
   name: z.string().max(120),
   phone: z.string().max(30),
   email: z.union([z.literal(""), z.email("El correo no es válido")]).optional(),
-  consents: z.object({ dataProcessing: z.boolean(), reminders: z.boolean(), marketing: z.boolean() }),
+  // `reminders` se acepta por compatibilidad con formularios viejos pero no cuenta: Barbería Villa no
+  // envía recordatorios (decisión del dueño, sprint 6), solo el código, la confirmación y los avisos.
+  consents: z.object({ dataProcessing: z.boolean(), reminders: z.boolean().optional(), marketing: z.boolean() }),
   turnstileToken: z.string().max(2048),
   formId: uuid,
 });
@@ -174,7 +176,8 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
   return runAction(async () => {
     const input = startInput.parse(raw);
     // Lo que se puede validar sin gastar el token de Turnstile ni escribir nada.
-    assertBookingConsent(input.consents);
+    const consents = { ...input.consents, reminders: false };
+    assertBookingConsent(consents);
     assertValidClientName(input.name);
     if (!publicMobile(input.phone)) throw new InvalidClientError(PUBLIC_MESSAGES.phone);
     const scope = await bookingScope();
@@ -204,7 +207,7 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
         name: input.name,
         phone: input.phone,
         email: input.email || null,
-        consents: input.consents,
+        consents,
         formId: input.formId,
         browserHash: hashBrowserCookie(cookie),
         ip,

@@ -3,6 +3,8 @@
 // víctima no recibe texto del atacante) y las demás llevan solo el primer nombre saneado.
 // Los parámetros llegan ya formateados (fecha y hora en la zona de la sede) y siempre como texto.
 
+import { BUSINESS_NAME } from "@/domain/brand";
+
 export const NOTIFICATION_TEMPLATES = [
   "otp",
   "booking_confirmed",
@@ -69,14 +71,14 @@ type Get = (key: string) => string;
 
 const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
   otp: (p) => ({
-    subject: `Tu código de Villa: ${p("code")}`,
+    subject: `Tu código de ${BUSINESS_NAME}: ${p("code")}`,
     paragraphs: [`${p("code")} es tu código de verificación. Por tu seguridad, no lo compartas.`],
-    footer: "Este código caduca en 5 minutos. Si no estás reservando en Villa, ignora este mensaje.",
+    footer: `Este código caduca en 5 minutos. Si no estás reservando en ${BUSINESS_NAME}, ignora este mensaje.`,
   }),
   booking_confirmed: (p) => ({
     subject: `Cita confirmada: ${p("date")} a las ${p("time")}`,
     paragraphs: [
-      `¡Listo, ${p("name")}! Tu cita en Villa quedó confirmada: ${p("service")} con ${p("staff")}, el ${p("date")} a las ${p("time")}. Tu código de turno es ${p("ticket")}.`,
+      `¡Listo, ${p("name")}! Tu cita en ${BUSINESS_NAME} quedó confirmada: ${p("service")} con ${p("staff")}, el ${p("date")} a las ${p("time")}. Tu código de turno es ${p("ticket")}.`,
       "Si necesitas reprogramar o cancelar, usa el botón.",
     ],
     rows: [
@@ -89,22 +91,22 @@ const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
     button: { label: "Ver mi cita", url: p("url") },
   }),
   reminder_24h: (p) => ({
-    subject: `Mañana a las ${p("time")}: tu turno en Villa`,
+    subject: `Mañana a las ${p("time")}: tu turno en ${BUSINESS_NAME}`,
     paragraphs: [
-      `Hola, ${p("name")}. Te esperamos mañana a las ${p("time")} en Villa para tu ${p("service")} con ${p("staff")}.`,
+      `Hola, ${p("name")}. Te esperamos mañana a las ${p("time")} en ${BUSINESS_NAME} para tu ${p("service")} con ${p("staff")}.`,
       "Si no puedes venir, avísanos desde el botón y liberamos el turno.",
     ],
     button: { label: "Ver mi cita", url: p("url") },
   }),
   reminder_2h: (p) => ({
     subject: `Hoy a las ${p("time")}: te esperamos`,
-    paragraphs: [`Hola, ${p("name")}. Tu turno en Villa es hoy a las ${p("time")}. Estamos en ${p("address")}. ¡Nos vemos!`],
+    paragraphs: [`Hola, ${p("name")}. Tu turno en ${BUSINESS_NAME} es hoy a las ${p("time")}. Estamos en ${p("address")}. ¡Nos vemos!`],
     button: { label: "Ver mi cita", url: p("url") },
   }),
   appointment_rescheduled: (p) => ({
     subject: `Cita reprogramada: ${p("date")} a las ${p("time")}`,
     paragraphs: [
-      `Hola, ${p("name")}. Movimos tu cita en Villa: ${p("service")} con ${p("staff")}, el ${p("date")} a las ${p("time")}.`,
+      `Hola, ${p("name")}. Movimos tu cita en ${BUSINESS_NAME}: ${p("service")} con ${p("staff")}, el ${p("date")} a las ${p("time")}.`,
       "Si necesitas otro cambio, usa el botón.",
     ],
     rows: [
@@ -125,7 +127,7 @@ const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
     paragraphs: [`Lo sentimos, ${p("name")}. Tuvimos que cancelar tu cita del ${p("date")} a las ${p("time")}. Escríbenos y te buscamos otro turno.`],
   }),
   sale_receipt: (p) => ({
-    subject: `Tu recibo de Villa: ${p("total")}`,
+    subject: `Tu recibo de ${BUSINESS_NAME}: ${p("total")}`,
     paragraphs: [`Gracias por venir, ${p("name")}. Este es el recibo N.º ${p("number")} del ${p("date")}: ${p("items")}. Total ${p("total")}, pagado con ${p("payment")}.`],
     rows: [
       ["Recibo N.º", p("number")],
@@ -167,10 +169,10 @@ function html(copy: EmailCopy): string {
   return (
     `<!doctype html><html lang="es"><body style="margin:0;background:${C.hueso};color:${C.tinta};font-family:Georgia,serif">` +
     `<div style="max-width:480px;margin:0 auto;padding:24px 16px">` +
-    `<p style="margin:0 0 4px;font-size:24px">Villa</p><div style="height:2px;background:${C.laton};margin:0 0 24px"></div>` +
+    `<p style="margin:0 0 4px;font-size:24px">${BUSINESS_NAME}</p><div style="height:2px;background:${C.laton};margin:0 0 24px"></div>` +
     `<div style="background:${C.papel};border-radius:16px;padding:24px;font-family:system-ui,sans-serif;font-size:16px;line-height:1.5">` +
     `${paragraphs}${rows}${button}${footer}</div>` +
-    `<p style="margin:16px 0 0;font-family:system-ui,sans-serif;font-size:13px;opacity:.7">Villa Barbería. Mensaje de servicio sobre tu visita.</p>` +
+    `<p style="margin:16px 0 0;font-family:system-ui,sans-serif;font-size:13px;opacity:.7">${BUSINESS_NAME}. Mensaje de servicio sobre tu visita.</p>` +
     `</div></body></html>`
   );
 }
@@ -180,7 +182,7 @@ function text(copy: EmailCopy): string {
   if (copy.rows) parts.push(copy.rows.map(([k, v]) => `${k}: ${v}`).join("\n"));
   if (copy.button) parts.push(`${copy.button.label}: ${copy.button.url}`);
   if (copy.footer) parts.push(copy.footer);
-  parts.push("Villa Barbería");
+  parts.push(BUSINESS_NAME);
   return parts.join("\n\n");
 }
 

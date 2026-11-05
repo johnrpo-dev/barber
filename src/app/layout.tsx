@@ -2,13 +2,14 @@ import type { Metadata, Viewport } from "next";
 import { Fraunces, Public_Sans } from "next/font/google";
 import { connection } from "next/server";
 import "./globals.css";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces" });
 const publicSans = Public_Sans({ subsets: ["latin"], variable: "--font-public-sans" });
 
 export const metadata: Metadata = {
-  title: "Villa Barbería",
-  description: "Reserva tu cita en Villa.",
+  title: BUSINESS_NAME,
+  description: `Reserva tu cita en ${BUSINESS_NAME}.`,
 };
 
 export const viewport: Viewport = {

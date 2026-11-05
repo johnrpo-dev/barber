@@ -16,6 +16,7 @@ import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
 import { longDate } from "../agenda/_components/slot-picker";
 import { type ClientChoice, ClientPicker, clientIsReady } from "../agenda/_components/client-picker";
 import { checkoutAction, loadCheckout, loadWalkInCheckout } from "./actions";
+import { BUSINESS_NAME } from "@/domain/brand";
 
 // Hoja de cobro (docs/sprint-4-cobro-caja.md §7 y §9). Caso típico en 3 toques: la cita → "Cobrar"
 // → "Cobrar $X" (el medio ya viene elegido). Todo lo que se ve aquí es vista previa con las mismas
@@ -1172,7 +1173,7 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
   useEffect(() => headingRef.current?.focus(), []);
 
   const text = [
-    "Villa · Recibo",
+    `${BUSINESS_NAME} · Recibo`,
     longDate(receipt.businessDate),
     "",
     ...receipt.lines.map((l) => `${l.description}: ${l.netLabel}`),
@@ -1186,7 +1187,7 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
   async function share() {
     try {
       if (typeof navigator !== "undefined" && "share" in navigator) {
-        await navigator.share({ title: "Recibo de Villa", text });
+        await navigator.share({ title: `Recibo de ${BUSINESS_NAME}`, text });
         return;
       }
     } catch (err) {
