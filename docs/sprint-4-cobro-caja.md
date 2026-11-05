@@ -429,7 +429,7 @@ Las revisiones de cierre del sprint encontraron fallas en la caja y en la base. 
 
 **Cobro sin cita (walk-in).**
 
-- Botón "Cobrar sin cita" en Caja y "Cobrar" en Agenda. En la hoja se eligen los servicios y quién los hizo; el cliente es opcional (buscarlo o crearlo con nombre y celular).
+- Botón "Nuevo cobro" en Caja (antes "Cobrar sin cita"; desde el sprint 6 Caja también lista las citas "Por cobrar") y "Cobrar" en Agenda. En la hoja se eligen los servicios y quién los hizo; el cliente es opcional (buscarlo o crearlo con nombre y celular).
 - Mismo cálculo (`priceCheckout`), mismo asiento, misma clave de idempotencia y la misma verificación de totales en la base. `checkoutAction` acepta `appointmentId: null`, `client` (`existing`, `new` o `none`) y hasta 20 servicios.
 - Un cliente nuevo se crea (o se encuentra por celular) dentro de la transacción del cobro: si el cobro falla, no queda creado.
 - Acción nueva: `loadWalkInCheckout`.

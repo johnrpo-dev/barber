@@ -96,8 +96,12 @@ export interface CashView {
   canBankExpense: boolean;
   canCloseDay: boolean;
   canReopenDay: boolean;
+  /** Citas de hoy en la silla o terminadas, sin cobrar: lo primero que ve quien cobra. */
+  toCharge: { appointmentId: string; timeLabel: string; clientName: string | null; serviceName: string; staffName: string; priceLabel: string; inChair: boolean }[];
   daySales: {
     saleId: string;
+    /** Para abrir el recibo (/panel/ventas/<publicId>). */
+    publicId: string;
     atLabel: string;
     clientName: string | null;
     totalLabel: string;
@@ -120,7 +124,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
   const staff = await requirePermission("ledger.post");
   return runAction(async () => {
     // Todo en UNA transacción REPEATABLE READ de solo lectura (L3): una sola foto del libro.
-    const { day, summary, closed, owed, categories, sales, ledger, flagged } = await cashViewData(database(), staff.locationId);
+    const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge } = await cashViewData(database(), staff.locationId);
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -205,8 +209,18 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       canBankExpense: can(staff.role, "expenses.bank"),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
+      toCharge: toCharge.map((a) => ({
+        appointmentId: a.appointmentId.toString(),
+        timeLabel: atLabel(a.start, tz, day.businessDate),
+        clientName: a.clientName,
+        serviceName: a.serviceName,
+        staffName: a.staffName,
+        priceLabel: moneyLabel(a.price),
+        inChair: a.status === "in_chair",
+      })),
       daySales: sales.map((s) => ({
         saleId: s.saleId.toString(),
+        publicId: s.publicId,
         atLabel: atLabel(s.at, tz, day.businessDate),
         clientName: s.clientName,
         totalLabel: moneyLabel(s.total),

@@ -1,6 +1,7 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, Banknote, CalendarCheck, CalendarX, CheckCircle2, EyeOff, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarX, CheckCircle2, EyeOff, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
+import Link from "next/link";
 import { type FormEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { format, money, PESO } from "@/domain/money";
@@ -10,6 +11,7 @@ import { callAction, MoneyField, newKey, onlyDigits, unitsOf } from "../_compone
 import { useReauth } from "../_components/reauth";
 import { SelectField } from "../_components/select-field";
 import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { plural } from "../_components/dates";
 import { longDate } from "../agenda/_components/slot-picker";
 import { requestVoidAction } from "../cobro/actions";
 import { CheckoutSheet } from "../cobro/checkout-sheet";
@@ -25,8 +27,10 @@ import {
   reopenDayAction,
 } from "./actions";
 
-// Caja (docs/sprint-4-cobro-caja.md §4 y §7): estado del turno, efectivo esperado (sale de SQL),
-// movimientos, gastos, propinas, consignaciones, cierre con conteo, cierre del día y ventas del día.
+// Caja (docs/sprint-4-cobro-caja.md §4 y §7). Es la pantalla de cobro de recepción: arriba "Nuevo
+// cobro" y "Por cobrar" (citas en la silla o terminadas, sin venta), luego los cobros de hoy con su
+// recibo, y abajo el turno: efectivo esperado (sale de SQL), movimientos, gastos, propinas,
+// consignaciones, cierre con conteo y cierre del día.
 // Los montos que se ven vienen ya formateados del servidor; la interfaz solo previsualiza la diferencia.
 
 type OkData<R> = R extends { ok: true; data: infer D } ? D : never;
@@ -69,6 +73,8 @@ export function CashBoard({ initial }: { initial: CashView }) {
   const [sheet, setSheet] = useState<SheetState>(null);
   /** Cobro sin cita desde la caja (walk-in que no pasó por la agenda). */
   const [walkIn, setWalkIn] = useState(false);
+  /** Cobro de una cita de "Por cobrar". */
+  const [charging, setCharging] = useState<{ id: string; clientName: string | null } | null>(null);
 
   const refresh = useCallback(async () => {
     const r = await callAction(() => loadCashView());
@@ -98,15 +104,136 @@ export function CashBoard({ initial }: { initial: CashView }) {
             <Chip tone="muted" icon={<Lock size={14} aria-hidden />}>
               Día cerrado
             </Chip>
+          ) : s ? (
+            <Chip tone="success" icon={<LockOpen size={14} aria-hidden />}>
+              Caja abierta
+            </Chip>
           ) : (
-            <Chip tone="success" icon={<CalendarCheck size={14} aria-hidden />}>
-              Día abierto
+            <Chip tone="muted" icon={<Lock size={14} aria-hidden />}>
+              Caja cerrada
             </Chip>
           )
         }
       />
 
-      {/* Turno */}
+      {/* Caja cerrada: lo primero es abrirla (sin ella no entra efectivo). */}
+      {!s && !view.dayClosed ? (
+        <div className="flex flex-col gap-3 rounded-xl border border-cuero/30 bg-cuero/5 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <Lock size={20} className="mt-0.5 shrink-0 text-cuero" aria-hidden />
+            <div className="flex flex-col gap-0.5">
+              <p className="font-semibold">Abre la caja para empezar</p>
+              <p className="text-sm text-tinta/80">Cuenta la base. Mientras esté cerrada solo se cobra con tarjeta, transferencia o billetera.</p>
+            </div>
+          </div>
+          <Btn className="shrink-0" onPress={() => setSheet({ kind: "open" })}>
+            <LockOpen size={18} aria-hidden /> Abrir caja
+          </Btn>
+        </div>
+      ) : null}
+      {view.dayClosed ? <p className={cx(card, "p-4 text-sm text-tinta/80")}>El día está cerrado: no acepta cobros ni movimientos.</p> : null}
+
+      {/* Cobrar: la acción principal de la pantalla */}
+      <section aria-labelledby="cobrar" className="flex flex-col gap-2">
+        <h2 id="cobrar" className="sr-only">
+          Cobrar
+        </h2>
+        <Btn size="lg" className="h-16 w-full text-lg" onPress={() => setWalkIn(true)} isDisabled={view.dayClosed}>
+          <Plus size={22} aria-hidden /> Nuevo cobro
+        </Btn>
+        <p className="text-center text-sm text-tinta/70">Para quien llega sin cita: eliges servicios, barbero y medio de pago.</p>
+      </section>
+
+      {/* Por cobrar: citas de hoy en la silla o terminadas, sin venta */}
+      <section aria-labelledby="por-cobrar" className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 id="por-cobrar" className="font-display text-2xl leading-tight">
+            Por cobrar
+          </h2>
+          {view.toCharge.length > 0 ? <span className="monto text-sm font-semibold text-cuero">{plural(view.toCharge.length, "cita", "citas")}</span> : null}
+        </div>
+        {view.toCharge.length === 0 ? (
+          <p className={cx(card, "p-4 text-sm text-tinta/70")}>Nadie esperando cobro. Las citas aparecen aquí cuando el cliente pasa a la silla en la agenda.</p>
+        ) : (
+          <ul className={cx(card, "divide-y divide-tinta/10")} role="list">
+            {view.toCharge.map((a) => (
+              <li key={a.appointmentId} className="flex items-center gap-3 px-4 py-3">
+                <span className="monto w-12 shrink-0 text-sm text-tinta/70">{a.timeLabel}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold">{a.clientName ?? "Sin nombre"}</p>
+                  <p className="truncate text-xs text-tinta/70">
+                    {a.serviceName} · {a.staffName} · {a.inChair ? "en la silla" : "terminó"}
+                  </p>
+                </div>
+                <span className="monto hidden shrink-0 font-semibold min-[400px]:inline">{a.priceLabel}</span>
+                <Btn size="sm" className="h-11 shrink-0" onPress={() => setCharging({ id: a.appointmentId, clientName: a.clientName })} isDisabled={view.dayClosed}>
+                  Cobrar<span className="sr-only"> a {a.clientName ?? "la cita"} de las {a.timeLabel}</span>
+                </Btn>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Cobros de hoy */}
+      <section aria-labelledby="ventas" className="flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 id="ventas" className="font-display text-2xl leading-tight">
+            Cobros de hoy
+          </h2>
+          {view.daySales.length > 0 ? <span className="monto text-sm text-tinta/70">{plural(view.daySales.filter((x) => x.status === "paid").length, "cobro", "cobros")}</span> : null}
+        </div>
+        {view.daySales.length === 0 ? (
+          <p className={cx(card, "p-4 text-sm text-tinta/70")}>Todavía no hay cobros hoy.</p>
+        ) : (
+          <ul className={cx(card, "divide-y divide-tinta/10")} role="list">
+            {view.daySales.map((sale) => (
+              <li key={sale.saleId} className="flex flex-col gap-2 px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold">{sale.clientName ?? "Sin nombre"}</p>
+                    <p className="text-xs text-tinta/70">
+                      <span className="monto">{sale.atLabel}</span> · Cobró {sale.chargedBy}
+                    </p>
+                  </div>
+                  <span className={cx("monto shrink-0 font-semibold", sale.status === "voided" && "text-tinta/60 line-through")}>{sale.totalLabel}</span>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  {sale.status === "voided" ? (
+                    <Chip tone="muted" icon={<Undo2 size={12} aria-hidden />}>
+                      Anulada
+                    </Chip>
+                  ) : sale.voidRequested ? (
+                    <Chip tone="primary" icon={<TriangleAlert size={12} aria-hidden />}>
+                      Anulación pedida
+                    </Chip>
+                  ) : (
+                    <Chip tone="success" icon={<CheckCircle2 size={12} aria-hidden />}>
+                      Pagada
+                    </Chip>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <Link
+                      href={`/panel/ventas/${sale.publicId}`}
+                      className="inline-flex h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-cuero outline-none hover:bg-tinta/5 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-cuero"
+                    >
+                      <Printer size={16} aria-hidden /> Recibo<span className="sr-only"> de {sale.clientName ?? "la venta"}</span>
+                    </Link>
+                    {sale.status === "paid" && !sale.voidRequested ? (
+                      <Btn variant="ghost" size="sm" className="h-11" onPress={() => setSheet({ kind: "void", sale })}>
+                        Pedir anulación<span className="sr-only"> de {sale.clientName ?? "la venta"} por {sale.totalLabel}</span>
+                      </Btn>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Turno de caja: estado, conteo, gastos, propinas, consignaciones y cierre */}
+      <h2 className="-mb-3 mt-2 text-xs font-semibold uppercase tracking-[0.16em] text-tinta/70">Turno de caja</h2>
       {s ? (
         <section aria-labelledby="turno" className={cx(card, "flex flex-col gap-5 p-5")}>
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -226,16 +353,12 @@ export function CashBoard({ initial }: { initial: CashView }) {
             </dl>
           ) : null}
           <div className="flex flex-col gap-2 min-[400px]:flex-row">
-            <Btn size="lg" className="flex-1" onPress={() => setSheet({ kind: "open" })} isDisabled={view.dayClosed}>
-              <LockOpen size={18} aria-hidden /> Abrir caja
-            </Btn>
             {view.canBankExpense ? (
               <Btn variant="secondary" size="lg" className="flex-1" onPress={() => setSheet({ kind: "expense" })} isDisabled={view.dayClosed}>
                 <Receipt size={18} aria-hidden /> Gasto desde el banco
               </Btn>
             ) : null}
           </div>
-          {view.dayClosed ? <p className="text-sm text-tinta/70">El día está cerrado: no acepta movimientos.</p> : null}
         </section>
       )}
 
@@ -280,57 +403,6 @@ export function CashBoard({ initial }: { initial: CashView }) {
       {/* Cierres con diferencia grande: el dueño los revisa */}
       {view.flaggedSessions.length > 0 ? <FlaggedSessions sessions={view.flaggedSessions} onReviewed={done} /> : null}
 
-      {/* Ventas del día */}
-      <section aria-labelledby="ventas" className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 id="ventas" className="font-display text-2xl leading-tight">
-            Ventas del día
-          </h2>
-          <Btn variant="secondary" onPress={() => setWalkIn(true)} isDisabled={view.dayClosed}>
-            <Banknote size={18} aria-hidden /> Cobrar sin cita
-          </Btn>
-        </div>
-        {view.daySales.length === 0 ? (
-          <p className="text-sm text-tinta/70">No hay ventas registradas hoy.</p>
-        ) : (
-          <ul className={cx(card, "divide-y divide-tinta/10")}>
-            {view.daySales.map((sale) => (
-              <li key={sale.saleId} className="flex flex-col gap-2 px-4 py-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold">{sale.clientName ?? "Sin nombre"}</p>
-                    <p className="text-xs text-tinta/70">
-                      <span className="monto">{sale.atLabel}</span> · Cobró {sale.chargedBy}
-                    </p>
-                  </div>
-                  <span className={cx("monto shrink-0 font-semibold", sale.status === "voided" && "text-tinta/60 line-through")}>{sale.totalLabel}</span>
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  {sale.status === "voided" ? (
-                    <Chip tone="muted" icon={<Undo2 size={12} aria-hidden />}>
-                      Anulada
-                    </Chip>
-                  ) : sale.voidRequested ? (
-                    <Chip tone="primary" icon={<TriangleAlert size={12} aria-hidden />}>
-                      Anulación pedida
-                    </Chip>
-                  ) : (
-                    <Chip tone="success" icon={<CheckCircle2 size={12} aria-hidden />}>
-                      Pagada
-                    </Chip>
-                  )}
-                  {sale.status === "paid" && !sale.voidRequested ? (
-                    <Btn variant="ghost" size="sm" className="h-11" onPress={() => setSheet({ kind: "void", sale })}>
-                      Solicitar anulación<span className="sr-only"> de {sale.clientName ?? "la venta"} por {sale.totalLabel}</span>
-                    </Btn>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
       {/* Día contable */}
       {view.canCloseDay || view.canReopenDay ? (
         <section aria-labelledby="dia" className={cx(card, "flex flex-col gap-3 p-5")}>
@@ -366,10 +438,12 @@ export function CashBoard({ initial }: { initial: CashView }) {
 
       {/* Hojas */}
       <CheckoutSheet
-        appointmentId={null}
-        walkIn={walkIn}
+        appointmentId={charging?.id ?? null}
+        clientName={charging?.clientName}
+        walkIn={walkIn && charging === null}
         onClose={(charged) => {
           setWalkIn(false);
+          setCharging(null);
           if (charged) void refresh();
         }}
       />

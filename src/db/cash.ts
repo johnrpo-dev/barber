@@ -22,7 +22,7 @@ import {
 } from "./schema";
 import { listExpenseCategories } from "./checkout-settings";
 import { serializable } from "./serializable";
-import { sumAsBigint } from "./sql";
+import { rowsOf, sumAsBigint } from "./sql";
 import type { Db } from "./types";
 
 // Caja (docs/sprint-4-cobro-caja.md §3–§5). Cada operación corre en una transacción SERIALIZABLE
@@ -645,11 +645,47 @@ export async function lastClosedSession(db: Db, locationId: bigint) {
   return row ? { closedAt: row.closedAt!, counted: row.counted!, expected: row.expected!, difference: row.difference!, note: row.note } : null;
 }
 
+/**
+ * Citas del día contable que ya se pueden cobrar (en la silla o terminadas, como exige checkout)
+ * y no tienen venta vigente: la lista "Por cobrar" de la caja, en orden de hora.
+ */
+export async function appointmentsToCharge(db: Db, locationId: bigint, day: string) {
+  const rows = rowsOf<{ id: string; start: string; status: "in_chair" | "completed"; client: string | null; service: string; staff: string; price: string }>(
+    await db.execute(sql`
+      select a.id::text, lower(a.during) as start, a.status, c.name as client, sv.name as service,
+             m.display_name as staff, sv.price::text
+        from appointments a
+        join locations l on l.id = a.location_id
+        join services sv on sv.location_id = a.location_id and sv.id = a.service_id
+        join staff_members m on m.location_id = a.location_id and m.id = a.staff_id
+        left join clients c on c.location_id = a.location_id and c.id = a.client_id
+       where a.location_id = ${locationId}::bigint
+         and a.status in ('in_chair', 'completed')
+         and (lower(a.during) at time zone l.timezone)::date = ${day}::date
+         and not exists (
+           select 1 from sales s
+            where s.location_id = a.location_id and s.appointment_id = a.id and s.status = 'paid'
+         )
+       order by lower(a.during), a.id
+    `),
+  );
+  return rows.map((r) => ({
+    appointmentId: BigInt(r.id),
+    start: new Date(r.start),
+    status: r.status,
+    clientName: r.client,
+    serviceName: r.service,
+    staffName: r.staff,
+    price: BigInt(r.price),
+  }));
+}
+
 /** Ventas del día contable con quién cobró y si tienen una anulación pendiente. */
 export async function daySales(db: Db, locationId: bigint, day: string) {
   return db
     .select({
       saleId: sales.id,
+      publicId: sales.publicId,
       at: sales.createdAt,
       clientName: clients.name,
       total: sales.totalPaid,
@@ -681,7 +717,8 @@ export async function cashViewData(db: Db, locationId: bigint, now: Date = new D
       const salesOfDay = await daySales(tx, locationId, day.businessDate);
       const ledger = await ledgerCash(tx, locationId);
       const flagged = await sessionsNeedingReview(tx, locationId);
-      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged };
+      const toCharge = await appointmentsToCharge(tx, locationId, day.businessDate);
+      return { day, summary, closed, owed, categories, sales: salesOfDay, ledger, flagged, toCharge };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
