@@ -11,7 +11,8 @@ import { createTestDb, dbError } from "./testing";
 import type { Db } from "./types";
 import { decideVoid, requestVoid } from "./voids";
 import { openCashSession } from "./cash";
-import { fromUnits } from "@/domain/money";
+import { fromUnits, money } from "@/domain/money";
+import { updateCheckoutRules } from "./checkout-settings";
 
 // Supresión a solicitud del titular (docs/sprint-5-comisiones-informes.md §12.8): los datos
 // personales salen de todas partes y lo contable no cambia en un solo centavo. Corre como villa_app,
@@ -153,6 +154,53 @@ describe("suprimir los datos de un cliente", () => {
     expect(await dbError(client.query(`update appointment_events set reason = null where id = $1`, [rows[0]!.id]))).toMatch(/permission denied|permiso denegado/);
     expect(await dbError(client.query(`update void_requests set reason = 'x' where location_id = $1`, [String(shop.locationId)]))).toMatch(/permission denied|permiso denegado/);
     expect(await dbError(client.query(`update cash_movements set description = 'x' where location_id = $1`, [String(shop.locationId)]))).toMatch(/permission denied|permiso denegado/);
+  });
+
+  it("borra el motivo del descuento y olvida los dispositivos recordados, sin tocar un peso", { timeout: 120_000 }, async () => {
+    const shop = await newShop();
+    await updateCheckoutRules(db, shop.locationId, { commissionBase: "net", maxDiscountBps: 3_000n, receptionCanDiscount: true, tipsBearCardFees: false });
+    const appointmentId = await chairAppointment(db, shop);
+    const { saleId } = await checkout(db, {
+      ...simpleCheckout(shop, appointmentId),
+      discounts: [{ key: "appointment", amount: fromUnits(3_000n), reason: `Amigo de ${SECRET}` }],
+      payments: [{ methodId: shop.methods.card, amount: money(fromUnits(27_000n).minor) }],
+    });
+    const loc = String(shop.locationId);
+    const cli = String(shop.client);
+    await client.query(`insert into client_devices (location_id, client_id, token_hash, expires_at) values ($1, $2, $3, now() + interval '180 days')`, [loc, cli, HEX("e")]);
+    const amounts = `select unit_price::text, discount::text, net::text, commission::text from sale_lines where sale_id = $1`;
+    const before = await one(amounts, [String(saleId)]);
+
+    await erase(shop);
+
+    expect(await one(`select discount_reason from sale_lines where sale_id = $1`, [String(saleId)])).toEqual({ discount_reason: "[suprimido]" });
+    expect(await one(amounts, [String(saleId)])).toEqual(before);
+    expect(await one(`select count(*)::int as n from client_devices where client_id = $1 and revoked_at is null`, [cli])).toEqual({ n: 0 });
+  });
+
+  it("sale_lines: sobre un cliente vigente sigue cerrada; anonimizado, solo pasa el vaciado exacto del motivo", { timeout: 120_000 }, async () => {
+    const app = { db, client };
+    ({ db, client } = await createTestDb());
+    try {
+      const shop = await newShop();
+      await updateCheckoutRules(db, shop.locationId, { commissionBase: "net", maxDiscountBps: 3_000n, receptionCanDiscount: true, tipsBearCardFees: false });
+      const appointmentId = await chairAppointment(db, shop);
+      const { saleId } = await checkout(db, {
+        ...simpleCheckout(shop, appointmentId),
+        discounts: [{ key: "appointment", amount: fromUnits(3_000n), reason: "Cliente frecuente" }],
+        payments: [{ methodId: shop.methods.card, amount: money(fromUnits(27_000n).minor) }],
+      });
+      const sale = String(saleId);
+      expect(await dbError(client.query(`update sale_lines set discount_reason = '[suprimido]' where sale_id = $1`, [sale]))).toMatch(/no admite UPDATE/);
+      await client.query(`update clients set anonymized_at = now() where id = $1`, [String(shop.client)]);
+      expect(await dbError(client.query(`update sale_lines set discount_reason = 'otro' where sale_id = $1`, [sale]))).toMatch(/no admite UPDATE/);
+      expect(await dbError(client.query(`update sale_lines set discount_reason = '[suprimido]', net = net + 100 where sale_id = $1`, [sale]))).toMatch(/no admite UPDATE/);
+      await client.query(`update sale_lines set discount_reason = '[suprimido]' where sale_id = $1`, [sale]);
+      expect(await dbError(client.query(`delete from sale_lines where sale_id = $1`, [sale]))).toMatch(/no admite DELETE/);
+    } finally {
+      await client.close();
+      ({ db, client } = app);
+    }
   });
 
   it("los triggers: sobre un cliente vigente todo sigue cerrado; anonimizado, solo pasa el vaciado exacto", { timeout: 120_000 }, async () => {

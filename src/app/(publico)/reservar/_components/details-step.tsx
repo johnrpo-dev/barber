@@ -1,6 +1,7 @@
 "use client";
 
 import { Check } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Checkbox, Form, Input, Label, Text, TextField } from "react-aria-components";
 import { Btn, cx, field } from "@/app/panel/_components/ui";
@@ -9,9 +10,10 @@ import { ErrorSummary, type SummaryItem } from "../../_components/error-summary"
 import { formatPhone, phoneDigits } from "../../_lib/ui";
 import { useTurnstile } from "./turnstile";
 
-// Paso "Datos": nombre, celular, correo opcional y las tres autorizaciones (todas sin marcar;
-// solo la de tratamiento es obligatoria, Ley 1581). "Enviar código" corre Turnstile y entrega
-// el token al flujo, que crea la retención.
+// Paso "Tus datos": a la vista solo nombre, celular, la autorización obligatoria (Ley 1581) y la de
+// recordatorios; el correo y las promociones esperan en "Más opciones". Ninguna casilla viene
+// marcada. "Recibir código" corre Turnstile y entrega el token al flujo, que crea la retención.
+// Es la única vez: después este navegador queda recordado y no se vuelve a pedir.
 
 export interface Details {
   name: string;
@@ -57,6 +59,7 @@ export function DetailsStep({
   const [attempt, setAttempt] = useState(0);
   const summaryRef = useRef<HTMLDivElement>(null);
   const { widget, getToken } = useTurnstile(turnstileSiteKey);
+  const [more, setMore] = useState(() => !!value.email || value.consents.marketing);
 
   const items: SummaryItem[] = [
     ...(["name", "phone", "email", "dataProcessing"] as const).flatMap((name) => (errors[name] ? [{ name, message: errors[name] }] : [])),
@@ -77,7 +80,10 @@ export function DetailsStep({
     setHumanError(null);
     const valid = check(e.currentTarget, validate(value));
     setAttempt((n) => n + 1);
-    if (!valid) return;
+    if (!valid) {
+      if (errors.email || validate(value).email) setMore(true);
+      return;
+    }
     setChecking(true);
     let token: string;
     try {
@@ -145,24 +151,6 @@ export function DetailsStep({
         <FieldMessage>{errors.phone}</FieldMessage>
       </TextField>
 
-      <TextField
-        name="email"
-        type="email"
-        inputMode="email"
-        autoComplete="email"
-        value={value.email}
-        onChange={(v) => {
-          onChange({ email: v });
-          clear("email");
-        }}
-        isInvalid={!!errors.email}
-        maxLength={120}
-        className={field.root}
-      >
-        <Label className={field.label}>Correo (opcional)</Label>
-        <Input className={field.input} />
-        <FieldMessage>{errors.email}</FieldMessage>
-      </TextField>
 
       <fieldset className="flex flex-col gap-2 rounded-xl border border-tinta/10 bg-papel p-4">
         <legend className="px-1 text-sm font-semibold">Autorizaciones</legend>
@@ -187,9 +175,6 @@ export function DetailsStep({
         <ConsentBox name="reminders" isSelected={value.consents.reminders} onChange={(on) => setConsent("reminders", on)}>
           Quiero recordatorios de mi cita por WhatsApp o correo.
         </ConsentBox>
-        <ConsentBox name="marketing" isSelected={value.consents.marketing} onChange={(on) => setConsent("marketing", on)}>
-          Quiero recibir promociones y novedades de Villa.
-        </ConsentBox>
         <p className="pt-1 text-sm text-tinta/70">
           Puedes cambiar esto cuando quieras. Lee nuestra{" "}
           <a href="/privacidad" target="_blank" rel="noopener" className="font-semibold text-cuero underline underline-offset-4">
@@ -199,10 +184,46 @@ export function DetailsStep({
         </p>
       </fieldset>
 
+      <div className="flex flex-col gap-4">
+        <button
+          type="button"
+          aria-expanded={more}
+          aria-controls="mas-opciones"
+          onClick={() => setMore((v) => !v)}
+          className="inline-flex min-h-11 items-center gap-1.5 self-start text-sm font-semibold text-cuero underline-offset-4 hover:underline"
+        >
+          Más opciones (correo y promociones)
+          <ChevronDown size={16} aria-hidden className={cx("transition-transform", more && "rotate-180")} />
+        </button>
+        <div id="mas-opciones" hidden={!more} className="flex flex-col gap-4">
+          <TextField
+            name="email"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            value={value.email}
+            onChange={(v) => {
+              onChange({ email: v });
+              clear("email");
+            }}
+            isInvalid={!!errors.email}
+            maxLength={120}
+            className={field.root}
+          >
+            <Label className={field.label}>Correo (opcional)</Label>
+            <Input className={field.input} />
+            <FieldMessage>{errors.email}</FieldMessage>
+          </TextField>
+          <ConsentBox name="marketing" isSelected={value.consents.marketing} onChange={(on) => setConsent("marketing", on)}>
+            Quiero recibir promociones y novedades de Villa.
+          </ConsentBox>
+        </div>
+      </div>
+
       {widget}
 
       <Btn type="submit" size="xl" className="w-full" isPending={pending || checking}>
-        {pending || checking ? "Enviando código…" : "Enviar código"}
+        {pending || checking ? "Enviando código…" : "Recibir código por WhatsApp"}
       </Btn>
     </Form>
   );

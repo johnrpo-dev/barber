@@ -630,6 +630,30 @@ export const appointmentLinks = pgTable(
   ],
 );
 
+/**
+ * Celular recordado en un navegador: tras verificar el código una vez, el cliente reserva desde ese
+ * dispositivo sin pedir otro. La base guarda solo el SHA-256 del token (la cookie lleva el token).
+ * Vence, se revoca con "No soy yo" y con la supresión de datos del cliente.
+ */
+export const clientDevices = pgTable(
+  "client_devices",
+  {
+    id: id(),
+    locationId: locationId(),
+    clientId: bigint("client_id", { mode: "bigint" }).notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    foreignKey({ name: "client_devices_client_fk", columns: [t.locationId, t.clientId], foreignColumns: [clients.locationId, clients.id] }),
+    check("client_devices_token_hash_check", hexCheck(t.tokenHash)),
+    index("client_devices_client_idx").on(t.locationId, t.clientId),
+  ],
+);
+
 /** Autorizaciones del cliente (Ley 1581). Solo-inserción: la última fila por propósito manda. */
 export const clientConsents = pgTable(
   "client_consents",

@@ -344,6 +344,9 @@ Al cerrar cada sprint corre una auditoría del agente de seguridad (solo lectura
 | Bloquear un número a propósito: 6 solicitudes con Turnstile resuelto lo dejan sin reservar en línea 24 h. Se acepta y queda la reserva por teléfono | Bajo | Aceptado |
 | Correr el primer backup en el bucket y **una restauración probada** con `cordura: OK` (el kit ya está en `deploy/backup/`) | Alto operativo | Lo corre el dueño al desplegar, antes de abrir al público |
 | Prueba de penetración completa contra el entorno propio desplegado | Medio | Antes del lanzamiento, sobre el VPS ya montado |
+| **Celular recordado en el navegador (sprint 6).** Tras verificar el código una vez, la cookie `villa_device` (httpOnly, 180 días, `SameSite=Lax`; la base guarda solo el SHA-256 del token) deja reservar sin código desde ese navegador. Quien robe la cookie puede reservar a nombre de esa persona (no ver ni cambiar sus citas: eso sigue en el enlace de gestión). Lo acotan Turnstile, los límites por IP y por celular, el tope de citas activas, "No soy yo" (revoca) y la supresión de datos (revoca todo) | Bajo | Aceptado: menos pasos para el cliente frecuente |
+| El código de verificación vuelve a la pantalla **solo** en desarrollo sin WhatsApp (`allowsDevFallbacks()` y sin `WHATSAPP_TOKEN`), para poder probar la reserva. En producción `allowsDevFallbacks()` es falso y la respuesta no lo trae | Bajo | Vigilar: nunca correr el portal público con `NODE_ENV=development` |
+| Recibo al cobrar: un reintento del mismo cobro (misma clave) con "Enviar el recibo" lo encola aunque el primer intento no lo pidiera. Es lo que permite mandarlo si el cobro pasó y la respuesta se perdió; `sale_receipt:<ULID>` impide que salga dos veces | Bajo | Aceptado (auditoría del sprint 6) |
 
 ## Riesgos y cuándo esta decisión deja de servir
 

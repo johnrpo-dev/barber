@@ -1,37 +1,41 @@
 "use client";
 
-import { Clock, MessageCircle, Scissors, UserRound } from "lucide-react";
+import { Clock, MessageCircle, Scissors } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Btn } from "@/app/panel/_components/ui";
-import type { PortalView } from "../../data";
-import { loadDaySummary, loadPublicSlots, startBooking } from "../../actions";
+import type { KnownClientView, PortalView } from "../../data";
+import { bookAsKnown, forgetDevice, loadDaySummary, loadPublicSlots, startBooking } from "../../actions";
 import { HoldTimer } from "../../_components/hold-timer";
 import { SlotChooser } from "../../_components/slot-chooser";
 import { StepHeading } from "../../_components/step-heading";
 import { Ticket } from "../../_components/ticket";
 import { capitalize, cx, isError, linkBtn, longDate, phoneDigits, safeCall, shortWeekdayDay, type SlotView } from "../../_lib/ui";
-import { ServiceStep, StaffStep } from "./choice-steps";
+import { ServiceStep, StaffPicker } from "./choice-steps";
 import { CodeStep, type Hold } from "./code-step";
 import { type Details, DetailsStep } from "./details-step";
+import { KnownStep } from "./known-step";
 
-// Flujo de reserva pública en una sola página (contrato §10):
-// Servicio → Barbero → Hora → Datos → Código → /cita/[token]?nueva=1.
-// Cada paso: foco al título, document.title y una entrada en el historial (el "atrás" de Android
-// vuelve al paso anterior). Lo escrito vive en memoria y en sessionStorage: volver no pierde nada.
+// Flujo de reserva pública en una sola página, con los menos pasos posibles:
+//   primera vez:    Servicio → Hora (con el barbero ahí mismo) → Tus datos → Código
+//   ya verificado:  Servicio → Hora → Confirmar (sin formulario ni código: cookie villa_device)
+// Tocar un servicio o un horario avanza solo. Cada paso: foco al título, document.title y una
+// entrada en el historial (el "atrás" de Android vuelve al paso anterior). Lo escrito vive en
+// memoria y en sessionStorage: volver no pierde nada.
 
-type StepId = "service" | "staff" | "time" | "details" | "code";
+type StepId = "service" | "time" | "details" | "code" | "confirm";
 
-const STEPS: { id: StepId; label: string; title: string }[] = [
-  { id: "service", label: "Servicio", title: "Elige el servicio" },
-  { id: "staff", label: "Barbero", title: "Elige tu barbero" },
-  { id: "time", label: "Hora", title: "Elige la hora" },
-  { id: "details", label: "Datos", title: "Tus datos" },
-  { id: "code", label: "Código", title: "Escribe el código" },
-];
-const ORDER = STEPS.map((s) => s.id);
+const STEP_META: Record<StepId, { label: string; title: string }> = {
+  service: { label: "Servicio", title: "Elige el servicio" },
+  time: { label: "Hora", title: "Elige la hora" },
+  details: { label: "Tus datos", title: "Tus datos" },
+  code: { label: "Código", title: "Escribe el código" },
+  confirm: { label: "Confirmar", title: "Confirma tu cita" },
+};
+const NEW_ORDER: StepId[] = ["service", "time", "details", "code"];
+const KNOWN_ORDER: StepId[] = ["service", "time", "confirm"];
 
-const STORAGE_KEY = "villa.reservar.v1";
+const STORAGE_KEY = "villa.reservar.v2";
 const HOLD_EXPIRED = "Se acabó el tiempo y liberamos el horario. Elige otro; tus datos siguen aquí.";
 
 export interface BookingPortal {
@@ -44,7 +48,7 @@ export interface BookingPortal {
 }
 
 interface FlowState {
-  v: 1;
+  v: 2;
   step: StepId;
   serviceId: string | null;
   staffId: string;
@@ -53,10 +57,8 @@ interface FlowState {
   slotLabel: string | null;
   details: Details;
   hold: Hold | null;
-  /** Clave de idempotencia de startBooking: se conserva en reintentos por red, se renueva tras una respuesta. */
+  /** Clave de idempotencia de la reserva: se conserva en reintentos por red, se renueva tras una respuesta. */
   formId: string;
-  /** El barbero llegó en la URL: su paso se salta (sigue disponible con "Cambiar"). */
-  skipStaff: boolean;
 }
 
 const newId = () =>
@@ -64,8 +66,8 @@ const newId = () =>
 
 function initialState(serviceId: string | null, staffId: string | null): FlowState {
   return {
-    v: 1,
-    step: serviceId ? (staffId ? "time" : "staff") : "service",
+    v: 2,
+    step: serviceId ? "time" : "service",
     serviceId,
     staffId: staffId ?? "any",
     date: null,
@@ -74,29 +76,24 @@ function initialState(serviceId: string | null, staffId: string | null): FlowSta
     details: { name: "", phone: "", email: "", consents: { dataProcessing: false, reminders: false, marketing: false } },
     hold: null,
     formId: newId(),
-    skipStaff: !!staffId,
   };
 }
 
-/** El paso más avanzado al que se puede llegar con lo que hay (p. ej. sin hora no hay "Datos"). */
-function reachable(s: FlowState, want: StepId): StepId {
-  const ok: Record<StepId, boolean> = {
-    service: true,
-    staff: !!s.serviceId,
-    time: !!s.serviceId,
-    details: !!s.serviceId && !!s.date && s.minute !== null,
-    code: !!s.hold,
-  };
-  let i = ORDER.indexOf(want);
-  while (i > 0 && !ok[ORDER[i]!]) i--;
-  return ORDER[Math.max(0, i)]!;
+/** El paso más avanzado al que se puede llegar con lo que hay (p. ej. sin hora no hay "Tus datos"). */
+function reachable(s: FlowState, want: StepId, order: StepId[]): StepId {
+  const hasSlot = !!s.serviceId && !!s.date && s.minute !== null;
+  const ok: Record<StepId, boolean> = { service: true, time: !!s.serviceId, details: hasSlot, confirm: hasSlot, code: !!s.hold };
+  let i = order.indexOf(want);
+  if (i < 0) i = order.indexOf("time");
+  while (i > 0 && !ok[order[i]!]) i--;
+  return order[Math.max(0, i)]!;
 }
 
 function readSaved(): FlowState | null {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
     const saved = raw ? (JSON.parse(raw) as FlowState) : null;
-    return saved?.v === 1 && ORDER.includes(saved.step) ? saved : null;
+    return saved?.v === 2 && saved.step in STEP_META ? saved : null;
   } catch {
     return null;
   }
@@ -124,20 +121,27 @@ export function BookingFlow({
   portal,
   initialServiceId,
   initialStaffId,
+  known: knownProp,
 }: {
   portal: BookingPortal;
   initialServiceId: string | null;
   initialStaffId: string | null;
+  known: KnownClientView | null;
 }) {
   const router = useRouter();
+  const [known, setKnown] = useState<KnownClientView | null>(knownProp);
+  const order = known ? KNOWN_ORDER : NEW_ORDER;
   const [s, setS] = useState<FlowState>(() => initialState(initialServiceId, initialStaffId));
   const [restored, setRestored] = useState(false);
   const [timeAlert, setTimeAlert] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const [pending, setPending] = useState(false);
   const [serverError, setServerError] = useState<{ message: string; seq: number } | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const focusOnStep = useRef(false);
+  const orderRef = useRef(order);
+  orderRef.current = order;
 
   const patch = useCallback((p: Partial<FlowState>) => setS((prev) => ({ ...prev, ...p })), []);
 
@@ -163,7 +167,7 @@ export function BookingFlow({
         start = { ...start, hold: null, minute: null, slotLabel: null, step: "time", formId: newId() };
         setTimeAlert(HOLD_EXPIRED);
       }
-      start = { ...start, step: reachable(start, start.step) };
+      start = { ...start, step: reachable(start, start.step, orderRef.current) };
       setS(start);
     }
     pushStep(start.step, true);
@@ -180,16 +184,16 @@ export function BookingFlow({
   useEffect(() => {
     const onPop = (e: PopStateEvent) => {
       const want = (e.state as { villaStep?: StepId } | null)?.villaStep;
-      if (!want || !ORDER.includes(want)) return;
+      if (!want || !(want in STEP_META)) return;
       focusOnStep.current = true;
-      setS((prev) => ({ ...prev, step: reachable(prev, want) }));
+      setS((prev) => ({ ...prev, step: reachable(prev, want, orderRef.current) }));
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   // ─── Título del documento y foco en cada cambio de paso ──────────────────
-  const meta = STEPS.find((x) => x.id === s.step)!;
+  const meta = STEP_META[s.step];
   useEffect(() => {
     document.title = `${meta.title} · Reservar · Villa`;
     if (focusOnStep.current) {
@@ -202,8 +206,9 @@ export function BookingFlow({
   const service = portal.services.find((x) => x.id === s.serviceId) ?? null;
   const barber = s.staffId === "any" ? null : (portal.staff.find((x) => x.id === s.staffId) ?? null);
   const staffName = barber?.name ?? "Cualquiera";
-  const idx = ORDER.indexOf(s.step);
+  const idx = Math.max(0, order.indexOf(s.step));
   const whenText = s.date && s.slotLabel ? `${capitalize(shortWeekdayDay(s.date))} · ${s.slotLabel}` : null;
+  const afterTime: StepId = known ? "confirm" : "details";
 
   // ─── Acciones ────────────────────────────────────────────────────────────
   const holdExpired = useCallback(
@@ -216,14 +221,37 @@ export function BookingFlow({
     [patch, goTo],
   );
 
-  function chooseStaff(id: string) {
-    patch({ staffId: id, minute: null, slotLabel: null, hold: null, skipStaff: false });
+  function pickService(id: string) {
+    if (id !== s.serviceId) patch({ serviceId: id, minute: null, slotLabel: null, hold: null });
+    goTo("time");
   }
 
-  function chooseSlot(slot: SlotView | null) {
-    if (slot && slot.minute === s.minute) return;
-    patch({ minute: slot?.minute ?? null, slotLabel: slot?.label ?? null, ...(slot ? { hold: null } : {}) });
-    if (slot) setTimeAlert(null);
+  function chooseStaff(id: string) {
+    patch({ staffId: id, minute: null, slotLabel: null, hold: null });
+  }
+
+  function pickSlot(slot: SlotView | null) {
+    if (!slot) {
+      patch({ minute: null, slotLabel: null });
+      return;
+    }
+    if (slot.minute !== s.minute) patch({ minute: slot.minute, slotLabel: slot.label, hold: null });
+    setTimeAlert(null);
+    setServerError(null);
+    goTo(afterTime);
+  }
+
+  /** Un error del servidor sobre el horario devuelve a "Hora"; los demás se muestran en el paso. */
+  function handleError(r: { error: string; network: boolean }) {
+    if (!r.network) patch({ formId: newId() });
+    if (isError(r.error, "slotTaken") || isError(r.error, "tooSoon") || isError(r.error, "holdExpired")) {
+      patch({ minute: null, slotLabel: null, hold: null });
+      setTimeAlert(r.error);
+      setReloadToken((n) => n + 1);
+      goTo("time");
+      return;
+    }
+    setServerError({ message: r.error, seq: Date.now() });
   }
 
   async function submitDetails(turnstileToken: string) {
@@ -251,16 +279,37 @@ export function BookingFlow({
       goTo("code");
       return;
     }
-    // Una respuesta del servidor cierra este intento; un fallo de red se reintenta con la misma clave.
-    if (!r.network) patch({ formId: newId() });
-    if (isError(r.error, "slotTaken") || isError(r.error, "tooSoon") || isError(r.error, "holdExpired")) {
-      patch({ minute: null, slotLabel: null, hold: null });
-      setTimeAlert(r.error);
-      setReloadToken((n) => n + 1);
-      goTo("time");
+    handleError(r);
+  }
+
+  async function confirmKnown(turnstileToken: string) {
+    if (!s.serviceId || !s.date || s.minute === null) return;
+    setPending(true);
+    setServerError(null);
+    const r = await safeCall(() =>
+      bookAsKnown({ serviceId: s.serviceId!, staffId: s.staffId, date: s.date!, minute: s.minute!, turnstileToken, formId: s.formId }),
+    );
+    if (r.ok) {
+      verified(r.data.manageUrl);
       return;
     }
-    setServerError({ message: r.error, seq: Date.now() });
+    setPending(false);
+    if (isError(r.error, "deviceUnknown")) {
+      // El navegador ya no sirve (vencido, revocado o sin autorización): formulario con código.
+      setKnown(null);
+      patch({ formId: newId() });
+      setNotice(r.error);
+      goTo("details");
+      return;
+    }
+    handleError(r);
+  }
+
+  async function notMe() {
+    await safeCall(() => forgetDevice());
+    setKnown(null);
+    setNotice(null);
+    goTo(s.minute !== null ? "details" : "service");
   }
 
   function verified(manageUrl: string) {
@@ -268,40 +317,30 @@ export function BookingFlow({
     router.push(`${manageUrl}${manageUrl.includes("?") ? "&" : "?"}nueva=1`);
   }
 
-  // ─── Barra inferior (pasos de elección) ──────────────────────────────────
-  const bar =
-    s.step === "service"
-      ? { text: service ? `${service.name} · ${service.priceLabel}` : "Elige un servicio", can: !!service, next: () => goTo(s.skipStaff ? "time" : "staff") }
-      : s.step === "staff"
-        ? { text: staffName, can: true, next: () => goTo("time") }
-        : s.step === "time"
-          ? { text: whenText ?? "Elige un horario", can: s.minute !== null, next: () => goTo("details") }
-          : null;
+  // ─── Barra inferior: solo al volver a "Hora" con un horario ya elegido ───
+  const bar = s.step === "time" && s.minute !== null && whenText ? { text: whenText, next: () => goTo(afterTime) } : null;
 
   const chips = [
     idx > 0 && service ? { step: "service" as const, icon: Scissors, text: service.name } : null,
-    idx > 1 ? { step: "staff" as const, icon: UserRound, text: staffName } : null,
-    idx > 2 && whenText ? { step: "time" as const, icon: Clock, text: whenText } : null,
+    idx > 1 && whenText ? { step: "time" as const, icon: Clock, text: `${whenText} · ${barber ? barber.name.split(/\s+/)[0] : "Cualquiera"}` } : null,
   ].filter((c) => c !== null);
 
   const hint =
-    s.step === "staff"
-      ? "Si te da igual, elige Cualquiera y te asignamos el primero que esté libre."
-      : s.step === "details"
-        ? `Te enviamos un código para confirmar. Mientras tanto te guardamos el horario ${portal.holdMin} minutos.`
-        : undefined;
+    s.step === "details"
+      ? `Te enviamos un código por WhatsApp para confirmar. Mientras tanto te guardamos el horario ${portal.holdMin} minutos.`
+      : undefined;
 
   return (
     <div className="mx-auto w-full max-w-2xl px-4 pb-32 pt-6 md:pb-12 lg:grid lg:max-w-6xl lg:grid-cols-[minmax(0,1fr)_22rem] lg:items-start lg:gap-12">
       <div className="flex min-w-0 flex-col gap-5">
         <h1 className="text-xs font-semibold uppercase tracking-[0.2em] text-botella">Reserva tu turno</h1>
 
-        <ol aria-label="Pasos" className="grid grid-cols-5 gap-1.5">
-          {STEPS.map((st, i) => (
-            <li key={st.id} aria-current={i === idx ? "step" : undefined} className="flex flex-col gap-1">
+        <ol aria-label="Pasos" className={cx("grid gap-1.5", order.length === 3 ? "grid-cols-3" : "grid-cols-4")}>
+          {order.map((id, i) => (
+            <li key={id} aria-current={i === idx ? "step" : undefined} className="flex flex-col gap-1">
               <span aria-hidden className={cx("h-1 rounded-full transition-colors", i <= idx ? "bg-cuero" : "bg-tinta/10")} />
               <span className={cx("text-xs font-semibold", i === idx ? "text-tinta" : "text-tinta/70")}>
-                {st.label}
+                {STEP_META[id].label}
                 {i < idx ? <span className="sr-only">, listo</span> : null}
               </span>
             </li>
@@ -333,14 +372,17 @@ export function BookingFlow({
             <span id="paso-h">{meta.title}</span>
           </StepHeading>
 
-          {s.step === "service" ? (
-            <ServiceStep services={portal.services} value={s.serviceId} onChange={(id) => patch({ serviceId: id, minute: null, slotLabel: null, hold: null })} />
+          {notice && s.step === "details" ? (
+            <p role="status" className="rounded-xl border border-tinta/15 bg-papel p-4 text-sm font-medium">
+              {notice}
+            </p>
           ) : null}
 
-          {s.step === "staff" ? <StaffStep staff={portal.staff} value={s.staffId} onChange={chooseStaff} /> : null}
+          {s.step === "service" ? <ServiceStep services={portal.services} value={s.serviceId} onPick={pickService} /> : null}
 
           {s.step === "time" && s.serviceId ? (
             <>
+              {portal.staff.length > 1 ? <StaffPicker staff={portal.staff} value={s.staffId} onChange={chooseStaff} /> : null}
               {timeAlert ? (
                 <p role="alert" className="rounded-xl border border-alerta/30 bg-alerta/5 p-4 text-sm font-medium text-alerta">
                   {timeAlert}
@@ -354,7 +396,8 @@ export function BookingFlow({
                 date={s.date}
                 onDateChange={(date) => patch({ date, minute: null, slotLabel: null })}
                 value={s.minute}
-                onChange={chooseSlot}
+                onChange={pickSlot}
+                pickToAdvance
                 reloadToken={reloadToken}
                 noDaysMessage={
                   barber
@@ -377,6 +420,17 @@ export function BookingFlow({
                 }
               />
             </>
+          ) : null}
+
+          {s.step === "confirm" && known ? (
+            <KnownStep
+              known={known}
+              onConfirm={confirmKnown}
+              onNotMe={notMe}
+              pending={pending}
+              serverError={serverError?.message ?? null}
+              turnstileSiteKey={portal.turnstileSiteKey}
+            />
           ) : null}
 
           {s.step === "details" ? (
@@ -417,7 +471,7 @@ export function BookingFlow({
             timeLabel: s.slotLabel,
             dateLabel: s.date && s.slotLabel ? longDate(s.date) : null,
             serviceName: service?.name ?? null,
-            staffName: idx > 1 || s.skipStaff ? staffName : null,
+            staffName: idx > 0 ? staffName : null,
             durationMin: service?.durationMin ?? null,
             priceLabel: service?.priceLabel ?? null,
             address: null,
@@ -432,7 +486,7 @@ export function BookingFlow({
             <p className="min-w-0 truncate text-sm font-medium" aria-hidden>
               {bar.text}
             </p>
-            <Btn size="lg" className="shrink-0" isDisabled={!bar.can} onPress={bar.next}>
+            <Btn size="lg" className="shrink-0" onPress={bar.next}>
               Continuar
             </Btn>
           </div>
@@ -441,4 +495,3 @@ export function BookingFlow({
     </div>
   );
 }
-

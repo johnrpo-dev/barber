@@ -24,6 +24,7 @@ export function SlotChooser({
   reloadToken = 0,
   noDaysMessage,
   emptyActions,
+  pickToAdvance = false,
 }: {
   /** Cambia cuando cambia lo que determina los días (servicio, barbero, cita). */
   daysKey: string;
@@ -39,6 +40,8 @@ export function SlotChooser({
   noDaysMessage: string;
   /** Acciones extra en los estados vacíos (p. ej. "Probar con Cualquiera"). */
   emptyActions?: ReactNode;
+  /** Cada horario es un botón: tocarlo elige y avanza (la reserva). Sin esto, radios (reprogramar). */
+  pickToAdvance?: boolean;
 }) {
   const [daysAttempt, setDaysAttempt] = useState(0);
   const [slotsAttempt, setSlotsAttempt] = useState(0);
@@ -140,7 +143,7 @@ export function SlotChooser({
 
       {date && currentSlots && !currentSlots.error ? (
         currentSlots.value.length > 0 ? (
-          <SlotGroups slots={currentSlots.value} value={value} onChange={onChange} />
+          <SlotGroups slots={currentSlots.value} value={value} onChange={onChange} pickToAdvance={pickToAdvance} />
         ) : !nextOpen && !emptyActions ? null : (
           <div className="flex flex-col items-start gap-3 rounded-xl border border-dashed border-tinta/25 p-4">
             {nextOpen ? (

@@ -1,4 +1,8 @@
+import { cookies } from "next/headers";
 import { db } from "@/db/client";
+import { DEVICE_COOKIE, knownClient } from "@/db/client-devices";
+import { maskPhone } from "@/domain/clients/client";
+import { firstNameForMessage } from "@/domain/notifications/templates";
 import { loadPortalData, loadTicketData, publicLocation } from "@/db/public-booking";
 import type { Db } from "@/db/types";
 import type { AppointmentStatus } from "@/domain/booking/status";
@@ -30,6 +34,20 @@ export async function loadPortal(): Promise<PortalView | null> {
   let turnstileSiteKey: string | null = null;
   if (readiness.ready) turnstileSiteKey = publicConfig().turnstile?.siteKey ?? null;
   return { enabled: location.publicBookingEnabled && readiness.ready, ...data, turnstileSiteKey };
+}
+
+export interface KnownClientView {
+  firstName: string;
+  maskedPhone: string; // "312 •••• 994"
+}
+
+/** El cliente recordado en este navegador (cookie villa_device), o null. Nunca el celular completo. */
+export async function loadKnownClient(): Promise<KnownClientView | null> {
+  const location = await publicLocation(database());
+  if (!location) return null;
+  const token = (await cookies()).get(DEVICE_COOKIE)?.value;
+  const client = await knownClient(database(), { locationId: location.id, token, now: new Date() });
+  return client ? { firstName: firstNameForMessage(client.name), maskedPhone: maskPhone(client.phoneE164) } : null;
 }
 
 export interface TicketView {

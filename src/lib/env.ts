@@ -72,8 +72,12 @@ export type PublicEnv = { [K in PublicVarName]?: z.output<(typeof PUBLIC_VARS)[K
 export function publicEnv(source: Record<string, string | undefined> = process.env): { values: PublicEnv; problems: string[] } {
   const values: Record<string, unknown> = {};
   const problems: string[] = [];
+  // Meta llama "access token" a lo que aquí es WHATSAPP_TOKEN: se acepta también ese nombre para
+  // que un .env escrito con el término de Meta no deje el WhatsApp apagado sin aviso.
+  const aliases: Record<string, string> = { WHATSAPP_TOKEN: "WHATSAPP_ACCESS_TOKEN" };
   for (const [name, schema] of Object.entries(PUBLIC_VARS)) {
-    const raw = source[name];
+    const own = source[name];
+    const raw = own === undefined || own.trim() === "" ? (aliases[name] ? source[aliases[name]] : undefined) : own;
     if (raw === undefined || raw.trim() === "") continue;
     const parsed = schema.safeParse(raw);
     if (parsed.success) values[name] = parsed.data;

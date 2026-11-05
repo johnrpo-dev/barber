@@ -105,6 +105,7 @@ export const KNOWN_ERRORS = {
   codeExpired: "El código venció",
   tooManyAttempts: "Demasiados intentos",
   rateLimited: "Vas muy rápido",
+  deviceUnknown: "Por seguridad, esta vez confirma",
 } as const;
 
 export const isError = (message: string, kind: keyof typeof KNOWN_ERRORS) => message.startsWith(KNOWN_ERRORS[kind]);

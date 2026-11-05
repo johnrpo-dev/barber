@@ -43,6 +43,11 @@ describe("configuración pública", () => {
     expect(problems.join(" ")).not.toContain("corto");
   });
 
+  it("acepta WHATSAPP_ACCESS_TOKEN (el nombre de Meta) cuando falta WHATSAPP_TOKEN", () => {
+    expect(publicEnv({ WHATSAPP_ACCESS_TOKEN: "tok-meta" }).values.WHATSAPP_TOKEN).toBe("tok-meta");
+    expect(publicEnv({ WHATSAPP_TOKEN: "propio", WHATSAPP_ACCESS_TOKEN: "tok-meta" }).values.WHATSAPP_TOKEN).toBe("propio");
+  });
+
   it("los dos secretos deben ser distintos", () => {
     const same = "x".repeat(40);
     const { values, problems } = publicEnv({ OTP_PEPPER: same, MANAGE_LINK_SECRET: same });

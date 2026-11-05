@@ -16,6 +16,8 @@ export interface Hold {
   holdExpiresAt: string;
   resendAvailableAt: string;
   sendsLeft: number | null;
+  /** Solo en desarrollo sin WhatsApp configurado: el código para probar sin la terminal. */
+  testCode?: string;
 }
 
 function useSecondsUntil(iso: string): number {
@@ -95,7 +97,7 @@ export function CodeStep({
     const r = await safeCall(() => resendCode());
     setResending(false);
     if (r.ok) {
-      onHoldChange({ resendAvailableAt: r.data.resendAvailableAt, sendsLeft: r.data.sendsLeft });
+      onHoldChange({ resendAvailableAt: r.data.resendAvailableAt, sendsLeft: r.data.sendsLeft, testCode: r.data.testCode });
       setFieldError(null);
       setCodeExpired(false);
       setCode("");
@@ -113,6 +115,25 @@ export function CodeStep({
 
   return (
     <div className="flex flex-col gap-5">
+      {hold.testCode ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dashed border-cuero/50 bg-cuero/5 p-4 text-sm">
+          <p>
+            <span className="font-semibold">Modo de prueba:</span> WhatsApp aún no está configurado, así que el código no sale.
+            Tu código es <span className="monto font-semibold">{hold.testCode}</span>.
+          </p>
+          <Btn
+            variant="secondary"
+            size="sm"
+            className="h-11"
+            onPress={() => {
+              setCode(hold.testCode!);
+              verify(hold.testCode!);
+            }}
+          >
+            Usar código
+          </Btn>
+        </div>
+      ) : null}
       <OtpField
         inputRef={inputRef}
         value={code}

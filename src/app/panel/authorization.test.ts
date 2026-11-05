@@ -1859,6 +1859,8 @@ const PUBLIC_MODULES: Record<string, readonly string[]> = {
     "startBooking",
     "resendCode",
     "verifyCode",
+    "bookAsKnown",
+    "forgetDevice",
     "cancelByToken",
     "loadRescheduleDays",
     "loadRescheduleSlots",

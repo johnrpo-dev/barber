@@ -3,13 +3,14 @@ import type { PGlite } from "@electric-sql/pglite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAppointment } from "@/db/appointments";
+import { DEVICE_COOKIE } from "@/db/client-devices";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
 import { issueManageLink } from "@/db/manage-links";
 import { MAX_PENDING_HOLDS, PUBLIC_MESSAGES } from "@/db/public-booking";
 import { enforce } from "@/db/rate-limit";
-import { appointmentLinks, appointments, bookingVerifications, clientConsents, clients, locations, notificationEvents, notifications, services, staffMembers } from "@/db/schema";
+import { appointmentLinks, appointments, bookingVerifications, clientConsents, clientDevices, clients, locations, notificationEvents, notifications, services, staffMembers } from "@/db/schema";
 import { addStaffMember, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
 import { addTimeOff } from "@/db/time-off";
@@ -711,6 +712,8 @@ const CASES: Case[] = [
         source: "staff",
         idempotencyKey: `past-${randomUUID()}`,
         createdBy: "seed",
+        // Cerca de la medianoche, "hace 10 minutos" cruza de día: aquí no se prueba el turno.
+        allowOutsideHours: true,
       });
       const token = await issueManageLink(db, { locationId: A.location, appointmentId: appt.appointmentId, publicId: appt.publicId, appointmentEnd: new Date(start.getTime() + 40 * MINUTE_MS), secret: DEV_ONLY_MANAGE_LINK_SECRET });
       const r = await actions.cancelByToken({ token });
@@ -774,6 +777,89 @@ const CASES: Case[] = [
       expect(await actions.rescheduleByToken({ token, ...soon })).toEqual({ ok: false, error: PUBLIC_MESSAGES.tooSoon });
     },
   },
+  {
+    action: "startBooking",
+    name: "en desarrollo sin WhatsApp, el código vuelve en la respuesta para poder probar",
+    run: async () => {
+      newIp();
+      newBrowser();
+      const phone = newPhone();
+      const started = await actions.startBooking(startInput(phone));
+      expect(started.ok).toBe(true);
+      expect((started as { ok: true; data: { testCode?: string } }).data.testCode).toBe(notifier.lastCode(e164(phone)));
+    },
+  },
+  {
+    action: "bookAsKnown",
+    name: "tras verificar una vez, el mismo navegador reserva sin código: cita confirmada y confirmación en la cola",
+    run: async () => {
+      newIp();
+      const phone = newPhone();
+      await bookAndVerify(phone);
+      expect(state.jar.get(DEVICE_COOKIE)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(state.cookieOptions).toMatchObject({ httpOnly: true, sameSite: "lax", path: "/" });
+      // La página sabe quién es, sin el celular completo.
+      const known = await data.loadKnownClient();
+      expect(known).toEqual({ firstName: "Ana", maskedPhone: expect.not.stringContaining(phone) });
+
+      const sentBefore = notifier.sent.length;
+      const input = { serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() };
+      const r = await actions.bookAsKnown(input);
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      expect(notifier.sent.length).toBe(sentBefore); // ningún código
+      const token = (r as { ok: true; data: { manageUrl: string } }).data.manageUrl.replace("/cita/", "");
+      const appt = await appointmentByToken(token);
+      expect(appt.status).toBe("confirmed");
+      const queued = await db
+        .select({ template: notifications.template })
+        .from(notifications)
+        .where(and(eq(notifications.appointmentId, appt.id), eq(notifications.template, "booking_confirmed")));
+      expect(queued).toHaveLength(1);
+      // Doble toque: la misma cita.
+      const again = await actions.bookAsKnown(input);
+      expect(again).toEqual(r);
+    },
+  },
+  {
+    action: "bookAsKnown",
+    name: "sin cookie, con una inventada o de un cliente suprimido pide el código (y borra la cookie)",
+    run: async () => {
+      newIp();
+      const input = () => ({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
+      newBrowser();
+      expect(await actions.bookAsKnown(input())).toEqual({ ok: false, error: PUBLIC_MESSAGES.deviceUnknown });
+      state.jar.set(DEVICE_COOKIE, "A".repeat(43));
+      expect(await actions.bookAsKnown(input())).toEqual({ ok: false, error: PUBLIC_MESSAGES.deviceUnknown });
+      expect(state.jar.has(DEVICE_COOKIE)).toBe(false);
+
+      const phone = newPhone();
+      await bookAndVerify(phone);
+      const c = await clientRow(phone);
+      await db.execute(sql`select erase_client_personal_data(${String(A.location)}::bigint, ${String(c.id)}::bigint)`);
+      const devices = await db.select({ revokedAt: clientDevices.revokedAt }).from(clientDevices).where(eq(clientDevices.clientId, c.id));
+      expect(devices.length).toBeGreaterThan(0);
+      expect(devices.every((d) => d.revokedAt !== null)).toBe(true);
+      expect(await actions.bookAsKnown(input())).toEqual({ ok: false, error: PUBLIC_MESSAGES.deviceUnknown });
+    },
+  },
+  {
+    action: "forgetDevice",
+    name: "\"No soy yo\" revoca el navegador: la cookie vieja ya no sirve aunque vuelva",
+    run: async () => {
+      newIp();
+      await bookAndVerify(newPhone());
+      const cookie = state.jar.get(DEVICE_COOKIE)!;
+      expect(await actions.forgetDevice()).toEqual({ ok: true, data: undefined });
+      expect(state.jar.has(DEVICE_COOKIE)).toBe(false);
+      state.jar.set(DEVICE_COOKIE, cookie);
+      expect(await data.loadKnownClient()).toBeNull();
+      const r = await actions.bookAsKnown({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
+      expect(r).toEqual({ ok: false, error: PUBLIC_MESSAGES.deviceUnknown });
+      // Sin cookie tampoco falla.
+      newBrowser();
+      expect((await actions.forgetDevice()).ok).toBe(true);
+    },
+  },
 ];
 
 describe("acciones públicas", () => {
@@ -809,6 +895,7 @@ describe("lecturas y enlaces malos", () => {
       source: "staff",
       idempotencyKey: `b-${randomUUID()}`,
       createdBy: "seed",
+      allowOutsideHours: true,
     });
     const otherLocation = await issueManageLink(db, { locationId: B.location, appointmentId: apptB.appointmentId, publicId: apptB.publicId, appointmentEnd: apptB.start, secret: DEV_ONLY_MANAGE_LINK_SECRET });
 

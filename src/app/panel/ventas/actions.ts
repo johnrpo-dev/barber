@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { today } from "@/db/cash";
 import { db } from "@/db/client";
-import { saleReceipt, salesOfDay } from "@/db/receipts";
+import { paidSalesCount, saleReceipt, salesOfDay } from "@/db/receipts";
 import type { Db } from "@/db/types";
 import { isUlid } from "@/db/ulid";
 import { formatPhone } from "@/domain/clients/client";
@@ -123,6 +123,7 @@ export async function loadSalesOfDay(raw: z.input<typeof dayInput>): Promise<Act
       services: s.services.join(", "),
       staff: s.staffNames.join(", "),
     }));
-    return { businessDate, today: day.businessDate, canPickDay, sales, paidCount: rows.filter((s) => s.status === "paid").length };
+    const paidCount = await paidSalesCount(conn, { locationId: staff.locationId, businessDate });
+    return { businessDate, today: day.businessDate, canPickDay, sales, paidCount };
   });
 }

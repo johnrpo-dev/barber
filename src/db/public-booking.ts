@@ -27,7 +27,8 @@ import { describeError } from "@/lib/log";
 import type { Notifier } from "@/lib/notify/ports";
 import { availability, changeStatus, createAppointment, locationRules, rescheduleAppointment, SlotTakenError } from "./appointments";
 import { findOrCreateClient } from "./clients";
-import { recordConsents } from "./consents";
+import { type KnownClient, touchClientDevice, rememberClientDevice } from "./client-devices";
+import { latestConsents, recordConsents } from "./consents";
 import { findByManageToken, issueManageLink, revokeManageLinks } from "./manage-links";
 import { checkQuotaAlert, enqueueNotification, globalQuotaReached, messageParams, preferredChannel, recordOtpAttempt, recordOtpOutcome } from "./notifications";
 import { enforce } from "./rate-limit";
@@ -60,6 +61,7 @@ export const PUBLIC_MESSAGES = {
   dateOutOfRange: "Esa fecha no está disponible para reservar. Elige otra.",
   sendingPaused: "Hoy no podemos enviar más códigos. Para reservar, llámanos o escríbenos por WhatsApp.",
   generic: "No se pudo completar. Intenta de nuevo.",
+  deviceUnknown: "Por seguridad, esta vez confirma tu celular con un código.",
 } as const;
 
 /** Retenciones en línea vivas a la vez por sede: más que esto es alguien acaparando la agenda. */
@@ -113,6 +115,12 @@ export interface PublicBookingContext {
   caps: { globalPerDay: number };
   /** Aviso al dueño al 80 % de la cuota (ALERT_EMAIL). */
   alert?: (subject: string, text: string, idempotencyKey: string) => Promise<void>;
+  /**
+   * Solo desarrollo sin WhatsApp configurado: el código vuelve en la respuesta para poder probar
+   * la reserva sin la terminal. La acción lo activa únicamente con allowsDevFallbacks() y sin
+   * proveedor de WhatsApp; en producción nunca.
+   */
+  revealCodeForTesting?: boolean;
 }
 
 export function hashBrowserCookie(value: string): string {
@@ -297,6 +305,8 @@ export interface StartBookingResult {
   maskedDestination: string;
   holdExpiresAt: Date;
   resendAvailableAt: Date;
+  /** Solo con ctx.revealCodeForTesting (desarrollo sin WhatsApp). */
+  testCode?: string;
 }
 
 async function insertVerification(
@@ -500,6 +510,7 @@ export async function startOnlineBooking(
     maskedDestination: maskPhone(phone),
     holdExpiresAt: result.holdExpiresAt,
     resendAvailableAt: result.resendAvailableAt,
+    ...(ctx.revealCodeForTesting && result.send ? { testCode: result.send.code } : {}),
   };
 }
 
@@ -562,7 +573,7 @@ export async function resendCode(
   ctx: PublicBookingContext,
   input: { browserHash: string; ipSubject: string },
   notifier: Notifier,
-): Promise<{ resendAvailableAt: Date; sendsLeft: number }> {
+): Promise<{ resendAvailableAt: Date; sendsLeft: number; testCode?: string }> {
   const now = ctx.now;
   const live = await liveVerification(db, ctx.locationId, input.browserHash);
   if (!live || !holdAlive(live, now)) throw new BookingError(PUBLIC_MESSAGES.holdExpired);
@@ -618,13 +629,142 @@ export async function resendCode(
     return { ...created, notificationId };
   });
   await sendCode(db, ctx, notifier, { to, code: verification.code, verificationId: verification.id, notificationId: verification.notificationId });
-  return { resendAvailableAt: new Date(now.getTime() + OTP_RESEND_COOLDOWN_SEC * 1000), sendsLeft: OTP_MAX_SENDS - (sendCount + 1) };
+  return {
+    resendAvailableAt: new Date(now.getTime() + OTP_RESEND_COOLDOWN_SEC * 1000),
+    sendsLeft: OTP_MAX_SENDS - (sendCount + 1),
+    ...(ctx.revealCodeForTesting ? { testCode: verification.code } : {}),
+  };
+}
+
+/**
+ * Confirma una cita en línea retenida (pending) dentro de la transacción de quien llama: tope de
+ * citas activas, autorizaciones, nombre y correo escritos, enlace de gestión y aviso por la cola.
+ * La usan verifyBooking (con el código) y bookAsKnownClient (dispositivo recordado).
+ */
+async function confirmOnlineAppointment(
+  tx: Db,
+  ctx: PublicBookingContext,
+  args: {
+    appt: { id: bigint; publicId: string; during: { start: Date; end: Date } };
+    clientId: bigint;
+    channel: NotificationChannel;
+    consent: { choices: ConsentChoices; textVersion: string; ip: string | null; userAgent: string | null } | null;
+    contactName: string | null;
+    contactEmail: string | null;
+  },
+): Promise<{ kind: "ok"; token: string } | { kind: "limit"; max: number }> {
+  const now = ctx.now;
+  // Tope de citas futuras activas, con el cliente bloqueado para que dos verificaciones
+  // simultáneas no pasen las dos.
+  const [client] = await tx
+    .select({ id: clients.id, phoneE164: clients.phoneE164, email: clients.email })
+    .from(clients)
+    .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId)))
+    .for("update");
+  const [loc] = await tx.select({ max: locations.maxActivePerClient }).from(locations).where(eq(locations.id, ctx.locationId));
+  const [active] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.locationId, ctx.locationId),
+        eq(appointments.clientId, args.clientId),
+        inArray(appointments.status, ["confirmed", "arrived", "in_chair"]),
+        sql`upper(${appointments.during}) > ${iso(now)}::timestamptz`,
+      ),
+    );
+  const max = loc?.max ?? 3;
+  if (activeLimitReached(Number(active?.count ?? 0), max)) {
+    await changeStatus(tx, {
+      locationId: ctx.locationId,
+      appointmentId: args.appt.id,
+      to: "cancelled",
+      actor: { kind: "system" },
+      cancelReason: "duplicate",
+      note: "Límite de citas activas del cliente",
+      now,
+    });
+    return { kind: "limit", max };
+  }
+
+  await changeStatus(tx, { locationId: ctx.locationId, appointmentId: args.appt.id, to: "confirmed", actor: { kind: "system" }, now });
+  // Quien reserva desde un dispositivo recordado ya autorizó antes: no hay fila nueva.
+  const consent = args.consent;
+  if (consent) {
+    await recordConsents(tx, {
+      locationId: ctx.locationId,
+      clientId: args.clientId,
+      appointmentId: args.appt.id,
+      choices: consent.choices,
+      textVersion: consent.textVersion,
+      ip: consent.ip,
+      userAgent: consent.userAgent,
+      source: "online",
+    });
+  }
+  // El nombre escrito solo reemplaza al de un cliente que nació de una reserva en línea y
+  // nunca se verificó (mismo instante que su primera verificación, sin citas del personal):
+  // jamás el de un cliente verificado o creado en el panel.
+  if (args.contactName) {
+    await tx
+      .update(clients)
+      .set({ name: args.contactName, updatedAt: now })
+      .where(
+        and(
+          eq(clients.locationId, ctx.locationId),
+          eq(clients.id, args.clientId),
+          isNull(clients.verifiedAt),
+          isNull(clients.anonymizedAt),
+          sql`${clients.createdAt} = (select min(bv.created_at) from booking_verifications bv
+               where bv.location_id = ${clients.locationId} and bv.client_id = ${clients.id})`,
+          sql`not exists (select 1 from appointments a
+               where a.location_id = ${clients.locationId} and a.client_id = ${clients.id} and a.source <> 'online')`,
+        ),
+      );
+  }
+  // El correo escrito pasa al cliente solo ahora (celular comprobado) y solo si no tenía uno.
+  if (args.contactEmail) {
+    await tx
+      .update(clients)
+      .set({ email: args.contactEmail, updatedAt: now })
+      .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId), isNull(clients.email), isNull(clients.anonymizedAt)));
+  }
+  await tx
+    .update(clients)
+    .set({ verifiedAt: sql`coalesce(${clients.verifiedAt}, now())`, updatedAt: now })
+    .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId)));
+  const token = await issueManageLink(tx, {
+    locationId: ctx.locationId,
+    appointmentId: args.appt.id,
+    publicId: args.appt.publicId,
+    appointmentEnd: args.appt.during.end,
+    secret: ctx.manageLinkSecret,
+  });
+  // La confirmación va por el canal que se verificó.
+  const to = args.channel === "whatsapp" ? client?.phoneE164 : client?.email;
+  if (to) {
+    await enqueueNotification(tx, {
+      locationId: ctx.locationId,
+      appointmentId: args.appt.id,
+      clientId: args.clientId,
+      channel: args.channel,
+      template: "booking_confirmed",
+      recipientHash: ctx.hash(to),
+      dedupeKey: dedupeKey("confirm", args.appt.publicId),
+      params: await messageParams(tx, { locationId: ctx.locationId, appointmentId: args.appt.id }),
+    });
+  }
+  return { kind: "ok", token };
 }
 
 // ─── Verificar ───────────────────────────────────────────────────────────────
 
 /** Comprueba el código y, si coincide, confirma la cita. Devuelve el token del enlace de gestión. */
-export async function verifyBooking(db: Db, ctx: PublicBookingContext, input: { browserHash: string; code: string }): Promise<{ token: string }> {
+export async function verifyBooking(
+  db: Db,
+  ctx: PublicBookingContext,
+  input: { browserHash: string; code: string },
+): Promise<{ token: string; deviceToken: string }> {
   const now = ctx.now;
   const code = normalizeOtpInput(input.code);
   if (!code) throw new BookingError(PUBLIC_MESSAGES.codeShape);
@@ -655,7 +795,7 @@ export async function verifyBooking(db: Db, ctx: PublicBookingContext, input: { 
   }
 
   // 2. Coincide: todo en una transacción.
-  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string } | { kind: "expired" } | { kind: "used" } | { kind: "limit"; max: number }> => {
+  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string } | { kind: "expired" } | { kind: "used" } | { kind: "limit"; max: number }> => {
     const tx = txRaw as unknown as Db;
     const [appt] = await tx
       .select({ id: appointments.id, publicId: appointments.publicId, status: appointments.status, expiresAt: appointments.expiresAt, during: appointments.during })
@@ -678,103 +818,116 @@ export async function verifyBooking(db: Db, ctx: PublicBookingContext, input: { 
       .returning({ id: bookingVerifications.id });
     if (consumed.length === 0) return { kind: "used" };
 
-    // Tope de citas futuras activas, con el cliente bloqueado para que dos verificaciones
-    // simultáneas no pasen las dos.
-    const [client] = await tx
-      .select({ id: clients.id, phoneE164: clients.phoneE164, email: clients.email })
-      .from(clients)
-      .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, live.clientId)))
-      .for("update");
-    const [loc] = await tx.select({ max: locations.maxActivePerClient }).from(locations).where(eq(locations.id, ctx.locationId));
-    const [active] = await tx
-      .select({ count: sql<number>`count(*)::int` })
-      .from(appointments)
-      .where(
-        and(
-          eq(appointments.locationId, ctx.locationId),
-          eq(appointments.clientId, live.clientId),
-          inArray(appointments.status, ["confirmed", "arrived", "in_chair"]),
-          sql`upper(${appointments.during}) > ${iso(now)}::timestamptz`,
-        ),
-      );
-    const max = loc?.max ?? 3;
-    if (activeLimitReached(Number(active?.count ?? 0), max)) {
-      await changeStatus(tx, {
-        locationId: ctx.locationId,
-        appointmentId: appt.id,
-        to: "cancelled",
-        actor: { kind: "system" },
-        cancelReason: "duplicate",
-        note: "Límite de citas activas del cliente",
+    const confirmed = await confirmOnlineAppointment(tx, ctx, {
+      appt,
+      clientId: live.clientId,
+      channel: live.channel,
+      consent: { choices: live.consentChoices, textVersion: live.consentTextVersion, ip: live.consentIp, userAgent: live.consentUserAgent },
+      contactName: live.contactName,
+      contactEmail: live.contactEmail,
+    });
+    if (confirmed.kind !== "ok") return confirmed;
+    // Celular comprobado: este navegador queda recordado y la próxima reserva no pide código.
+    const deviceToken = await rememberClientDevice(tx, { locationId: ctx.locationId, clientId: live.clientId, now });
+    return { ...confirmed, deviceToken };
+  });
+
+  switch (outcome.kind) {
+    case "ok":
+      return { token: outcome.token, deviceToken: outcome.deviceToken };
+    case "expired":
+      throw new BookingError(PUBLIC_MESSAGES.holdExpired);
+    case "used":
+      throw new BookingError(PUBLIC_MESSAGES.codeUsed);
+    case "limit":
+      throw new BookingError(activeLimitMessage(outcome.max));
+  }
+}
+
+// ─── Reservar desde un dispositivo recordado ────────────────────────────────
+
+export interface KnownBookingInput {
+  serviceId: bigint;
+  staffId: bigint | "any";
+  start: Date;
+  formId: string;
+  /** El cliente del navegador, ya resuelto con knownClient() (cookie villa_device vigente). */
+  device: KnownClient;
+}
+
+/**
+ * Reserva sin código para quien ya verificó su celular en este navegador: crea la cita y la
+ * confirma en la misma transacción (mismo tope de citas activas, enlace y aviso que verifyBooking).
+ * Sin una autorización de tratamiento vigente, pide el flujo con código (deviceUnknown).
+ * Reintentar el mismo formulario devuelve la misma cita.
+ */
+export async function bookAsKnownClient(
+  db: Db,
+  ctx: PublicBookingContext,
+  location: PublicLocation,
+  input: KnownBookingInput,
+): Promise<{ token: string }> {
+  const now = ctx.now;
+  const clientId = input.device.clientId;
+  assertBookableDate(location, localParts(input.start, location.timeZone).date, now);
+  const consents = await latestConsents(db, { locationId: location.id, clientId });
+  if (!consents.data_processing) throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
+  await enforce(db, "booking_start", { contact: ctx.hash(input.device.phoneE164) }, now);
+  // Doble toque o reintento por red: si este formulario ya creó la cita, ese horario ya no figura
+  // como libre (lo ocupa ella misma); se salta la comprobación y la transacción devuelve la misma.
+  const [replay] = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(eq(appointments.locationId, location.id), eq(appointments.idempotencyKey, `online:${input.formId}`)));
+  if (!replay) await assertSlotOffered(db, { location, serviceId: input.serviceId, staffId: input.staffId, start: input.start, now });
+
+  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string } | { kind: "expired" } | { kind: "limit"; max: number }> => {
+    const tx = txRaw as unknown as Db;
+    let created;
+    try {
+      created = await createAppointment(tx, {
+        locationId: location.id,
+        serviceId: input.serviceId,
+        staffId: input.staffId,
+        start: input.start,
+        clientId,
+        source: "online",
+        idempotencyKey: `online:${input.formId}`,
+        createdBy: "online",
         now,
       });
-      return { kind: "limit", max };
+    } catch (err) {
+      if (err instanceof SlotTakenError) throw new SlotTakenError(PUBLIC_MESSAGES.slotTaken);
+      throw err;
     }
-
-    await changeStatus(tx, { locationId: ctx.locationId, appointmentId: appt.id, to: "confirmed", actor: { kind: "system" }, now });
-    await recordConsents(tx, {
-      locationId: ctx.locationId,
-      clientId: live.clientId,
-      appointmentId: appt.id,
-      choices: live.consentChoices,
-      textVersion: live.consentTextVersion,
-      ip: live.consentIp,
-      userAgent: live.consentUserAgent,
-      source: "online",
-    });
-    // El nombre escrito solo reemplaza al de un cliente que nació de una reserva en línea y
-    // nunca se verificó (mismo instante que su primera verificación, sin citas del personal):
-    // jamás el de un cliente verificado o creado en el panel.
-    if (live.contactName) {
-      await tx
-        .update(clients)
-        .set({ name: live.contactName, updatedAt: now })
-        .where(
-          and(
-            eq(clients.locationId, ctx.locationId),
-            eq(clients.id, live.clientId),
-            isNull(clients.verifiedAt),
-            isNull(clients.anonymizedAt),
-            sql`${clients.createdAt} = (select min(bv.created_at) from booking_verifications bv
-                 where bv.location_id = ${clients.locationId} and bv.client_id = ${clients.id})`,
-            sql`not exists (select 1 from appointments a
-                 where a.location_id = ${clients.locationId} and a.client_id = ${clients.id} and a.source <> 'online')`,
-          ),
-        );
-    }
-    // El correo escrito pasa al cliente solo ahora (celular comprobado) y solo si no tenía uno.
-    if (live.contactEmail) {
-      await tx
-        .update(clients)
-        .set({ email: live.contactEmail, updatedAt: now })
-        .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, live.clientId), isNull(clients.email), isNull(clients.anonymizedAt)));
-    }
-    await tx
-      .update(clients)
-      .set({ verifiedAt: sql`coalesce(${clients.verifiedAt}, now())`, updatedAt: now })
-      .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, live.clientId)));
-    const token = await issueManageLink(tx, {
-      locationId: ctx.locationId,
-      appointmentId: appt.id,
-      publicId: appt.publicId,
-      appointmentEnd: appt.during.end,
-      secret: ctx.manageLinkSecret,
-    });
-    // La confirmación va por el canal que se verificó.
-    const to = live.channel === "whatsapp" ? client?.phoneE164 : client?.email;
-    if (to) {
-      await enqueueNotification(tx, {
-        locationId: ctx.locationId,
+    const [appt] = await tx
+      .select({
+        id: appointments.id,
+        publicId: appointments.publicId,
+        clientId: appointments.clientId,
+        status: appointments.status,
+        expiresAt: appointments.expiresAt,
+        during: appointments.during,
+      })
+      .from(appointments)
+      .where(and(eq(appointments.locationId, location.id), eq(appointments.id, created.appointmentId)))
+      .for("update");
+    if (!appt || appt.clientId !== clientId) throw new BookingError(PUBLIC_MESSAGES.generic);
+    if (!created.created && appt.status === "confirmed") {
+      // Doble toque o reintento por red: la misma cita, el mismo enlace.
+      const token = await issueManageLink(tx, {
+        locationId: location.id,
         appointmentId: appt.id,
-        clientId: live.clientId,
-        channel: live.channel,
-        template: "booking_confirmed",
-        recipientHash: ctx.hash(to),
-        dedupeKey: dedupeKey("confirm", appt.publicId),
-        params: await messageParams(tx, { locationId: ctx.locationId, appointmentId: appt.id }),
+        publicId: appt.publicId,
+        appointmentEnd: appt.during.end,
+        secret: ctx.manageLinkSecret,
       });
+      return { kind: "ok", token };
     }
-    return { kind: "ok", token };
+    if (!holdAlive({ apptStatus: appt.status, holdExpiresAt: appt.expiresAt }, now)) return { kind: "expired" };
+    const confirmed = await confirmOnlineAppointment(tx, ctx, { appt, clientId, channel: "whatsapp", consent: null, contactName: null, contactEmail: null });
+    if (confirmed.kind === "ok") await touchClientDevice(tx, { locationId: location.id, deviceId: input.device.deviceId, now });
+    return confirmed;
   });
 
   switch (outcome.kind) {
@@ -782,8 +935,6 @@ export async function verifyBooking(db: Db, ctx: PublicBookingContext, input: { 
       return { token: outcome.token };
     case "expired":
       throw new BookingError(PUBLIC_MESSAGES.holdExpired);
-    case "used":
-      throw new BookingError(PUBLIC_MESSAGES.codeUsed);
     case "limit":
       throw new BookingError(activeLimitMessage(outcome.max));
   }

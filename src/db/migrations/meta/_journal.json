@@ -113,6 +113,13 @@
       "when": 1793851337778,
       "tag": "0015_sale_receipt_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793853691779,
+      "tag": "0016_client_devices",
+      "breakpoints": true
     }
   ]
 }

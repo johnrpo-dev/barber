@@ -1,5 +1,7 @@
 import { MessageCircle, Phone } from "lucide-react";
 import type { Metadata } from "next";
+import { describeError } from "@/lib/log";
+import { loadKnownClient } from "../data";
 import { getPortal, telHref } from "../_lib/portal";
 import { linkBtn } from "../_lib/ui";
 import { BookingFlow } from "./_components/booking-flow";
@@ -40,6 +42,11 @@ export default async function ReservarPage({ searchParams }: { searchParams: Sea
     );
   }
 
+  // Si falla la lectura del dispositivo, se reserva como siempre (con código).
+  const known = await loadKnownClient().catch((err) => {
+    console.error("[reservar] cliente recordado", describeError(err));
+    return null;
+  });
   const servicio = one(sp.servicio);
   const barbero = one(sp.barbero);
   const initialServiceId = servicio && portal.services.some((s) => s.id === servicio) ? servicio : null;
@@ -51,6 +58,7 @@ export default async function ReservarPage({ searchParams }: { searchParams: Sea
         key={`${initialServiceId ?? ""}|${initialStaffId ?? ""}`}
         initialServiceId={initialServiceId}
         initialStaffId={initialStaffId}
+        known={known}
         portal={{
           services: portal.services,
           staff: portal.staff,

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { instantLabels } from "@/domain/booking/public-labels";
 import { format, money } from "@/domain/money";
 import { firstNameForMessage, type NotificationChannel } from "@/domain/notifications/templates";
@@ -130,6 +130,15 @@ export interface SaleListRow {
   services: string[];
   /** Quiénes atendieron, sin repetir, en el orden de las líneas. */
   staffNames: string[];
+}
+
+/** Cuántas ventas pagadas tiene el día (en SQL: la lista se corta en 200, el conteo no). */
+export async function paidSalesCount(db: Db, input: { locationId: bigint; businessDate: string }): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sales)
+    .where(and(eq(sales.locationId, input.locationId), eq(sales.businessDate, input.businessDate), eq(sales.status, "paid")));
+  return Number(row?.n ?? 0);
 }
 
 /** Ventas de un día contable de la sede, de la más reciente a la más antigua. */

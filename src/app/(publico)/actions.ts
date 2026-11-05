@@ -3,8 +3,10 @@
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { db } from "@/db/client";
+import { DEVICE_COOKIE, DEVICE_TTL_DAYS, forgetClientDevice, knownClient } from "@/db/client-devices";
 import {
   assertBookableDate,
+  bookAsKnownClient,
   cancelByClient,
   hashBrowserCookie,
   hasLiveHold,
@@ -71,6 +73,9 @@ function scopeOf(location: PublicLocation, config: PublicConfig): Scope {
       hash: (value) => hashForBucket(value, config.otpPepper),
       caps: config.caps,
       alert: alertSender(),
+      // Desarrollo sin WhatsApp: el código vuelve a la pantalla para poder probar. En producción
+      // allowsDevFallbacks() es falso y esto nunca se activa.
+      revealCodeForTesting: allowsDevFallbacks() && !config.whatsapp,
     },
   };
 }
@@ -165,7 +170,7 @@ const startInput = z.object({
 });
 
 export async function startBooking(raw: z.input<typeof startInput>): Promise<
-  ActionResult<{ channel: NotificationChannel; maskedDestination: string; holdExpiresAt: string; resendAvailableAt: string }>
+  ActionResult<{ channel: NotificationChannel; maskedDestination: string; holdExpiresAt: string; resendAvailableAt: string; testCode?: string }>
 > {
   return runAction(async () => {
     const input = startInput.parse(raw);
@@ -221,18 +226,23 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
       maskedDestination: result.maskedDestination,
       holdExpiresAt: result.holdExpiresAt.toISOString(),
       resendAvailableAt: result.resendAvailableAt.toISOString(),
+      ...(result.testCode ? { testCode: result.testCode } : {}),
     };
   });
 }
 
-export async function resendCode(): Promise<ActionResult<{ resendAvailableAt: string; sendsLeft: number }>> {
+export async function resendCode(): Promise<ActionResult<{ resendAvailableAt: string; sendsLeft: number; testCode?: string }>> {
   return runAction(async () => {
     const scope = await bookingScope();
     const cookie = await holdCookie(scope);
     if (!cookie) throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     const { hash } = await ipSubject(scope);
     const result = await resendBookingCode(database(), scope.ctx, { browserHash: hashBrowserCookie(cookie), ipSubject: hash }, notifier());
-    return { resendAvailableAt: result.resendAvailableAt.toISOString(), sendsLeft: result.sendsLeft };
+    return {
+      resendAvailableAt: result.resendAvailableAt.toISOString(),
+      sendsLeft: result.sendsLeft,
+      ...(result.testCode ? { testCode: result.testCode } : {}),
+    };
   });
 }
 
@@ -246,9 +256,74 @@ export async function verifyCode(raw: { code: string }): Promise<ActionResult<{ 
     if (!cookie) throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     const { hash } = await ipSubject(scope);
     await enforce(database(), "otp_verify", { ip: hash }, scope.ctx.now);
-    const { token } = await verifyBooking(database(), scope.ctx, { browserHash: hashBrowserCookie(cookie), code: input.code });
-    (await cookies()).delete({ name: HOLD_COOKIE, path: "/reservar" });
+    const { token, deviceToken } = await verifyBooking(database(), scope.ctx, { browserHash: hashBrowserCookie(cookie), code: input.code });
+    const jar = await cookies();
+    jar.delete({ name: HOLD_COOKIE, path: "/reservar" });
+    setDeviceCookie(jar, deviceToken);
     return { manageUrl: `/cita/${token}` };
+  });
+}
+
+type CookieJar = Awaited<ReturnType<typeof cookies>>;
+
+/** Cookie villa_device: recuerda el celular verificado en este navegador (lax: llega desde un enlace de WhatsApp). */
+function setDeviceCookie(jar: CookieJar, token: string): void {
+  jar.set(DEVICE_COOKIE, token, {
+    httpOnly: true,
+    secure: !allowsDevFallbacks(),
+    sameSite: "lax",
+    path: "/",
+    maxAge: DEVICE_TTL_DAYS * 24 * 60 * 60,
+  });
+}
+
+// ─── Cliente recordado en este navegador ─────────────────────────────────────
+
+const knownInput = z.object({
+  serviceId: uuid,
+  staffId: staffChoice,
+  date: dateSchema,
+  minute: minuteSchema,
+  turnstileToken: z.string().max(2048),
+  formId: uuid,
+});
+
+/** Reserva sin código desde un navegador recordado. Sin cookie vigente responde deviceUnknown. */
+export async function bookAsKnown(raw: z.input<typeof knownInput>): Promise<ActionResult<{ manageUrl: string }>> {
+  return runAction(async () => {
+    const input = knownInput.parse(raw);
+    const scope = await bookingScope();
+    assertBookableDate(scope.location, input.date, scope.ctx.now);
+    const jar = await cookies();
+    const device = await knownClient(database(), { locationId: scope.location.id, token: jar.get(DEVICE_COOKIE)?.value, now: scope.ctx.now });
+    if (!device) {
+      jar.delete({ name: DEVICE_COOKIE, path: "/" });
+      throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
+    }
+    const { ip, hash } = await ipSubject(scope);
+    if (!(await humanVerifier().verify(input.turnstileToken, ip))) {
+      throw new BookingError("No pudimos comprobar que eres una persona. Recarga la página e inténtalo otra vez.");
+    }
+    await enforce(database(), "booking_start", { ip: hash }, scope.ctx.now);
+    const { token } = await bookAsKnownClient(database(), scope.ctx, scope.location, {
+      serviceId: await resolveServiceId(database(), scope.location.id, input.serviceId),
+      staffId: await staffIdOf(scope, input.staffId),
+      start: localMinuteToInstant(input.date, input.minute, scope.location.timeZone),
+      formId: input.formId,
+      device,
+    });
+    return { manageUrl: `/cita/${token}` };
+  });
+}
+
+/** "No soy yo": olvida este navegador. Siempre responde bien (sin revelar si había algo). */
+export async function forgetDevice(): Promise<ActionResult<undefined>> {
+  return runAction(async () => {
+    const location = await publicLocation(database(), { fallbackToFirst: true });
+    const jar = await cookies();
+    if (location) await forgetClientDevice(database(), { locationId: location.id, token: jar.get(DEVICE_COOKIE)?.value });
+    jar.delete({ name: DEVICE_COOKIE, path: "/" });
+    return undefined;
   });
 }
 

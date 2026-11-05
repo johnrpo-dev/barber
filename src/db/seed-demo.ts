@@ -44,10 +44,28 @@ const BARBERS = [
   { name: "Mateo Cardona", schedule: week(h(11), h(15), h(20), true) },
 ] as const;
 
-async function main() {
+/**
+ * tsx no fija NODE_ENV: con el .env de producción, mirar solo NODE_ENV no protege. Se exige una base
+ * local (localhost, 127.0.0.1, ::1) o la opción explícita ALLOW_SEED_DEMO=1. Nunca imprime la URL.
+ */
+function assertDevDatabase(): void {
   if (process.env.NODE_ENV === "production") {
     throw new Error("seed-demo es solo para desarrollo: no se ejecuta con NODE_ENV=production");
   }
+  if (process.env.ALLOW_SEED_DEMO === "1") return;
+  let host = "";
+  try {
+    host = new URL(process.env.DATABASE_URL ?? "").hostname;
+  } catch {
+    // Sin URL válida: no es una base local reconocible.
+  }
+  if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(host)) {
+    throw new Error("seed-demo solo corre contra una base local. Si de verdad es una base de pruebas, usa ALLOW_SEED_DEMO=1.");
+  }
+}
+
+async function main() {
+  assertDevDatabase();
   const client = db();
   const d = client as unknown as Db;
 
@@ -76,9 +94,14 @@ async function main() {
       .select({ id: staffMembers.id })
       .from(staffMembers)
       .where(and(eq(staffMembers.locationId, locationId), eq(staffMembers.displayName, b.name)));
-    const staffId = found?.id ?? (await addStaffMember(d, { locationId, displayName: b.name, role: "barber" }));
+    if (found) {
+      // Un barbero que ya existe conserva su horario: el seed nunca pisa datos reales.
+      console.log(`Barbero "${b.name}": ya existe; su horario no se toca.`);
+      continue;
+    }
+    const staffId = await addStaffMember(d, { locationId, displayName: b.name, role: "barber" });
     await setWeeklySchedule(d, { locationId, staffId, blocks: b.schedule });
-    console.log(`Barbero "${b.name}": ${found ? "ya existía" : "creado"}; horario actualizado.`);
+    console.log(`Barbero "${b.name}": creado con su horario.`);
   }
 
   const settings = await locationSettings(d, locationId);
