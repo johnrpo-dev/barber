@@ -17,6 +17,8 @@ import { longDate } from "../agenda/_components/slot-picker";
 import { type ClientChoice, ClientPicker, clientIsReady } from "../agenda/_components/client-picker";
 import { checkoutAction, loadCheckout, loadWalkInCheckout } from "./actions";
 import { BUSINESS_NAME } from "@/domain/brand";
+import { normalizePhone } from "@/domain/clients/client";
+import { type ReceiptDestination, receiptDestination } from "@/domain/notifications/channel";
 
 // Hoja de cobro (docs/sprint-4-cobro-caja.md §7 y §9). Caso típico en 3 toques: la cita → "Cobrar"
 // → "Cobrar $X" (el medio ya viene elegido). Todo lo que se ve aquí es vista previa con las mismas
@@ -224,6 +226,16 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
   // Recibo por WhatsApp o correo: solo si hay cliente; quien cobra le pregunta y lo deja marcado.
   const hasClient = walkIn ? client.kind !== "none" : view.clientName !== null;
   const [sendReceipt, setSendReceipt] = useState(true);
+  // A dónde saldría (riesgo B4), con la misma regla que el envío: enmascarado si el cliente ya
+  // existía; completo si su celular se acaba de teclear, para leérselo. undefined: el celular
+  // tecleado aún no es válido (no se muestra nada todavía).
+  const receiptTo: ReceiptDestination | null | undefined = !walkIn
+    ? view.receipt.to
+    : client.kind === "existing"
+      ? (client.receiptTo ?? null)
+      : client.kind === "new"
+        ? newClientDestination(client.phone, view.receipt.channels)
+        : null;
   const usable =(m: Method) => m.kind !== "cash" || cashOpen;
   const defaultMethod = (view.methods.find((m) => m.kind === "cash" && cashOpen) ?? view.methods.find((m) => m.kind !== "cash"))?.id ?? "";
   const [split, setSplit] = useState(false);
@@ -503,7 +515,7 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         };
       }),
       idempotencyKey: idempotencyKey.current,
-      sendReceipt: hasClient && sendReceipt,
+      sendReceipt: hasClient && receiptTo != null && sendReceipt,
     };
     setPending(true);
     const res = await callAction(() => checkoutAction(payload));
@@ -728,13 +740,21 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         {change > 0n ? <TotalRow label="Cambio para el cliente" value={fmt(change)} strong /> : null}
       </dl>
 
-      {hasClient ? (
-        <Toggle isSelected={sendReceipt} onChange={setSendReceipt}>
-          <span className="flex flex-col">
-            <span>Enviar el recibo al cliente</span>
-            <span className="text-xs font-normal text-tinta/70">Por WhatsApp, o por correo si no tiene celular. Pregúntale antes.</span>
-          </span>
-        </Toggle>
+      {hasClient && receiptTo !== undefined ? (
+        receiptTo ? (
+          <Toggle isSelected={sendReceipt} onChange={setSendReceipt}>
+            <span className="flex flex-col">
+              <span>Enviar el recibo al cliente</span>
+              <span className="text-xs font-normal text-tinta/70">
+                {receiptTo.channel === "whatsapp" ? "Se enviará por WhatsApp al " : "Se enviará por correo a "}
+                <span className="monto font-semibold text-tinta">{receiptTo.label}</span>.{" "}
+                {walkIn && client.kind === "new" ? "Léeselo al cliente para confirmarlo." : "Confírmalo con el cliente."}
+              </span>
+            </span>
+          </Toggle>
+        ) : (
+          <p className="text-sm text-tinta/70">Sin celular ni correo: no se puede enviar el recibo.</p>
+        )
       ) : null}
 
       <div ref={summaryRef} tabIndex={-1} className="outline-none">
@@ -749,6 +769,13 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
       </div>
     </div>
   );
+}
+
+/** Destino del recibo de un cliente nuevo del walk-in: su celular completo, para leérselo. */
+function newClientDestination(phone: string, channels: CheckoutView["receipt"]["channels"]): ReceiptDestination | null | undefined {
+  const phoneE164 = normalizePhone(phone);
+  if (!phoneE164) return undefined;
+  return receiptDestination({ phoneE164, email: null }, channels, { reveal: true });
 }
 
 function TotalRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {

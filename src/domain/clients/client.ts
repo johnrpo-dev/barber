@@ -40,6 +40,17 @@ export function maskPhone(e164: string): string {
   return co ? `${co[1]} ••• ••${co[2]}` : `••••${e164.slice(-2)}`;
 }
 
+/**
+ * "juan.perez@gmail.com" → "j•••@gmail.com": quien cobra confirma el correo con el cliente sin
+ * verlo completo. Solo deja ver el primer carácter del usuario y el dominio.
+ */
+export function maskEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return "•••";
+  const first = [...email.slice(0, at)][0];
+  return `${first}•••@${email.slice(at + 1)}`;
+}
+
 export function assertValidClientName(name: string): string {
   const clean = name.trim().replace(/\s+/g, " ");
   if (clean.length < 2 || clean.length > 80) throw new InvalidClientError("El nombre debe tener entre 2 y 80 caracteres");

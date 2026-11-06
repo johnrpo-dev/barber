@@ -3,8 +3,9 @@ import { saleNumber } from "@/domain/sales/receipt-number";
 import { instantLabels } from "@/domain/booking/public-labels";
 import { format, money } from "@/domain/money";
 import { firstNameForMessage, type NotificationChannel } from "@/domain/notifications/templates";
+import { type ReceiptDestination, receiptDestination } from "@/domain/notifications/channel";
 import { enqueueNotification, preferredChannel } from "./notifications";
-import { clients, locations, saleLines, salePayments, sales, saleTips, staffMembers } from "./schema";
+import { appointments, clients, locations, saleLines, salePayments, sales, saleTips, staffMembers } from "./schema";
 import type { Db } from "./types";
 
 // Recibo impreso de una venta y el historial para reimprimir. No es factura electrónica.
@@ -260,4 +261,37 @@ export async function enqueueSaleReceipt(
     },
   });
   return target.channel;
+}
+
+/**
+ * A dónde saldría el recibo de cada cliente (enmascarado), con la misma elección de canal que
+ * `enqueueSaleReceipt`: quien cobra lo confirma con el cliente antes de enviar (riesgo B4).
+ * Un cliente anonimizado, de otra sede o sin cómo recibirlo queda en null.
+ */
+export async function receiptDestinationsOf(
+  db: Db,
+  input: { locationId: bigint; clientIds: readonly bigint[]; channels: readonly NotificationChannel[] },
+): Promise<Map<bigint, ReceiptDestination | null>> {
+  const out = new Map<bigint, ReceiptDestination | null>(input.clientIds.map((id) => [id, null]));
+  if (input.clientIds.length === 0) return out;
+  const rows = await db
+    .select({ id: clients.id, phoneE164: clients.phoneE164, email: clients.email })
+    .from(clients)
+    .where(and(eq(clients.locationId, input.locationId), inArray(clients.id, [...input.clientIds]), sql`${clients.anonymizedAt} is null`));
+  for (const r of rows) out.set(r.id, receiptDestination(r, input.channels));
+  return out;
+}
+
+/** El destino del recibo del cliente de una cita (null: la cita no tiene cliente o no tiene cómo recibirlo). */
+export async function appointmentReceiptDestination(
+  db: Db,
+  input: { locationId: bigint; appointmentId: bigint; channels: readonly NotificationChannel[] },
+): Promise<ReceiptDestination | null> {
+  const [row] = await db
+    .select({ clientId: appointments.clientId })
+    .from(appointments)
+    .where(and(eq(appointments.locationId, input.locationId), eq(appointments.id, input.appointmentId)));
+  if (!row?.clientId) return null;
+  const found = await receiptDestinationsOf(db, { locationId: input.locationId, clientIds: [row.clientId], channels: input.channels });
+  return found.get(row.clientId) ?? null;
 }

@@ -7,9 +7,9 @@ import { MemoryNotifier } from "@/lib/notify/memory";
 import { bucketHash } from "@/lib/public-readiness";
 import { openCashSession } from "./cash";
 import { type DeliveryContext, deliverNotification } from "./notifications";
-import { enqueueSaleReceipt, saleReceipt, salesOfDay } from "./receipts";
+import { appointmentReceiptDestination, enqueueSaleReceipt, receiptDestinationsOf, saleReceipt, salesOfDay } from "./receipts";
 import { checkout } from "./sales";
-import { key, quickSale, setupShop, type Shop } from "./sales-testing";
+import { chairAppointment, key, quickSale, setupShop, type Shop } from "./sales-testing";
 import { notificationEvents, notifications, sales } from "./schema";
 import { createTestDb } from "./testing";
 import type { Db } from "./types";
@@ -163,5 +163,27 @@ describe("enviar el recibo al cliente", () => {
     // Otra sede no encola el recibo de esta.
     const { saleId: mine } = await quickSale(db, shop, { kind: "card" });
     expect(await enqueueSaleReceipt(db, { locationId: other.locationId, publicId: await publicIdOf(mine), channels: ["whatsapp"], hash })).toBeNull();
+  });
+});
+
+describe("a dónde saldría el recibo (riesgo B4)", () => {
+  it("enmascarado, con la misma elección de canal que el envío, y solo de esta sede", async () => {
+    // El cliente de prueba tiene celular (300 123 4567) y no correo.
+    const mine = await receiptDestinationsOf(db, { locationId: shop.locationId, clientIds: [shop.client], channels: ["whatsapp", "email"] });
+    expect(mine.get(shop.client)).toEqual({ channel: "whatsapp", label: "300 ••• ••67" });
+    const onlyEmail = await receiptDestinationsOf(db, { locationId: shop.locationId, clientIds: [shop.client], channels: ["email"] });
+    expect(onlyEmail.get(shop.client)).toBeNull();
+    const elsewhere = await receiptDestinationsOf(db, { locationId: other.locationId, clientIds: [shop.client], channels: ["whatsapp"] });
+    expect(elsewhere.get(shop.client)).toBeNull();
+    expect((await receiptDestinationsOf(db, { locationId: shop.locationId, clientIds: [], channels: ["whatsapp"] })).size).toBe(0);
+  });
+
+  it("el de la cita es el de su cliente; otra sede no lo ve", async () => {
+    const appointmentId = await chairAppointment(db, shop);
+    expect(await appointmentReceiptDestination(db, { locationId: shop.locationId, appointmentId, channels: ["whatsapp"] })).toEqual({
+      channel: "whatsapp",
+      label: "300 ••• ••67",
+    });
+    expect(await appointmentReceiptDestination(db, { locationId: other.locationId, appointmentId, channels: ["whatsapp"] })).toBeNull();
   });
 });

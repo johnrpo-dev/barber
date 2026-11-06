@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { addDays, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { instantLabels, ticketCode } from "@/domain/booking/public-labels";
 import { businessDate } from "@/domain/ledger/business-date";
+import { preferredChannel } from "@/domain/notifications/channel";
 import { quotaState } from "@/domain/notifications/quota";
 import { dedupeKey, dueReminders, REMINDER_DEDUPE, REMINDER_LEAD_MS } from "@/domain/notifications/schedule";
 import { firstNameForMessage, type NotificationChannel, TEMPLATE_PARAMS } from "@/domain/notifications/templates";
@@ -91,15 +92,8 @@ export async function enqueueNotification(db: Db, input: EnqueueInput): Promise<
   return rows.length > 0;
 }
 
-/** WhatsApp si hay celular y canal; si no, correo. null: no hay cómo avisarle. */
-export function preferredChannel(
-  client: { phoneE164: string | null; email: string | null },
-  channels: readonly NotificationChannel[],
-): { channel: NotificationChannel; to: string } | null {
-  if (client.phoneE164 && channels.includes("whatsapp")) return { channel: "whatsapp", to: client.phoneE164 };
-  if (client.email && channels.includes("email")) return { channel: "email", to: client.email };
-  return null;
-}
+/** WhatsApp si hay celular y canal; si no, correo. Vive en el dominio: la hoja de cobro la usa también. */
+export { preferredChannel };
 
 /** Parámetros de una cita para las plantillas (en la zona de la sede), sin el enlace. */
 export async function messageParams(db: Db, input: { locationId: bigint; appointmentId: bigint }): Promise<Record<string, string>> {

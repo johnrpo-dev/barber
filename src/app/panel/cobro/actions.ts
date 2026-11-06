@@ -12,9 +12,11 @@ import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, minorText, moneyLabel } from "@/lib/labels";
 import { describeError } from "@/lib/log";
-import { bucketHash, publicConfig } from "@/lib/public-readiness";
+import { bucketHash, publicConfig, receiptChannels } from "@/lib/public-readiness";
 import { requirePermission } from "@/lib/session";
-import { enqueueSaleReceipt } from "@/db/receipts";
+import { appointmentReceiptDestination, enqueueSaleReceipt } from "@/db/receipts";
+import type { ReceiptDestination } from "@/domain/notifications/channel";
+import type { NotificationChannel } from "@/domain/notifications/templates";
 
 // Cobro (docs/sprint-4-cobro-caja.md §9). La sede, los precios, las comisiones, los medios de pago,
 // las reglas y el día contable salen de la base; del navegador solo llegan las elecciones.
@@ -55,6 +57,12 @@ export interface CheckoutView {
   dayClosed: boolean;
   businessDate: string;
   paid: { saleId: string; totalLabel: string; paidAt: string } | null;
+  /**
+   * Recibo (riesgo B4): a dónde saldría, enmascarado y con la misma elección de canal que el envío
+   * (null: el cliente no tiene cómo recibirlo), y los canales activos, para calcular en la hoja el
+   * destino del celular que se teclee en un walk-in.
+   */
+  receipt: { to: ReceiptDestination | null; channels: NotificationChannel[] };
 }
 
 const loadInput = z.object({ appointmentId: idSchema });
@@ -66,6 +74,8 @@ export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<Acti
     const ctx = await checkoutContext(database(), { locationId: staff.locationId, appointmentId: input.appointmentId });
     if (!ctx) throw new CheckoutError("La cita no existe");
     const a = ctx.appointment;
+    const channels = receiptChannels();
+    const receiptTo = await appointmentReceiptDestination(database(), { locationId: staff.locationId, appointmentId: input.appointmentId, channels });
     return {
       appointmentId: a.id.toString(),
       clientName: a.clientName,
@@ -102,6 +112,7 @@ export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<Acti
       dayClosed: ctx.dayClosed,
       businessDate: ctx.businessDate,
       paid: ctx.paid ? { saleId: ctx.paid.id.toString(), totalLabel: moneyLabel(ctx.paid.totalPaid), paidAt: ctx.paid.createdAt.toISOString() } : null,
+      receipt: { to: receiptTo, channels },
     };
   });
 }
@@ -136,6 +147,9 @@ export async function loadWalkInCheckout(): Promise<ActionResult<CheckoutView>> 
       dayClosed: ctx.dayClosed,
       businessDate: ctx.businessDate,
       paid: null,
+      // El cliente se elige en la hoja: su destino llega con la búsqueda (findClients) o se calcula
+      // allí con el celular tecleado.
+      receipt: { to: null, channels: receiptChannels() },
     };
   });
 }

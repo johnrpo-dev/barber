@@ -127,3 +127,16 @@ export function publicConfig(): PublicConfig {
 export function bucketHash(value: string, pepper: string): string {
   return createHmac("sha256", pepper).update(value).digest("hex");
 }
+
+/**
+ * Canales por los que hoy saldría un recibo: los de `publicConfig()`, o ninguno si la
+ * configuración no está lista (el envío tampoco encola, src/app/panel/cobro/actions.ts).
+ * Para mostrarle a quien cobra a dónde saldría, sin que una configuración incompleta tumbe la hoja.
+ */
+export function receiptChannels(): NotificationChannel[] {
+  try {
+    return [...publicConfig().channels];
+  } catch {
+    return [];
+  }
+}

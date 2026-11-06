@@ -18,6 +18,7 @@ import { db } from "@/db/client";
 import { findOrCreateClient, searchClients } from "@/db/clients";
 import { clearNoShows, noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
+import { receiptDestinationsOf } from "@/db/receipts";
 import { markPresence } from "@/db/staff-presence";
 import { appointments } from "@/db/schema";
 import type { Db } from "@/db/types";
@@ -25,10 +26,12 @@ import { isDateString, localMinuteOf, localMinuteToInstant } from "@/domain/book
 import { APPOINTMENT_STATUSES, STATUS_LABELS } from "@/domain/booking/status";
 import { formatPhone, InvalidClientError, maskPhone } from "@/domain/clients/client";
 import { noShowNotice } from "@/domain/clients/no-shows";
+import type { ReceiptDestination } from "@/domain/notifications/channel";
 import { businessDate } from "@/domain/ledger/business-date";
 import { can } from "@/domain/staff/roles";
 import { formatTime } from "@/domain/staff/schedule";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
+import { receiptChannels } from "@/lib/public-readiness";
 import { requirePermission, requireStaff, type StaffContext } from "@/lib/session";
 
 // Acciones de la agenda. Cada una vuelve a comprobar el permiso y toma la sede de la sesión,
@@ -113,6 +116,8 @@ export interface ClientOption {
   phone: string | null;
   /** Faltas: "Reserva en línea suspendida: 2 faltas". El personal puede agendarle igual. */
   noShowNotice: string | null;
+  /** A dónde saldría su recibo, enmascarado (la hoja de cobro lo muestra antes de enviar). */
+  receiptTo: ReceiptDestination | null;
 }
 
 export async function findClients(query: string): Promise<ActionResult<ClientOption[]>> {
@@ -127,6 +132,7 @@ export async function findClients(query: string): Promise<ActionResult<ClientOpt
       await recordContactReads(database(), { locationId: staff.locationId, staffId: staff.staffId, context: "client_search", clientIds: shown });
     }
     const standings = await noShowStandings(database(), { locationId: staff.locationId, clientIds: rows.map((c) => c.id), now: new Date() });
+    const destinations = await receiptDestinationsOf(database(), { locationId: staff.locationId, clientIds: rows.map((c) => c.id), channels: receiptChannels() });
     return rows.map((c) => {
       const standing = standings.get(c.id);
       return {
@@ -134,6 +140,7 @@ export async function findClients(query: string): Promise<ActionResult<ClientOpt
         name: c.name,
         phone: c.phoneE164 ? (seeContact ? formatPhone(c.phoneE164) : maskPhone(c.phoneE164)) : null,
         noShowNotice: standing ? noShowNotice(standing) : null,
+        receiptTo: destinations.get(c.id) ?? null,
       };
     });
   });

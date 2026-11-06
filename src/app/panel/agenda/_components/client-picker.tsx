@@ -13,13 +13,14 @@ import {
   TextField,
 } from "react-aria-components";
 import { Btn, cx, field } from "../../_components/ui";
+import type { ReceiptDestination } from "@/domain/notifications/channel";
 import { type ClientOption, findClients } from "../actions";
 
 // Buscar al cliente por nombre o celular; si no existe, crearlo con nombre y celular.
 // En un walk-in el cliente es opcional (basta un nombre para llamarlo).
 
 export type ClientChoice =
-  | { kind: "existing"; id: string; name: string; phone: string | null; noShowNotice?: string | null }
+  | { kind: "existing"; id: string; name: string; phone: string | null; noShowNotice?: string | null; receiptTo?: ReceiptDestination | null }
   | { kind: "new"; name: string; phone: string }
   | { kind: "none"; name: string };
 
@@ -134,7 +135,7 @@ export function ClientPicker({
         }}
         onSelectionChange={(key) => {
           const c = results.find((r) => r.id === key);
-          if (c) onChange({ kind: "existing", id: c.id, name: c.name, phone: c.phone, noShowNotice: c.noShowNotice });
+          if (c) onChange({ kind: "existing", id: c.id, name: c.name, phone: c.phone, noShowNotice: c.noShowNotice, receiptTo: c.receiptTo });
         }}
         menuTrigger="input"
         allowsEmptyCollection
