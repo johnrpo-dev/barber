@@ -8,6 +8,8 @@
 - Dos servicios systemd: `villa-web` y `villa-worker`.
 - Backups diarios cifrados en un bucket externo, con una prueba de restauración cada mes.
 
+**¿Solo para pruebas, antes del lanzamiento?** Sigue [ambiente-de-pruebas.md](ambiente-de-pruebas.md): VPS aparte, un subdominio y datos de prueba, sin backups.
+
 **Archivos del kit:** todo está en [`deploy/`](../deploy). Los valores entre `CAMBIAR` o `TU-DOMINIO` son tuyos y **nunca se suben al repositorio**.
 
 | Archivo | Para qué |
