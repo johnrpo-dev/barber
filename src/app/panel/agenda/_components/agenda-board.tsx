@@ -168,7 +168,8 @@ export function AgendaBoard({ view, canCharge = false }: { view: AgendaView; can
                 const k = [...keys][0];
                 if (k !== undefined) setPhoneStaff(String(k));
               }}
-              className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:hidden"
+              // relative: el sr-only (absoluto) de cada botón se recorta aquí y no ensancha la página.
+              className="relative -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] md:hidden"
             >
               {view.columns.map((c) => {
                 const n = onGrid.filter((a) => a.staffId === c.staffId).length;
