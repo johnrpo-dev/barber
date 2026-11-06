@@ -122,6 +122,18 @@ describe("la fila del walk-in", () => {
     expect(freeIds(q)).not.toContain(SERGIO);
   });
 
+  it("un \"Llegó\" olvidado pasado de su hora no lo deja ocupado todo el día: sale con el motivo", () => {
+    const q = queue({ now: at(17, 0), appointments: [...owners().slice(1), appt(SERGIO, "arrived", at(15, 0), at(15, 35))] });
+    expect(q.find((e) => e.staffId === SERGIO)).toMatchObject({ kind: "excluded", reason: { code: "overdue_in_chair" } });
+  });
+
+  it("libre ahora pero el servicio no alcanza antes de su descanso: ocupado, marcado como libre ahora", () => {
+    const q = queue({ now: at(12, 45), appointments: [] });
+    expect(q.every((e) => e.kind === "excluded" && e.reason.code === "off_shift")).toBe(true);
+    const lunchSoon = queue({ now: at(10, 10), timeOff: [{ staffId: SERGIO, start: at(10, 30), end: at(10, 50) }] });
+    expect(lunchSoon.find((e) => e.staffId === SERGIO)).toMatchObject({ kind: "busy", idleNow: true, freeAt: at(10, 50) });
+  });
+
   it("sin servicios hoy, cuenta desde el inicio del bloque; lo de ayer no cuenta", () => {
     const yesterday = new Date(at(18, 0).getTime() - 24 * 60 * MINUTE_MS);
     const q = queue({ now: at(9, 0), appointments: [appt(SERGIO, "completed", yesterday, new Date(yesterday.getTime() + 35 * MINUTE_MS))] });
@@ -238,6 +250,23 @@ describe("propiedades de la fila del walk-in", () => {
           );
           expect(soon).toBe(false);
           expect(e.freeSince.getTime()).toBeLessThanOrEqual(input.now.getTime());
+        }
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it("todo barbero apto sin nada en su agenda ni ausencias entra como libre (la otra dirección)", () => {
+    fc.assert(
+      fc.property(scenario, (s) => {
+        const input = build(s);
+        const start = floorToStep(input.now, 5);
+        const q = walkInQueue(input);
+        for (const st of input.staff) {
+          const hasAppointments = input.appointments.some((a) => a.staffId === st.staffId && !["cancelled", "no_show"].includes(a.status));
+          const hasTimeOff = input.timeOff.some((t) => t.staffId === null || t.staffId === st.staffId);
+          if (!st.offersService || hasAppointments || hasTimeOff || !fitsSchedule(start, input.durationMin, st.blocks, TZ)) continue;
+          expect(q.find((e) => e.staffId === st.staffId)?.kind).toBe("free");
         }
       }),
       { numRuns: 300 },

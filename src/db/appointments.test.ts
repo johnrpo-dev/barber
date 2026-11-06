@@ -1,6 +1,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import fc from "fast-check";
 import { beforeEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { BookingError } from "@/domain/booking/appointment";
 import { addDays, localMinuteOf, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { ALLOWED_TRANSITIONS, APPOINTMENT_STATUSES, type AppointmentStatus, TransitionError } from "@/domain/booking/status";
@@ -207,6 +208,11 @@ describe("walk-in: la fila por tiempo libre", () => {
     const w = await walkIn(db, { locationId, serviceId: barba, staffId, clientId: null, createdBy: "u", now: at(start), idempotencyKey: `s${++key}` });
     await changeStatus(db, { locationId, appointmentId: w.appointmentId, to: "in_chair", actor: reception, now: at(start) });
     await changeStatus(db, { locationId, appointmentId: w.appointmentId, to: "completed", actor: reception, now: at(done) });
+    // La base pone status_changed_at con su reloj y no deja tocar una cita terminada; en la prueba,
+    // la hora simulada con los triggers apagados solo para esta fila.
+    await db.execute(sql`set session_replication_role = replica`);
+    await db.execute(sql`update appointments set status_changed_at = ${at(done).toISOString()}::timestamptz where id = ${w.appointmentId}`);
+    await db.execute(sql`set session_replication_role = origin`);
   }
   const anyWalkIn = (now: string) =>
     walkIn(db, { locationId, serviceId: barba, staffId: "any", clientId: null, createdBy: "u", now: at(now), idempotencyKey: `a${++key}` });
@@ -223,6 +229,16 @@ describe("walk-in: la fila por tiempo libre", () => {
     expect((await anyWalkIn("10:30")).staffId).toBe(brayan);
     expect((await anyWalkIn("10:31")).staffId).toBe(andres);
     await expect(anyWalkIn("10:32")).rejects.toThrow(/^Nadie está libre ahora\. (Brayan|Andrés) se libera a las 10:50/);
+  });
+
+  it("quien marca Terminar después de la hora programada cuenta desde que terminó, no desde la hora programada", async () => {
+    await served(brayan, "10:00", "10:35"); // programado hasta 10:20; terminó 10:35
+    await served(andres, "10:05", "10:25"); // terminó a su hora
+    const queue = await walkInQueueFor(db, { locationId, serviceId: barba, now: at("10:40") });
+    expect(queue.filter((r) => r.entry.kind === "free").map((r) => [r.displayName, r.entry.kind === "free" ? hhmm(r.entry.freeSince) : ""])).toEqual([
+      ["Andrés", "10:25"],
+      ["Brayan", "10:35"],
+    ]);
   });
 
   it("con una cita en menos de 60 minutos no entra en la fila, aunque haya terminado primero; elegido a mano, sí", async () => {

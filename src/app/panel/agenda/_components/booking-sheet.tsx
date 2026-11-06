@@ -445,14 +445,24 @@ function WalkInForm({
   // al cambiar el servicio y después de un intento fallido; el servidor la recalcula al empezar.
   const [queue, setQueue] = useState<{ serviceId: string; rows: WalkInQueueOption[] } | null>(null);
   const [queueTick, setQueueTick] = useState(0);
+  const [queueError, setQueueError] = useState<string | null>(null);
   useEffect(() => {
     if (!serviceId) return;
     let live = true;
-    void loadWalkInQueue({ serviceId }).then((r) => {
-      if (live && r.ok) setQueue({ serviceId, rows: r.data });
-    });
+    const load = () =>
+      void loadWalkInQueue({ serviceId }).then((r) => {
+        if (!live) return;
+        if (r.ok) {
+          setQueue({ serviceId, rows: r.data });
+          setQueueError(null);
+        } else setQueueError(r.error);
+      });
+    load();
+    // Con el formulario abierto, la fila cambia sola (alguien termina): se refresca cada minuto.
+    const timer = setInterval(load, 60_000);
     return () => {
       live = false;
+      clearInterval(timer);
     };
   }, [serviceId, queueTick]);
   const rows = queue && queue.serviceId === serviceId ? queue.rows : null;
@@ -501,6 +511,7 @@ function WalkInForm({
           }}
           queue={rows}
         />
+        {queueError ? <p className="text-xs text-alerta">No se pudo cargar la fila: {queueError}</p> : null}
         {staffId !== "any" && rows?.find((q) => q.staffId === staffId)?.reason === "booking_soon" ? (
           <p className="text-xs text-tinta/70">Puedes elegirlo igual si el servicio alcanza antes de su cita: la regla de los 60 minutos es para repartir, no un bloqueo.</p>
         ) : null}

@@ -15,9 +15,10 @@ import type { AppointmentStatus } from "./status";
 // - "Libre desde" = lo más tarde entre el fin de su último servicio atendido hoy, el inicio del
 //   bloque del turno en que está (después del almuerzo vuelve a contar desde ahí) y el fin de su
 //   última ausencia de hoy. Ayer no cuenta.
-// - El fin del servicio es el de la cita: al marcarla terminada se recorta a la hora real (con tope
-//   en la programada), más la limpieza.
-// - Quien está en la silla pasado de la hora programada sin marcar "Terminar" no se elige solo.
+// - El fin del servicio es la hora real en que se marcó "Terminar" (más la limpieza), también si
+//   terminó después de lo programado: la base lo arma así (walkInQueueFor).
+// - Quien está en la silla, o con un cliente marcado "Llegó", pasado de la hora programada sin
+//   marcar nada no se elige solo: un olvido no puede tenerlo "ocupado" todo el día.
 // - Empates: menos servicios atendidos hoy primero; luego una rotación que cambia cada día (por
 //   nombre favorecería siempre al mismo).
 
@@ -54,7 +55,14 @@ export type ExclusionReason =
 
 export type QueueEntry =
   | { readonly kind: "free"; readonly staffId: bigint; readonly freeSince: Date; readonly attendedToday: number }
-  | { readonly kind: "busy"; readonly staffId: bigint; readonly freeAt: Date; readonly attendedToday: number }
+  | {
+      readonly kind: "busy";
+      readonly staffId: bigint;
+      readonly freeAt: Date;
+      readonly attendedToday: number;
+      /** Está libre ahora, pero el servicio no alcanza antes de su próxima cita o descanso. */
+      readonly idleNow: boolean;
+    }
   | { readonly kind: "excluded"; readonly staffId: bigint; readonly reason: ExclusionReason };
 
 export interface WalkInQueueInput {
@@ -80,10 +88,10 @@ function isBooking(a: QueueAppointment, now: Date): boolean {
   return (a.status === "pending" || a.status === "confirmed" || a.status === "arrived") && occupies(a, now);
 }
 
-/** Servicio ya atendido: terminado, o pasado de su hora sin que nadie lo marcara. */
+/** Servicio ya atendido: terminado, o una cita confirmada pasada de su hora sin que nadie la marcara. */
 function attendedBefore(a: QueueAppointment, now: Date): boolean {
   if (a.end.getTime() > now.getTime()) return false;
-  return a.status === "completed" || a.status === "confirmed" || a.status === "arrived";
+  return a.status === "completed" || a.status === "confirmed";
 }
 
 /** Rotación del día: estable para una fecha y distinta de un día a otro (FNV-1a de 32 bits). */
@@ -138,8 +146,11 @@ export function walkInQueue(input: WalkInQueueInput): QueueEntry[] {
         .filter((a) => isBooking(a, now) && a.start.getTime() >= from && a.start.getTime() < from + input.guardMin * MINUTE_MS)
         .sort((a, b) => a.start.getTime() - b.start.getTime())[0];
 
-    // En la silla pasado de la hora programada: no se elige solo hasta que marque "Terminar".
-    const overdue = mine.find((a) => a.status === "in_chair" && a.end.getTime() <= start.getTime());
+    // En la silla (o con un cliente marcado "Llegó") pasado de la hora programada: no se elige solo
+    // hasta que alguien marque cómo quedó.
+    const overdue = mine
+      .filter((a) => (a.status === "in_chair" || a.status === "arrived") && a.end.getTime() <= start.getTime())
+      .sort((a, b) => a.end.getTime() - b.end.getTime())[0];
     if (overdue) {
       excluded.push({ kind: "excluded", staffId, reason: { code: "overdue_in_chair", since: overdue.end } });
       continue;
@@ -174,7 +185,8 @@ export function walkInQueue(input: WalkInQueueInput): QueueEntry[] {
       } else if (soon) {
         excluded.push({ kind: "excluded", staffId, reason: { code: "booking_soon", at: soon.start } });
       } else {
-        busy.push({ kind: "busy", staffId, freeAt, attendedToday });
+        const idleNow = !blocking.some((i) => i.start <= start.getTime() && start.getTime() < i.end);
+        busy.push({ kind: "busy", staffId, freeAt, attendedToday, idleNow });
       }
       continue;
     }

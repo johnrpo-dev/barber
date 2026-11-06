@@ -524,7 +524,14 @@ export async function walkInQueueFor(db: Db, input: { locationId: bigint; servic
   const from = localMinuteToInstant(today, 0, rules.timeZone);
   const to = localMinuteToInstant(addDays(today, 1), 0, rules.timeZone);
   const appts = await db
-    .select({ staffId: appointments.staffId, status: appointments.status, during: appointments.during, expiresAt: appointments.expiresAt })
+    .select({
+      staffId: appointments.staffId,
+      status: appointments.status,
+      during: appointments.during,
+      expiresAt: appointments.expiresAt,
+      bufferMin: appointments.bufferMin,
+      statusChangedAt: appointments.statusChangedAt,
+    })
     .from(appointments)
     .where(
       and(
@@ -549,7 +556,13 @@ export async function walkInQueueFor(db: Db, input: { locationId: bigint; servic
       staffId: a.staffId,
       status: a.status as AppointmentStatus,
       start: a.during.start,
-      end: a.during.end,
+      // `during` de una terminada tiene tope en la hora programada (es lo que ocupa la agenda). Para
+      // la fila cuenta cuándo se marcó "Terminar" (status_changed_at lo pone la base): quien terminó
+      // tarde no se adelanta a los demás. Una hora posterior a `now` (reloj desfasado) no cuenta.
+      end:
+        a.status === "completed" && a.statusChangedAt.getTime() <= input.now.getTime()
+          ? new Date(Math.max(a.during.end.getTime(), a.statusChangedAt.getTime() + a.bufferMin * MINUTE_MS))
+          : a.during.end,
       expiresAt: a.expiresAt,
     })),
     timeOff: off.map((t) => ({ staffId: t.staffId, start: t.during.start, end: t.during.end })),
@@ -602,7 +615,9 @@ export async function walkIn(
     if (!rows.some((r) => r.entry.kind === "free")) {
       const next = rows.find((r) => r.entry.kind === "busy");
       throw new SlotTakenError(
-        next && next.entry.kind === "busy" ? `Nadie está libre ahora. ${next.displayName} se libera a las ${timeLabel(next.entry.freeAt)}` : "Nadie está libre ahora",
+        next && next.entry.kind === "busy"
+          ? `Nadie está libre ahora. ${next.displayName} ${next.entry.freeAt.getTime() <= now.getTime() ? "se libera en unos minutos" : `se libera a las ${timeLabel(next.entry.freeAt)}`}`
+          : "Nadie está libre ahora",
       );
     }
     return createAppointment(db, {

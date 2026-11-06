@@ -222,11 +222,17 @@ export async function loadWalkInQueue(raw: { serviceId: string }): Promise<Actio
     const input = z.object({ serviceId: idSchema }).parse(raw);
     const rules = await locationRules(database(), staff.locationId);
     const at = (d: Date) => formatTime(localMinuteOf(d, rules.timeZone));
-    const rows = await walkInQueueFor(database(), { locationId: staff.locationId, serviceId: input.serviceId, now: new Date() });
+    const now = new Date();
+    const rows = await walkInQueueFor(database(), { locationId: staff.locationId, serviceId: input.serviceId, now });
     return rows.map(({ staffId, displayName, entry }) => {
       let detail: string;
       if (entry.kind === "free") detail = `Libre desde las ${at(entry.freeSince)}`;
-      else if (entry.kind === "busy") detail = `Se libera a las ${at(entry.freeAt)}`;
+      else if (entry.kind === "busy")
+        detail = entry.idleNow
+          ? `Libre, pero no alcanza antes de lo que sigue; puede a las ${at(entry.freeAt)}`
+          : entry.freeAt.getTime() <= now.getTime()
+            ? "Se libera en unos minutos"
+            : `Se libera a las ${at(entry.freeAt)}`;
       else {
         const r = entry.reason;
         detail =
@@ -237,7 +243,7 @@ export async function loadWalkInQueue(raw: { serviceId: string }): Promise<Actio
               : r.code === "booking_soon"
                 ? `Tiene cita a las ${at(r.at)}`
                 : r.code === "overdue_in_chair"
-                  ? "En la silla sin marcar Terminar"
+                  ? "Cita pasada de la hora sin marcar"
                   : `Ausente hasta las ${at(r.until)}`;
       }
       return { staffId: String(staffId), name: displayName, kind: entry.kind, reason: entry.kind === "excluded" ? entry.reason.code : null, detail };
