@@ -20,7 +20,7 @@ import { assertBookingConsent, type ConsentChoices } from "@/domain/clients/cons
 import { businessDate } from "@/domain/ledger/business-date";
 import { format, money } from "@/domain/money";
 import { dedupeKey } from "@/domain/notifications/schedule";
-import { firstNameForMessage, type NotificationChannel } from "@/domain/notifications/templates";
+import type { NotificationChannel } from "@/domain/notifications/templates";
 import { WEEKDAY_LABELS, type Weekday } from "@/domain/staff/schedule";
 import { canResendOtp, generateOtp, hashOtp, normalizeOtpInput, OTP_MAX_SENDS, OTP_RESEND_COOLDOWN_SEC, otpExpiry, otpMatches } from "@/domain/verification/otp";
 import { CURRENT_PRIVACY_VERSION } from "@/content/privacy/versions";
@@ -791,13 +791,17 @@ async function confirmOnlineAppointment(
 /**
  * Decisión del dueño (sprint 7): la reserva en línea se confirma de una vez, sin código por
  * WhatsApp, cuando la sede no lo pide (locations.booking_requires_code). Lo que frena el abuso:
- * Turnstile y los límites por IP y por celular, el tope de citas activas por número y la
+ * Turnstile, los límites por IP, por celular y por sede, el tope de citas activas por número y la
  * confirmación que le llega por WhatsApp al dueño real del número, con el botón para cancelar.
- * Como el celular no se comprueba:
- * - el cliente no se marca verificado y el correo escrito solo se guarda si el cliente es nuevo;
- * - si el número tiene la reserva suspendida por faltas, el mensaje es genérico (no se le cuenta
- *   a un tercero el historial de otra persona).
- * El navegador queda recordado igual (cookie villa_device): la próxima vez no escribe sus datos.
+ * Como nadie comprobó que el celular sea de quien escribe (auditoría del cierre del sprint 7):
+ * - el cliente no se marca verificado y no se guarda el correo: si no, un correo ajeno recibiría
+ *   las citas del dueño del número cuando WhatsApp falle;
+ * - si el número ya era de un cliente, no se registran autorizaciones a su nombre (ni a favor ni
+ *   en contra) y el navegador no queda recordado para él: quien escribe un número ajeno no sale
+ *   con el nombre de esa persona ni con una cookie que reserve como ella;
+ * - para un cliente nuevo, las promociones no se autorizan desde aquí;
+ * - suspendido por faltas y tope de citas activas responden lo mismo: no se le cuenta a un
+ *   tercero el historial de otra persona.
  * Reintentar el mismo formulario devuelve la misma cita.
  */
 export async function bookWithoutCode(
@@ -805,17 +809,16 @@ export async function bookWithoutCode(
   ctx: PublicBookingContext,
   location: PublicLocation,
   input: Omit<StartBookingInput, "browserHash" | "ipSubject">,
-): Promise<{ token: string; deviceToken: string }> {
+): Promise<{ token: string; deviceToken: string | null }> {
   const now = ctx.now;
   if (location.bookingRequiresCode) throw new BookingError(PUBLIC_MESSAGES.generic);
   assertBookingConsent(input.consents);
   const name = assertValidClientName(input.name);
   const phone = publicMobile(input.phone);
   if (!phone) throw new InvalidClientError(PUBLIC_MESSAGES.phone);
-  const email = input.email?.trim().toLowerCase() || null;
-  if (email && (email.length > 254 || !email.includes("@"))) throw new InvalidClientError("El correo no es válido");
   assertBookableDate(location, localParts(input.start, location.timeZone).date, now);
-  await enforce(db, "booking_start", { contact: ctx.hash(phone) }, now);
+  // `location`: sin el código ya no cuenta el tope de envíos de la sede; este lo reemplaza.
+  await enforce(db, "booking_start", { contact: ctx.hash(phone), location: `location:${location.id}` }, now);
   const idempotencyKey = `online:${input.formId}`;
   const [replay] = await db
     .select({ id: appointments.id })
@@ -824,7 +827,7 @@ export async function bookWithoutCode(
   if (!replay) await assertSlotOffered(db, { location, serviceId: input.serviceId, staffId: input.staffId, start: input.start, now });
 
   const outcome = await db.transaction(
-    async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string } | { kind: "expired" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
+    async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string | null } | { kind: "expired" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
       const tx = txRaw as unknown as Db;
       const [before] = await tx
         .select({ id: clients.id })
@@ -871,7 +874,8 @@ export async function bookWithoutCode(
           appointmentEnd: appt.during.end,
           secret: ctx.manageLinkSecret,
         });
-        return { kind: "ok", token, deviceToken: await rememberClientDevice(tx, { locationId: location.id, clientId: client.id, now }) };
+        // El cliente ya existía al reintentar: no se recuerda otro navegador.
+        return { kind: "ok", token, deviceToken: null };
       }
       if (!holdAlive({ apptStatus: appt.status, holdExpiresAt: appt.expiresAt }, now)) {
         if ((await noShowStandingOf(tx, { locationId: location.id, clientId: client.id, now }))?.suspended) return { kind: "suspended" };
@@ -881,13 +885,15 @@ export async function bookWithoutCode(
         appt,
         clientId: client.id,
         channel: "whatsapp",
-        consent: { choices: input.consents, textVersion: CURRENT_PRIVACY_VERSION, ip: input.ip, userAgent: input.userAgent },
+        consent: before
+          ? null
+          : { choices: { ...input.consents, marketing: false }, textVersion: CURRENT_PRIVACY_VERSION, ip: input.ip, userAgent: input.userAgent },
         contactName: null,
-        contactEmail: before ? null : email,
+        contactEmail: null,
         verified: false,
       });
       if (confirmed.kind !== "ok") return confirmed;
-      return { ...confirmed, deviceToken: await rememberClientDevice(tx, { locationId: location.id, clientId: client.id, now }) };
+      return { ...confirmed, deviceToken: before ? null : await rememberClientDevice(tx, { locationId: location.id, clientId: client.id, now }) };
     },
   );
 
@@ -897,7 +903,6 @@ export async function bookWithoutCode(
     case "expired":
       throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     case "limit":
-      throw new BookingError(activeLimitMessage(outcome.max));
     case "suspended":
       throw new BookingError(PUBLIC_MESSAGES.cannotBookOnline);
   }
@@ -1139,7 +1144,6 @@ export interface TicketData {
   statusLabel: string;
   serviceName: string;
   staffName: string;
-  clientFirstName: string;
   dateLabel: string;
   timeLabel: string;
   durationMin: number;
@@ -1170,12 +1174,10 @@ export async function loadTicketData(db: Db, input: { location: PublicLocation; 
       servicePublicId: services.publicId,
       staffName: staffMembers.displayName,
       staffPublicId: staffMembers.publicId,
-      clientName: clients.name,
     })
     .from(appointments)
     .innerJoin(services, and(eq(services.locationId, appointments.locationId), eq(services.id, appointments.serviceId)))
     .innerJoin(staffMembers, and(eq(staffMembers.locationId, appointments.locationId), eq(staffMembers.id, appointments.staffId)))
-    .leftJoin(clients, and(eq(clients.locationId, appointments.locationId), eq(clients.id, appointments.clientId)))
     .where(and(eq(appointments.locationId, input.location.id), eq(appointments.id, link.appointmentId)));
   if (!row) return null;
 
@@ -1192,7 +1194,6 @@ export async function loadTicketData(db: Db, input: { location: PublicLocation; 
     statusLabel: PUBLIC_STATUS_LABELS[row.status],
     serviceName: row.serviceName,
     staffName: row.staffName,
-    clientFirstName: firstNameForMessage(row.clientName ?? ""),
     ...instantLabels(start, tz),
     durationMin: row.durationMin,
     priceLabel: format(money(row.price)),

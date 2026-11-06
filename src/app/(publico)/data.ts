@@ -60,7 +60,6 @@ export interface TicketView {
   statusLabel: string;
   serviceName: string;
   staffName: string;
-  clientFirstName: string;
   dateLabel: string; // "jueves 30 de octubre"
   timeLabel: string; // "3:30 p. m."
   durationMin: number;

@@ -36,7 +36,7 @@ export default async function CitaPage({ params, searchParams }: { params: Param
           </>
         ) : (
           <>
-            <h1 className="font-display text-4xl leading-tight">Hola, {ticket.clientFirstName}</h1>
+            <h1 className="font-display text-4xl leading-tight">Tu cita</h1>
             <p className="text-tinta/80">Esta es tu cita en {BUSINESS_NAME}.</p>
           </>
         )}

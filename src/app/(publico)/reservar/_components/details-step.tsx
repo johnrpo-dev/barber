@@ -187,6 +187,8 @@ export function DetailsStep({
         </p>
       </fieldset>
 
+      {/* Sin código (sprint 7) no se piden correo ni promociones: nadie comprobó el celular. */}
+      {requiresCode ? (
       <div className="flex flex-col gap-4">
         <button
           type="button"
@@ -222,6 +224,7 @@ export function DetailsStep({
           </ConsentBox>
         </div>
       </div>
+      ) : null}
 
       {widget}
 

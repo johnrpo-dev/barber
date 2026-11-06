@@ -211,7 +211,7 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<Act
         ip,
         userAgent: await clientUserAgent(),
       });
-      setDeviceCookie(await cookies(), deviceToken);
+      if (deviceToken) setDeviceCookie(await cookies(), deviceToken);
       return { kind: "booked" as const, manageUrl: `/cita/${token}` };
     }
     // Los límites de envío (IP, celular y sede) se cuentan dentro de startOnlineBooking, solo si

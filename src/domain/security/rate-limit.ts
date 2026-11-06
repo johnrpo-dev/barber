@@ -23,6 +23,12 @@ export const RATE_POLICIES: Record<RateAction, Partial<Record<RateScope, readonl
       { windowSec: DAY, limit: 30 },
     ],
     contact: [{ windowSec: HOUR, limit: 5 }],
+    // Solo la reserva sin código lo pasa (sprint 7): reemplaza el tope de envíos de la sede, que
+    // ya no corre. Cada reserva así manda un WhatsApp a un número que nadie comprobó.
+    location: [
+      { windowSec: HOUR, limit: 60 },
+      { windowSec: DAY, limit: 300 },
+    ],
   },
   /**
    * Reserva sin código desde un navegador recordado (auditoría del sprint 6, M1). `contact` es el

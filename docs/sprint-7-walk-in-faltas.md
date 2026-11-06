@@ -82,7 +82,9 @@ Lo pidió el dueño: *"Si un cliente solicita por primera vez me gustaría que n
 
 **Cómo queda:**
 - `locations.booking_requires_code` vale `false` por defecto.
-- La reserva queda confirmada al tocar "Reservar" (`bookWithoutCode` en `src/db/public-booking.ts`). El navegador queda recordado y la próxima vez no hay que escribir nada.
+- La reserva queda confirmada al tocar "Reservar" (`bookWithoutCode` en `src/db/public-booking.ts`).
+- El formulario pide solo nombre, celular y la autorización de datos. Correo y promociones se piden solo con código.
+- Si el celular es nuevo, el navegador queda recordado y la próxima vez no hay que escribir nada. Si el celular ya era de un cliente, no: quien lo escribe podría no ser esa persona.
 - En Ajustes, el interruptor "Pide código por WhatsApp al reservar" vuelve al flujo anterior sin tocar código.
 
 **Lo que se pierde, y cómo se acota:**
@@ -91,8 +93,12 @@ Lo pidió el dueño: *"Si un cliente solicita por primera vez me gustaría que n
 |---|---|
 | Cualquiera reserva con un número ajeno | Turnstile, límites por IP y por celular, tope de citas activas por número. Al dueño real del número le llega la confirmación por WhatsApp con el botón para cancelar. Si se vuelve un problema, se enciende el interruptor |
 | Las faltas se esquivan reservando con otro número, y dos reservas falsas con el número de alguien lo dejan suspendido | Recepción desbloquea en un toque. Con el interruptor encendido vuelve a valer el celular comprobado |
-| El nombre o el correo de un cliente existente se cambian desde afuera | No se cambian. El nombre nunca; el correo solo se guarda si el cliente es nuevo |
-| Revelar el historial de un tercero | Mensajes genéricos (§3) |
+| Cambiar los datos de un cliente existente desde afuera | No se cambian el nombre ni el correo, ni se registran autorizaciones a su nombre (ni a favor ni en contra) |
+| Un correo ajeno recibiría las citas del dueño del número cuando WhatsApp falla | Sin código no se guarda correo |
+| Promociones a un número que no autorizó | Sin código no se autorizan promociones |
+| Salir con el nombre de la persona o con una cookie que reserve como ella | Con un celular ya registrado no queda el navegador recordado, y el ticket (`/cita/…`) ya no muestra el nombre de nadie |
+| Revelar el historial de un tercero | "Suspendido por faltas" y "tope de citas activas" responden el mismo mensaje genérico (§3). Queda un bit: que ese número no puede reservar en línea ahora. Lo acotan Turnstile y los límites |
+| Bots que rotan IPs y números llenan la agenda y mandan WhatsApps | Tope por sede para la reserva sin código: 60 por hora y 300 por día (`booking_start`, alcance `location`) |
 
 **Lo que no cambia:**
 - Sin código, el cliente no queda marcado "verificado" (`clients.verified_at`), porque nadie comprobó el celular.
