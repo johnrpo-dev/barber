@@ -118,6 +118,16 @@ function startInput(phone: string, over: Partial<Parameters<typeof actions.start
   };
 }
 
+/** Corre `fn` con la sede sin código (sprint 7) y la deja como estaba. */
+async function withoutCode(fn: () => Promise<void>): Promise<void> {
+  await db.update(locations).set({ bookingRequiresCode: false }).where(eq(locations.id, A.location));
+  try {
+    await fn();
+  } finally {
+    await db.update(locations).set({ bookingRequiresCode: true }).where(eq(locations.id, A.location));
+  }
+}
+
 /** Reserva y verifica; devuelve el token del enlace de gestión. */
 async function bookAndVerify(phone = newPhone()): Promise<string> {
   newBrowser();
@@ -185,7 +195,12 @@ beforeAll(async () => {
   const allDay = ([1, 2, 3, 4, 5, 6, 7] as const).map((weekday) => ({ weekday, startMin: 0, endMin: 1440 }));
 
   A.location = await createLocation(db, { name: "Villa" });
-  await db.update(locations).set({ publicBookingEnabled: true, address: "Calle 10 # 5-20", publicPhone: "300 555 1234" }).where(eq(locations.id, A.location));
+  // Estas pruebas recorren el flujo con código; el flujo sin código (el de por defecto desde el
+  // sprint 7) se prueba aparte con withoutCode().
+  await db
+    .update(locations)
+    .set({ publicBookingEnabled: true, bookingRequiresCode: true, address: "Calle 10 # 5-20", publicPhone: "300 555 1234" })
+    .where(eq(locations.id, A.location));
   A.barber = await addStaffMember(db, { locationId: A.location, displayName: "Andrés Gómez", role: "barber" });
   await setWeeklySchedule(db, { locationId: A.location, staffId: A.barber, blocks: allDay });
   const owner = await addStaffMember(db, { locationId: A.location, displayName: "Dueño", role: "owner" });
@@ -307,7 +322,7 @@ const CASES: Case[] = [
       const a = await actions.startBooking(startInput(existing, { name: "Otro Nombre" }));
       newBrowser();
       const b = await actions.startBooking(startInput(newPhone(), { name: "Otro Nombre" }));
-      if (!a.ok || !b.ok) throw new Error(JSON.stringify([a, b]));
+      if (!a.ok || !b.ok || a.data.kind !== "code" || b.data.kind !== "code") throw new Error(JSON.stringify([a, b]));
       expect(Object.keys(a.data).sort()).toEqual(Object.keys(b.data).sort());
       expect(a.data.channel).toBe(b.data.channel);
       expect(a.data.maskedDestination).toMatch(/^\d{3} ••• ••\d{2}$/);
@@ -384,7 +399,7 @@ const CASES: Case[] = [
       await db.update(clients).set({ email: "laura@real.co" }).where(eq(clients.id, c.id));
       newBrowser();
       const started = await actions.startBooking(startInput(laura, { email: "otro@evil.co", name: "Otro Nombre" }));
-      if (!started.ok) throw new Error(started.error);
+      if (!started.ok || started.data.kind !== "code") throw new Error(JSON.stringify(started));
       expect(started.data.channel).toBe("whatsapp");
       expect(await clientRow(laura)).toMatchObject({ email: "laura@real.co", name: "Laura Real" });
       expect((await actions.verifyCode({ code: notifier.lastCode(e164(laura))! })).ok).toBe(true);
@@ -692,6 +707,76 @@ const CASES: Case[] = [
       const [c] = await db.select({ id: clients.id }).from(clients).where(eq(clients.phoneE164, e164(phone)));
       expect(await db.$count(appointments, and(eq(appointments.clientId, c!.id), inArray(appointments.status, ["pending", "confirmed"])))).toBe(0);
     },
+  },
+  {
+    action: "startBooking",
+    name: "sin código: la cita queda confirmada al instante, no se envía código y el navegador queda recordado",
+    run: () =>
+      withoutCode(async () => {
+        newIp();
+        const phone = newPhone();
+        newBrowser();
+        const sentBefore = notifier.sent.length;
+        const input = startInput(phone, { email: "ana@correo.co" });
+        const r = await actions.startBooking(input);
+        if (!r.ok || r.data.kind !== "booked") throw new Error(JSON.stringify(r));
+        expect(notifier.sent.length).toBe(sentBefore); // ningún código
+        const appt = await appointmentByToken(r.data.manageUrl.replace("/cita/", ""));
+        expect(appt.status).toBe("confirmed");
+        expect(await db.$count(notifications, and(eq(notifications.appointmentId, appt.id), eq(notifications.template, "booking_confirmed")))).toBe(1);
+        // El celular no se comprobó: el cliente no queda verificado. El correo de un cliente nuevo sí se guarda.
+        const [c] = await db.select({ verifiedAt: clients.verifiedAt, email: clients.email }).from(clients).where(eq(clients.phoneE164, e164(phone)));
+        expect(c).toEqual({ verifiedAt: null, email: "ana@correo.co" });
+        expect(state.jar.get(DEVICE_COOKIE)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+        // Doble toque: la misma cita.
+        const again = await actions.startBooking(input);
+        if (!again.ok || again.data.kind !== "booked") throw new Error(JSON.stringify(again));
+        expect((await appointmentByToken(again.data.manageUrl.replace("/cita/", ""))).id).toBe(appt.id);
+        // La siguiente vez, desde el mismo navegador, sin escribir los datos.
+        const known = await actions.bookAsKnown({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
+        expect(known.ok, JSON.stringify(known)).toBe(true);
+      }),
+  },
+  {
+    action: "startBooking",
+    name: "sin código: un número ya registrado no cambia de nombre ni de correo",
+    run: () =>
+      withoutCode(async () => {
+        newIp();
+        const phone = newPhone();
+        const c = await findOrCreateClient(db, { locationId: A.location, name: "Laura Real", phone });
+        await db.update(clients).set({ email: "laura@real.co" }).where(eq(clients.id, c.id));
+        newBrowser();
+        const r = await actions.startBooking(startInput(phone, { name: "Otro Nombre", email: "otro@evil.co" }));
+        expect(r.ok && r.data.kind).toBe("booked");
+        expect(await clientRow(phone)).toMatchObject({ name: "Laura Real", email: "laura@real.co" });
+        const noEmail = newPhone();
+        await findOrCreateClient(db, { locationId: A.location, name: "Sin Correo", phone: noEmail });
+        newBrowser();
+        expect((await actions.startBooking(startInput(noEmail, { email: "intruso@evil.co" }))).ok).toBe(true);
+        expect(await clientRow(noEmail)).toMatchObject({ email: null });
+      }),
+  },
+  {
+    action: "startBooking",
+    name: "sin código: con 2 faltas no reserva y el mensaje no cuenta el historial de esa persona",
+    run: () =>
+      withoutCode(async () => {
+        newIp();
+        const phone = newPhone();
+        for (let i = 0; i < 2; i++) {
+          newBrowser();
+          const r = await actions.startBooking(startInput(phone));
+          if (!r.ok || r.data.kind !== "booked") throw new Error(JSON.stringify(r));
+          const appt = await appointmentByToken(r.data.manageUrl.replace("/cita/", ""));
+          await db.update(appointments).set({ status: "no_show" }).where(eq(appointments.id, appt.id));
+        }
+        newBrowser();
+        const input = startInput(phone);
+        expect(await actions.startBooking(input)).toEqual({ ok: false, error: PUBLIC_MESSAGES.cannotBookOnline });
+        expect(await actions.startBooking(input)).toEqual({ ok: false, error: PUBLIC_MESSAGES.cannotBookOnline });
+        expect(PUBLIC_MESSAGES.cannotBookOnline).not.toMatch(/falt|llegaste|suspend/i);
+      }),
   },
   {
     action: "resendCode",

@@ -10,6 +10,7 @@ import { setStaffBookableAction, updateBookingSettingsAction } from "./actions";
 export interface SettingsView {
   name: string;
   publicBookingEnabled: boolean;
+  bookingRequiresCode: boolean;
   publicPhone: string;
   address: string | null;
   mapsUrl: string | null;
@@ -79,6 +80,14 @@ export function SettingsForm({ settings, staff }: { settings: SettingsView; staf
                 {s.publicBookingEnabled ? "Abierta al público" : "Cerrada"}
               </span>
               <span className="text-xs font-normal text-tinta/70">Requiere WhatsApp o correo y la verificación anti-robots configurados.</span>
+            </span>
+          </Toggle>
+          <Toggle isSelected={s.bookingRequiresCode} onChange={set("bookingRequiresCode")}>
+            <span className="flex flex-col">
+              <span>{s.bookingRequiresCode ? "Pide código por WhatsApp al reservar" : "Reserva sin código"}</span>
+              <span className="text-xs font-normal text-tinta/70">
+                Sin código la reserva es más rápida, pero cualquiera puede reservar con un número ajeno. Enciéndelo si aparecen reservas falsas.
+              </span>
             </span>
           </Toggle>
           <TextField value={s.publicPhone} onChange={set("publicPhone")} maxLength={30} className={field.root}>

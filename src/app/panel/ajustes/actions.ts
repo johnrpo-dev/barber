@@ -45,6 +45,7 @@ const optionalText = (max: number, label: string) =>
 
 const settingsSchema = z.object({
   publicBookingEnabled: z.boolean(),
+  bookingRequiresCode: z.boolean(),
   publicPhone: optionalText(30, "El teléfono"),
   address: optionalText(200, "La dirección"),
   mapsUrl: optionalText(500, "El enlace del mapa").refine(

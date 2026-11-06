@@ -25,6 +25,7 @@ export interface PortalView {
   today: string; // yyyy-MM-dd en la zona de la sede
   maxAdvanceDays: number;
   holdMin: number;
+  requiresCode: boolean; // false (sprint 7): la reserva se confirma sin código
   turnstileSiteKey: string | null; // null en desarrollo (verificador falso)
 }
 

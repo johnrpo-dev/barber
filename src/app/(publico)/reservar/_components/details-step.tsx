@@ -46,6 +46,7 @@ export function DetailsStep({
   pending,
   serverError,
   turnstileSiteKey,
+  requiresCode,
 }: {
   value: Details;
   onChange: (patch: Partial<Details>) => void;
@@ -54,6 +55,8 @@ export function DetailsStep({
   /** Error del servidor; `seq` cambia en cada envío para volver a enfocar el resumen. */
   serverError: { message: string; seq: number } | null;
   turnstileSiteKey: string | null;
+  /** false (por defecto, sprint 7): "Reservar" confirma la cita sin código. */
+  requiresCode: boolean;
 }) {
   const { errors, check, clear } = useFieldErrors<FieldName>();
   const [humanError, setHumanError] = useState<string | null>(null);
@@ -148,7 +151,7 @@ export function DetailsStep({
           <Input className={cx(field.input, "monto pl-12")} />
         </div>
         <Text slot="description" className={field.description}>
-          Celular de 10 dígitos (+57). Ahí te llega el código por WhatsApp.
+          {requiresCode ? "Celular de 10 dígitos (+57). Ahí te llega el código por WhatsApp." : "Celular de 10 dígitos (+57). Ahí te llega la confirmación por WhatsApp."}
         </Text>
         <FieldMessage>{errors.phone}</FieldMessage>
       </TextField>
@@ -223,7 +226,7 @@ export function DetailsStep({
       {widget}
 
       <Btn type="submit" size="xl" className="w-full" isPending={pending || checking}>
-        {pending || checking ? "Enviando código…" : "Recibir código por WhatsApp"}
+        {requiresCode ? (pending || checking ? "Enviando código…" : "Recibir código por WhatsApp") : pending || checking ? "Reservando…" : "Reservar"}
       </Btn>
     </Form>
   );

@@ -14,6 +14,7 @@ Decisiones del dueño (noviembre de 2026) y cómo quedaron en el código.
 | Llegar tarde / cancelar tarde | No cuenta como falta | Solo cuenta "No vino" |
 | Recordatorio | Debe avisar que faltar suspende la reserva | §4 |
 | Walk-in | Lo atiende el que primero terminó; no si tiene cita en menos de 60 min | §2 |
+| Código por WhatsApp al reservar | "Mientras menos complique la app, mejor es la reserva": que no lo pida | §6 |
 
 ## 2. Walk-in: la fila por tiempo libre
 
@@ -57,6 +58,7 @@ El dominio está en `src/domain/clients/no-shows.ts` y la base en `src/db/no-sho
 **El bloqueo:**
 - Con `no_show_limit` faltas (2 por defecto, en Ajustes), el cliente **no reserva en línea**.
 - Se comprueba al confirmar la reserva (`confirmOnlineAppointment`), **después** del código o del navegador recordado. Así nadie descubre, escribiendo un número ajeno, si esa persona falta.
+- En la reserva **sin código** (§6) el número no está comprobado: el mensaje es genérico ("No pudimos confirmar tu reserva en línea…"), sin mencionar faltas.
 - La retención se libera y el cliente ve: "Tu reserva en línea está suspendida porque no llegaste a tus últimas citas. Escríbenos por WhatsApp o llámanos y te agendamos."
 
 **Lo que sigue permitido:**
@@ -74,10 +76,33 @@ Los tres textos de recordatorio terminan con la frase "Si faltas sin avisar, tu 
 
 Hoy solo se envía el del mismo día (`villa_recordatorio`). Al registrar las plantillas en Meta (sprint 9), su cuerpo tiene que llevar esa frase.
 
-## 5. Migraciones
+## 6. Reserva sin código por WhatsApp
+
+Lo pidió el dueño: *"Si un cliente solicita por primera vez me gustaría que no pida recibir código por WhatsApp, mientras menos complicaciones tenga la app, mejor es la reserva"*.
+
+**Cómo queda:**
+- `locations.booking_requires_code` vale `false` por defecto.
+- La reserva queda confirmada al tocar "Reservar" (`bookWithoutCode` en `src/db/public-booking.ts`). El navegador queda recordado y la próxima vez no hay que escribir nada.
+- En Ajustes, el interruptor "Pide código por WhatsApp al reservar" vuelve al flujo anterior sin tocar código.
+
+**Lo que se pierde, y cómo se acota:**
+
+| Riesgo | Cómo se acota |
+|---|---|
+| Cualquiera reserva con un número ajeno | Turnstile, límites por IP y por celular, tope de citas activas por número. Al dueño real del número le llega la confirmación por WhatsApp con el botón para cancelar. Si se vuelve un problema, se enciende el interruptor |
+| Las faltas se esquivan reservando con otro número, y dos reservas falsas con el número de alguien lo dejan suspendido | Recepción desbloquea en un toque. Con el interruptor encendido vuelve a valer el celular comprobado |
+| El nombre o el correo de un cliente existente se cambian desde afuera | No se cambian. El nombre nunca; el correo solo se guarda si el cliente es nuevo |
+| Revelar el historial de un tercero | Mensajes genéricos (§3) |
+
+**Lo que no cambia:**
+- Sin código, el cliente no queda marcado "verificado" (`clients.verified_at`), porque nadie comprobó el celular.
+- La política de privacidad sigue nombrando "el código que confirma que el celular es tuyo". Es cierto cuando la sede lo pide. En la próxima versión de la política, que obliga a autorizar de nuevo, conviene escribir "si lo pedimos, el código…".
+
+## 7. Migraciones
 
 - `0021_walk_in_no_shows`:
   - `locations.walk_in_guard_min` (60, de 0 a 240);
   - `locations.no_show_limit` (2, de 1 a 10);
   - `clients.no_shows_cleared_at`.
 - `0022_audit_no_shows_clear`: agrega `client.no_shows_clear` a los CHECK de `audit_events`.
+- `0023_booking_without_code`: `locations.booking_requires_code` (`false`).

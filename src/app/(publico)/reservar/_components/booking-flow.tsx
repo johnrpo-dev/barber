@@ -18,7 +18,8 @@ import { KnownStep } from "./known-step";
 import { BUSINESS_NAME } from "@/domain/brand";
 
 // Flujo de reserva pública en una sola página, con los menos pasos posibles:
-//   primera vez:    Servicio → Hora (con el barbero ahí mismo) → Tus datos → Código
+//   primera vez:    Servicio → Hora (con el barbero ahí mismo) → Tus datos (→ Código solo si la
+//                   sede lo pide: por defecto, sprint 7, la cita queda confirmada sin código)
 //   ya verificado:  Servicio → Hora → Confirmar (sin formulario ni código: cookie villa_device)
 // Tocar un servicio o un horario avanza solo. Cada paso: foco al título, document.title y una
 // entrada en el historial (el "atrás" de Android vuelve al paso anterior). Lo escrito vive en
@@ -46,6 +47,7 @@ export interface BookingPortal {
   whatsappUrl: string | null;
   turnstileSiteKey: string | null;
   holdMin: number;
+  requiresCode: boolean;
 }
 
 interface FlowState {
@@ -280,13 +282,20 @@ export function BookingFlow({
         formId: s.formId,
       }),
     );
-    setPending(false);
-    if (r.ok) {
-      patch({ hold: { ...r.data, sendsLeft: null }, formId: newId() });
-      goTo("code");
+    if (!r.ok) {
+      setPending(false);
+      handleError(r);
       return;
     }
-    handleError(r);
+    if (r.data.kind === "booked") {
+      // Sin código (sprint 7): la cita ya quedó confirmada.
+      verified(r.data.manageUrl);
+      return;
+    }
+    setPending(false);
+    const { kind: _kind, ...hold } = r.data;
+    patch({ hold: { ...hold, sendsLeft: null }, formId: newId() });
+    goTo("code");
   }
 
   async function confirmKnown(turnstileToken: string) {
@@ -333,7 +342,7 @@ export function BookingFlow({
   ].filter((c) => c !== null);
 
   const hint =
-    s.step === "details"
+    s.step === "details" && portal.requiresCode
       ? `Te enviamos un código por WhatsApp para confirmar. Mientras tanto te guardamos el horario ${portal.holdMin} minutos.`
       : undefined;
 
@@ -448,6 +457,7 @@ export function BookingFlow({
               pending={pending}
               serverError={serverError}
               turnstileSiteKey={portal.turnstileSiteKey}
+              requiresCode={portal.requiresCode}
             />
           ) : null}
 

@@ -50,6 +50,11 @@ export const locations = pgTable("locations", {
   noShowLimit: integer("no_show_limit").notNull().default(2),
   // Reserva pública (sprint 3). Apagada hasta que el dueño la active.
   publicBookingEnabled: boolean("public_booking_enabled").notNull().default(false),
+  /**
+   * Sprint 7 (decisión del dueño): la reserva en línea se confirma sin código por WhatsApp. Encendido,
+   * vuelve el flujo con código (si aparecen reservas falsas con números ajenos).
+   */
+  bookingRequiresCode: boolean("booking_requires_code").notNull().default(false),
   publicPhone: text("public_phone"),
   address: text("address"),
   mapsUrl: text("maps_url"),

@@ -68,6 +68,7 @@ export default async function ReservarPage({ searchParams }: { searchParams: Sea
           whatsappUrl: portal.location.whatsappUrl,
           turnstileSiteKey: portal.turnstileSiteKey,
           holdMin: portal.holdMin,
+          requiresCode: portal.requiresCode,
         }}
       />
     </main>

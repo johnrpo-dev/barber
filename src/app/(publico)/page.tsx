@@ -218,7 +218,7 @@ export default async function HomePage() {
             Sin llamar, sin descargar nada y sin crear cuenta.
           </SectionHeading>
           <ol role="list" className="mt-6 grid gap-3 md:grid-cols-3">
-            {STEPS.map((step, i) => (
+            {(portal?.requiresCode ? STEPS : STEPS_WITHOUT_CODE).map((step, i) => (
               <li key={step.title} className="revelar flex gap-4 rounded-xl border border-tinta/10 bg-papel p-5 md:flex-col md:gap-3">
                 <span aria-hidden className="monto font-display text-4xl leading-none text-cuero">
                   {i + 1}
@@ -230,7 +230,11 @@ export default async function HomePage() {
               </li>
             ))}
           </ol>
-          <p className="mt-4 text-sm text-tinta/75">¿Ya reservaste desde este celular? Te reconocemos y no te pedimos el código otra vez.</p>
+          <p className="mt-4 text-sm text-tinta/75">
+            {portal?.requiresCode
+              ? "¿Ya reservaste desde este celular? Te reconocemos y no te pedimos el código otra vez."
+              : "¿Ya reservaste desde este celular? Te reconocemos y no tienes que escribir tus datos otra vez."}
+          </p>
         </section>
       ) : null}
 
@@ -289,6 +293,13 @@ const STEPS = [
   { title: "Elige el servicio", body: "Con el precio y la duración a la vista." },
   { title: "Escoge barbero y hora", body: "Solo ves turnos libres de verdad. Si te da igual el barbero, te damos el primero libre." },
   { title: "Confirma por WhatsApp", body: "Te llega un código, lo escribes y tu turno queda apartado." },
+] as const;
+
+/** Sin código (por defecto, sprint 7): el último paso es dejar el nombre y el celular. */
+const STEPS_WITHOUT_CODE = [
+  STEPS[0],
+  STEPS[1],
+  { title: "Deja tu nombre y celular", body: "Tu turno queda confirmado al instante y te llega la confirmación por WhatsApp." },
 ] as const;
 
 // Mosaico de la galería: en el celular, 2 columnas; en pantallas anchas, 4 (ver el orden en

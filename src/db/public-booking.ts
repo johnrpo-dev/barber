@@ -67,6 +67,8 @@ export const PUBLIC_MESSAGES = {
   deviceUnknown: "Por seguridad, esta vez confirma tu celular con un código.",
   noShowSuspended:
     "Tu reserva en línea está suspendida porque no llegaste a tus últimas citas. Escríbenos por WhatsApp o llámanos y te agendamos.",
+  // Sin código no se sabe si el número es de quien reserva: no se le cuenta el historial de otro.
+  cannotBookOnline: "No pudimos confirmar tu reserva en línea. Escríbenos por WhatsApp o llámanos y te agendamos.",
 } as const;
 
 /** Retenciones en línea vivas a la vez por sede: más que esto es alguien acaparando la agenda. */
@@ -149,6 +151,8 @@ export interface PublicLocation {
   minAdvanceMin: number;
   freeCancelHours: number;
   maxActivePerClient: number;
+  /** Sprint 7: apagado, la reserva se confirma sin código por WhatsApp. */
+  bookingRequiresCode: boolean;
 }
 
 /**
@@ -162,6 +166,7 @@ export async function publicLocation(db: Db, opts: { fallbackToFirst?: boolean }
       name: locations.name,
       timeZone: locations.timezone,
       publicBookingEnabled: locations.publicBookingEnabled,
+      bookingRequiresCode: locations.bookingRequiresCode,
       publicPhone: locations.publicPhone,
       address: locations.address,
       mapsUrl: locations.mapsUrl,
@@ -656,6 +661,8 @@ async function confirmOnlineAppointment(
     consent: { choices: ConsentChoices; textVersion: string; ip: string | null; userAgent: string | null } | null;
     contactName: string | null;
     contactEmail: string | null;
+    /** Sin código (sprint 7) el celular no quedó comprobado: el cliente no se marca verificado. */
+    verified?: boolean;
   },
 ): Promise<{ kind: "ok"; token: string } | { kind: "limit"; max: number } | { kind: "suspended" }> {
   const now = ctx.now;
@@ -749,10 +756,12 @@ async function confirmOnlineAppointment(
       .set({ email: args.contactEmail, updatedAt: now })
       .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId), isNull(clients.email), isNull(clients.anonymizedAt)));
   }
-  await tx
-    .update(clients)
-    .set({ verifiedAt: sql`coalesce(${clients.verifiedAt}, now())`, updatedAt: now })
-    .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId)));
+  if (args.verified !== false) {
+    await tx
+      .update(clients)
+      .set({ verifiedAt: sql`coalesce(${clients.verifiedAt}, now())`, updatedAt: now })
+      .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId)));
+  }
   const token = await issueManageLink(tx, {
     locationId: ctx.locationId,
     appointmentId: args.appt.id,
@@ -775,6 +784,123 @@ async function confirmOnlineAppointment(
     });
   }
   return { kind: "ok", token };
+}
+
+// ─── Reservar sin código (sprint 7) ─────────────────────────────────────────
+
+/**
+ * Decisión del dueño (sprint 7): la reserva en línea se confirma de una vez, sin código por
+ * WhatsApp, cuando la sede no lo pide (locations.booking_requires_code). Lo que frena el abuso:
+ * Turnstile y los límites por IP y por celular, el tope de citas activas por número y la
+ * confirmación que le llega por WhatsApp al dueño real del número, con el botón para cancelar.
+ * Como el celular no se comprueba:
+ * - el cliente no se marca verificado y el correo escrito solo se guarda si el cliente es nuevo;
+ * - si el número tiene la reserva suspendida por faltas, el mensaje es genérico (no se le cuenta
+ *   a un tercero el historial de otra persona).
+ * El navegador queda recordado igual (cookie villa_device): la próxima vez no escribe sus datos.
+ * Reintentar el mismo formulario devuelve la misma cita.
+ */
+export async function bookWithoutCode(
+  db: Db,
+  ctx: PublicBookingContext,
+  location: PublicLocation,
+  input: Omit<StartBookingInput, "browserHash" | "ipSubject">,
+): Promise<{ token: string; deviceToken: string }> {
+  const now = ctx.now;
+  if (location.bookingRequiresCode) throw new BookingError(PUBLIC_MESSAGES.generic);
+  assertBookingConsent(input.consents);
+  const name = assertValidClientName(input.name);
+  const phone = publicMobile(input.phone);
+  if (!phone) throw new InvalidClientError(PUBLIC_MESSAGES.phone);
+  const email = input.email?.trim().toLowerCase() || null;
+  if (email && (email.length > 254 || !email.includes("@"))) throw new InvalidClientError("El correo no es válido");
+  assertBookableDate(location, localParts(input.start, location.timeZone).date, now);
+  await enforce(db, "booking_start", { contact: ctx.hash(phone) }, now);
+  const idempotencyKey = `online:${input.formId}`;
+  const [replay] = await db
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(eq(appointments.locationId, location.id), eq(appointments.idempotencyKey, idempotencyKey)));
+  if (!replay) await assertSlotOffered(db, { location, serviceId: input.serviceId, staffId: input.staffId, start: input.start, now });
+
+  const outcome = await db.transaction(
+    async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string } | { kind: "expired" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
+      const tx = txRaw as unknown as Db;
+      const [before] = await tx
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.locationId, location.id), eq(clients.phoneE164, phone)));
+      const client = await findOrCreateClient(tx, { locationId: location.id, name, phone });
+      let created;
+      try {
+        created = await createAppointment(tx, {
+          locationId: location.id,
+          serviceId: input.serviceId,
+          staffId: input.staffId,
+          start: input.start,
+          clientId: client.id,
+          source: "online",
+          idempotencyKey,
+          createdBy: "online",
+          now,
+        });
+      } catch (err) {
+        if (err instanceof SlotTakenError) throw new SlotTakenError(PUBLIC_MESSAGES.slotTaken);
+        throw err;
+      }
+      const [appt] = await tx
+        .select({
+          id: appointments.id,
+          publicId: appointments.publicId,
+          clientId: appointments.clientId,
+          status: appointments.status,
+          expiresAt: appointments.expiresAt,
+          during: appointments.during,
+        })
+        .from(appointments)
+        .where(and(eq(appointments.locationId, location.id), eq(appointments.id, created.appointmentId)))
+        .for("update");
+      // El mismo formulario con otro celular no se apropia de una cita ajena.
+      if (!appt || appt.clientId !== client.id) throw new BookingError(PUBLIC_MESSAGES.generic);
+      if (!created.created && appt.status === "confirmed") {
+        // Doble toque o reintento por red: la misma cita, el mismo enlace.
+        const token = await issueManageLink(tx, {
+          locationId: location.id,
+          appointmentId: appt.id,
+          publicId: appt.publicId,
+          appointmentEnd: appt.during.end,
+          secret: ctx.manageLinkSecret,
+        });
+        return { kind: "ok", token, deviceToken: await rememberClientDevice(tx, { locationId: location.id, clientId: client.id, now }) };
+      }
+      if (!holdAlive({ apptStatus: appt.status, holdExpiresAt: appt.expiresAt }, now)) {
+        if ((await noShowStandingOf(tx, { locationId: location.id, clientId: client.id, now }))?.suspended) return { kind: "suspended" };
+        return { kind: "expired" };
+      }
+      const confirmed = await confirmOnlineAppointment(tx, ctx, {
+        appt,
+        clientId: client.id,
+        channel: "whatsapp",
+        consent: { choices: input.consents, textVersion: CURRENT_PRIVACY_VERSION, ip: input.ip, userAgent: input.userAgent },
+        contactName: null,
+        contactEmail: before ? null : email,
+        verified: false,
+      });
+      if (confirmed.kind !== "ok") return confirmed;
+      return { ...confirmed, deviceToken: await rememberClientDevice(tx, { locationId: location.id, clientId: client.id, now }) };
+    },
+  );
+
+  switch (outcome.kind) {
+    case "ok":
+      return { token: outcome.token, deviceToken: outcome.deviceToken };
+    case "expired":
+      throw new BookingError(PUBLIC_MESSAGES.holdExpired);
+    case "limit":
+      throw new BookingError(activeLimitMessage(outcome.max));
+    case "suspended":
+      throw new BookingError(PUBLIC_MESSAGES.cannotBookOnline);
+  }
 }
 
 // ─── Verificar ───────────────────────────────────────────────────────────────
@@ -1217,6 +1343,8 @@ export interface PortalData {
   today: string;
   maxAdvanceDays: number;
   holdMin: number;
+  /** false (sprint 7): la reserva se confirma sin código por WhatsApp. */
+  requiresCode: boolean;
 }
 
 export const FEATURED_COUNT = 6;
@@ -1328,5 +1456,6 @@ export async function loadPortalData(db: Db, location: PublicLocation, now: Date
     today: businessDate(now, location.timeZone),
     maxAdvanceDays: location.maxAdvanceDays,
     holdMin: location.holdMin,
+    requiresCode: location.bookingRequiresCode,
   };
 }

@@ -182,6 +182,7 @@ export const AUDIT_FIELDS = {
     "maxActivePerClient",
     "walkInGuardMin",
     "noShowLimit",
+    "bookingRequiresCode",
     "address",
     "mapsUrl",
     // El NIT o cédula no entra: si el negocio es persona natural, es su documento.
@@ -219,6 +220,7 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   maxActivePerClient: "Citas activas por cliente",
   walkInGuardMin: "Walk-in: sin cita en los próximos (min)",
   noShowLimit: "Faltas para suspender la reserva",
+  bookingRequiresCode: "Código por WhatsApp al reservar",
   address: "Dirección",
   mapsUrl: "Enlace del mapa",
   receiptFooter: "Pie del recibo",

@@ -7,6 +7,7 @@ import { DEVICE_COOKIE, DEVICE_TTL_DAYS, forgetClientDevice, knownClient } from 
 import {
   assertBookableDate,
   bookAsKnownClient,
+  bookWithoutCode,
   cancelByClient,
   hashBrowserCookie,
   hasLiveHold,
@@ -170,9 +171,15 @@ const startInput = z.object({
   formId: uuid,
 });
 
-export async function startBooking(raw: z.input<typeof startInput>): Promise<
-  ActionResult<{ channel: NotificationChannel; maskedDestination: string; holdExpiresAt: string; resendAvailableAt: string; testCode?: string }>
-> {
+/**
+ * Sin código (la sede no lo pide, sprint 7): la cita queda confirmada y se responde con el enlace
+ * de gestión. Con código: se aparta el horario y se envía el código por WhatsApp.
+ */
+export type StartBookingOutcome =
+  | { kind: "booked"; manageUrl: string }
+  | { kind: "code"; channel: NotificationChannel; maskedDestination: string; holdExpiresAt: string; resendAvailableAt: string; testCode?: string };
+
+export async function startBooking(raw: z.input<typeof startInput>): Promise<ActionResult<StartBookingOutcome>> {
   return runAction(async () => {
     const input = startInput.parse(raw);
     // Lo que se puede validar sin gastar el token de Turnstile ni escribir nada.
@@ -190,6 +197,23 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
       throw new BookingError("No pudimos comprobar que eres una persona. Recarga la página e inténtalo otra vez.");
     }
     await enforce(database(), "booking_start", { ip: hash }, scope.ctx.now);
+
+    if (!scope.location.bookingRequiresCode) {
+      const { token, deviceToken } = await bookWithoutCode(database(), scope.ctx, scope.location, {
+        serviceId: await resolveServiceId(database(), scope.location.id, input.serviceId),
+        staffId: await staffIdOf(scope, input.staffId),
+        start: localMinuteToInstant(input.date, input.minute, scope.location.timeZone),
+        name: input.name,
+        phone: input.phone,
+        email: input.email || null,
+        consents,
+        formId: input.formId,
+        ip,
+        userAgent: await clientUserAgent(),
+      });
+      setDeviceCookie(await cookies(), deviceToken);
+      return { kind: "booked" as const, manageUrl: `/cita/${token}` };
+    }
     // Los límites de envío (IP, celular y sede) se cuentan dentro de startOnlineBooking, solo si
     // de verdad se va a enviar un código.
 
@@ -226,6 +250,7 @@ export async function startBooking(raw: z.input<typeof startInput>): Promise<
       maxAge: (scope.location.holdMin + 5) * 60,
     });
     return {
+      kind: "code" as const,
       channel: result.channel,
       maskedDestination: result.maskedDestination,
       holdExpiresAt: result.holdExpiresAt.toISOString(),

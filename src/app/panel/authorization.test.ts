@@ -780,6 +780,7 @@ const CASES: Case[] = [
           maxActivePerClient: 2,
           walkInGuardMin: 60,
           noShowLimit: 2,
+          bookingRequiresCode: false,
           taxId: "900.123.456-7",
           receiptFooter: `Gracias ${n}`,
         });

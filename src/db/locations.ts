@@ -23,6 +23,8 @@ export interface LocationSettings {
   walkInGuardMin: number;
   /** Faltas ("No vino") con las que se suspende la reserva en línea del cliente (migración 0021). */
   noShowLimit: number;
+  /** Reserva en línea con código por WhatsApp (apagado: se confirma sin código; migración 0023). */
+  bookingRequiresCode: boolean;
   /** Recibo impreso: NIT o cédula del negocio y mensaje del pie (migración 0014). */
   taxId: string | null;
   receiptFooter: string | null;
@@ -45,6 +47,7 @@ export async function locationSettings(db: Db, locationId: bigint): Promise<Loca
       maxActivePerClient: locations.maxActivePerClient,
       walkInGuardMin: locations.walkInGuardMin,
       noShowLimit: locations.noShowLimit,
+      bookingRequiresCode: locations.bookingRequiresCode,
       taxId: locations.taxId,
       receiptFooter: locations.receiptFooter,
     })

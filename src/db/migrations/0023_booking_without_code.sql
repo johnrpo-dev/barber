@@ -1,0 +1,1 @@
+ALTER TABLE "locations" ADD COLUMN "booking_requires_code" boolean DEFAULT false NOT NULL;
