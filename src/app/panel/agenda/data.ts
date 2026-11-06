@@ -3,8 +3,9 @@ import { listServices } from "@/db/catalog";
 import { db } from "@/db/client";
 import { noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
+import { presenceToday } from "@/db/staff-presence";
 import type { Db } from "@/db/types";
-import { addDays, isDateString, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
+import { addDays, isDateString, localMinuteOf, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { type AppointmentStatus, availableTransitions } from "@/domain/booking/status";
 import { formatPhone, maskPhone } from "@/domain/clients/client";
 import { noShowNotice } from "@/domain/clients/no-shows";
@@ -49,6 +50,11 @@ export interface AgendaColumnView {
   blocks: { startMin: number; endMin: number }[];
   /** Servicios que hace (ids internos como texto). */
   serviceIds: string[];
+  /**
+   * "Salí / Llegué" (sprint 7), solo hoy: `out` si salió y no ha vuelto, con la hora ya formateada.
+   * `canMark`: quien mira puede marcarlo (recepción y dueño a todos; el barbero a sí mismo).
+   */
+  presence: { out: boolean; sinceLabel: string | null; canMark: boolean } | null;
 }
 
 export interface AgendaTimeOffView {
@@ -121,6 +127,9 @@ export async function loadAgenda(
     : new Map();
 
   const dayStart = localMinuteToInstant(date, 0, rules.timeZone).getTime();
+  const isToday = date === businessDate(now, rules.timeZone);
+  const presence = isToday ? await presenceToday(database, { locationId: staff.locationId, dayStart: new Date(dayStart) }) : null;
+  const clock = (d: Date) => formatTime(localMinuteOf(d, rules.timeZone));
   const dayEnd = localMinuteToInstant(addDays(date, 1), 0, rules.timeZone).getTime();
   const toMin = (d: Date) => Math.round((Math.min(Math.max(d.getTime(), dayStart), dayEnd) - dayStart) / MINUTE_MS);
 
@@ -135,6 +144,12 @@ export async function loadAgenda(
       displayName: c.displayName,
       blocks: c.blocks.map((b) => ({ startMin: b.startMin, endMin: b.endMin })),
       serviceIds: c.serviceIds.map(String),
+      presence: presence
+        ? (() => {
+            const p = presence.get(c.staffId);
+            return { out: !!p?.outSince, sinceLabel: p?.outSince ? clock(p.outSince) : null, canMark: manageAll || c.staffId === staff.staffId };
+          })()
+        : null,
     })),
     appointments: agenda.appointments.map((a) => {
       const own = a.staffId === staff.staffId;

@@ -25,6 +25,7 @@ import {
   timeOff,
 } from "./schema";
 import { serviceIdsByStaff } from "./staff";
+import { presenceToday } from "./staff-presence";
 import { extendManageLink, revokeManageLinks } from "./manage-links";
 import { pgError } from "./serializable";
 import type { TimeRange } from "./tstzrange";
@@ -545,13 +546,15 @@ export async function walkInQueueFor(db: Db, input: { locationId: bigint; servic
     .select({ staffId: timeOff.staffId, during: timeOff.during })
     .from(timeOff)
     .where(and(eq(timeOff.locationId, input.locationId), isNull(timeOff.cancelledAt), sql`${timeOff.during} && ${range(from, to)}`));
+  // "Salí / Llegué": quien salió no entra; quien volvió cuenta desde que llegó.
+  const presence = await presenceToday(db, { locationId: input.locationId, dayStart: from });
   const entries = walkInQueue({
     now: input.now,
     timeZone: rules.timeZone,
     durationMin: svc.durationMin,
     bufferMin: svc.bufferMin,
     guardMin: rules.walkInGuardMin,
-    staff: staff.map((s) => ({ staffId: s.staffId, offersService: offering.has(s.staffId), blocks: s.blocks })),
+    staff: staff.map((s) => ({ staffId: s.staffId, offersService: offering.has(s.staffId), blocks: s.blocks, presence: presence.get(s.staffId) })),
     appointments: appts.map((a) => ({
       staffId: a.staffId,
       status: a.status as AppointmentStatus,

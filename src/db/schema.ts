@@ -382,6 +382,29 @@ export const staffServices = pgTable(
   ],
 );
 
+/**
+ * "Salí / Llegué" (sprint 7): quién está físicamente en la barbería, para la fila del walk-in.
+ * Solo-inserción (la app no tiene UPDATE ni DELETE): manda la última marca de hoy, y el historial
+ * dice quién marcó a quién. No toca la agenda ni la reserva en línea.
+ */
+export const staffPresenceEvents = pgTable(
+  "staff_presence_events",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    kind: text("kind", { enum: ["out", "in"] }).notNull(),
+    /** Hora de la base, no del cliente. */
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    createdBy: text("created_by").notNull(),
+  },
+  (t) => [
+    foreignKey({ name: "staff_presence_events_staff_fk", columns: [t.locationId, t.staffId], foreignColumns: [staffMembers.locationId, staffMembers.id] }),
+    check("staff_presence_events_kind_check", sql`${t.kind} in ('out','in')`),
+    index("staff_presence_events_staff_at_idx").on(t.locationId, t.staffId, t.at),
+  ],
+);
+
 // ─── Agenda ──────────────────────────────────────────────────────────────────
 // Garantías en la migración agenda_guards: sin doble reserva (EXCLUDE), transiciones de estado
 // válidas, citas terminadas/canceladas congeladas, nada se borra y el historial es solo-inserción.

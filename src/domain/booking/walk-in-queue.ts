@@ -21,12 +21,23 @@ import type { AppointmentStatus } from "./status";
 //   marcar nada no se elige solo: un olvido no puede tenerlo "ocupado" todo el día.
 // - Empates: menos servicios atendidos hoy primero; luego una rotación que cambia cada día (por
 //   nombre favorecería siempre al mismo).
+// - "Salí / Llegué" (decisión del dueño): quien salió queda fuera de la fila hasta que llega y, al
+//   volver, su "libre desde" es la hora en que llegó: entra de último entre los libres.
 
 export interface QueueStaff {
   readonly staffId: bigint;
   /** Hace el servicio pedido (staff_services). */
   readonly offersService: boolean;
   readonly blocks: readonly ScheduleBlock[];
+  /** Presencia de hoy ("Salí / Llegué"); sin marcas, está en la barbería. */
+  readonly presence?: StaffPresence;
+}
+
+export interface StaffPresence {
+  /** Marcó "Salí" hoy y no ha vuelto. */
+  readonly outSince: Date | null;
+  /** Última vez que marcó "Llegué" hoy. */
+  readonly backAt: Date | null;
 }
 
 export interface QueueAppointment {
@@ -51,7 +62,8 @@ export type ExclusionReason =
   | { readonly code: "off_shift" }
   | { readonly code: "booking_soon"; readonly at: Date }
   | { readonly code: "overdue_in_chair"; readonly since: Date }
-  | { readonly code: "away"; readonly until: Date };
+  | { readonly code: "away"; readonly until: Date }
+  | { readonly code: "out"; readonly since: Date };
 
 export type QueueEntry =
   | { readonly kind: "free"; readonly staffId: bigint; readonly freeSince: Date; readonly attendedToday: number }
@@ -137,6 +149,11 @@ export function walkInQueue(input: WalkInQueueInput): QueueEntry[] {
       excluded.push({ kind: "excluded", staffId, reason: { code: "not_offered" } });
       continue;
     }
+    if (s.presence?.outSince) {
+      // Salió: fuera hasta que marque "Llegué", aunque tenga la silla libre.
+      excluded.push({ kind: "excluded", staffId, reason: { code: "out", since: s.presence.outSince } });
+      continue;
+    }
     const mine = input.appointments.filter((a) => a.staffId === staffId);
     const todays = mine.filter((a) => a.start.getTime() >= dayStart);
     const attendedToday = todays.filter((a) => a.status === "completed").length;
@@ -212,9 +229,10 @@ export function walkInQueue(input: WalkInQueueInput): QueueEntry[] {
         .filter((t) => (t.staffId === null || t.staffId === staffId) && t.end.getTime() <= now.getTime() && t.end.getTime() > dayStart)
         .map((t) => t.end.getTime()),
     );
+    const backAt = s.presence?.backAt && s.presence.backAt.getTime() > dayStart ? s.presence.backAt.getTime() : Number.NEGATIVE_INFINITY;
     // fitsSchedule(start) garantiza que `start` cae dentro de un bloque de hoy.
     const blockStart = currentBlockStart(start, s.blocks, timeZone)!.getTime();
-    const freeSince = new Date(Math.min(now.getTime(), Math.max(blockStart, lastAttended, lastAway)));
+    const freeSince = new Date(Math.min(now.getTime(), Math.max(blockStart, lastAttended, lastAway, backAt)));
     free.push({ kind: "free", staffId, freeSince, attendedToday });
   }
 

@@ -545,6 +545,18 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "agenda · marcar que otro barbero salió o llegó",
+    action: "setPresenceAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => () => agenda.setPresenceAction({ staffId: String(A.dummy), kind: "out" }),
+  },
+  {
+    name: "agenda · marcar que uno mismo salió",
+    action: "setPresenceAction",
+    allowed: ["owner", "reception", "barber"],
+    prepare: async () => () => agenda.setPresenceAction({ staffId: String(myStaffId()), kind: "out" }),
+  },
+  {
     name: "agenda · fila del walk-in",
     action: "loadWalkInQueue",
     allowed: ["owner", "reception"],

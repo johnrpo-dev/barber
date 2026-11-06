@@ -169,6 +169,13 @@
       "when": 1793933021318,
       "tag": "0023_booking_without_code",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793934669726,
+      "tag": "0024_staff_presence",
+      "breakpoints": true
     }
   ]
 }

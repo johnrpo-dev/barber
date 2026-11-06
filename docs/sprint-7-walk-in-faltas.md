@@ -15,6 +15,7 @@ Decisiones del dueño (noviembre de 2026) y cómo quedaron en el código.
 | Recordatorio | Debe avisar que faltar suspende la reserva | §4 |
 | Walk-in | Lo atiende el que primero terminó; no si tiene cita en menos de 60 min | §2 |
 | Código por WhatsApp al reservar | "Mientras menos complique la app, mejor es la reserva": que no lo pida | §6 |
+| Barbero en turno que salió | Queda fuera de servicio hasta que llega; al volver queda de último en la fila | §2, "Salí / Llegué" |
 
 ## 2. Walk-in: la fila por tiempo libre
 
@@ -31,7 +32,8 @@ El dominio está en `src/domain/booking/walk-in-queue.ts`, que es puro y está p
    - no hace el servicio;
    - el turno no le alcanza;
    - tiene una cita dentro del margen (60 min, ajustable en Ajustes: "Walk-in: sin cita en los próximos");
-   - está ausente;
+   - está ausente (un bloqueo o ausencia en "Bloqueos");
+   - salió ("Salí / Llegué", abajo);
    - tiene una cita "En silla" o "Llegó" pasada de la hora sin marcar. Un olvido no puede dejarlo ocupado todo el día.
 
 Además, un barbero no entra si el servicio no alcanza antes de su próxima cita o de su descanso, aunque falten más de 60 minutos.
@@ -44,7 +46,13 @@ Además, un barbero no entra si el servicio no alcanza antes de su próxima cita
 
 **Diferencia con la cita agendada:** "Cualquiera" en una cita futura sigue eligiendo al que tiene menos minutos reservados ese día (`pickStaffForAny`). La fila por tiempo libre es solo para el cliente sin cita, que empieza ya.
 
-**Presencia:** el sistema no sabe si el barbero está físicamente en la barbería. Si está en turno pero no vino, o salió, hay que marcarlo ausente en "Bloqueos". Si no, puede salir primero en la fila.
+**Salí / Llegué (presencia):** regla del dueño: *"si el barbero está en turno y salió, quedará fuera de servicio hasta que llegue y al regresar queda de último en la cola de disponible"*.
+- En la Agenda, el encabezado de cada barbero tiene el botón "Salió". Al tocarlo, el encabezado dice "Salió a las 2:10" y el botón cambia a "Llegó".
+- Recepción y el dueño marcan a cualquiera; el barbero, a sí mismo.
+- Mientras está fuera, no entra a la fila del walk-in ("Salió a las 2:10"). Al marcar "Llegó", su "libre desde" es la hora en que llegó: queda detrás de todos los que ya estaban libres.
+- No toca la agenda ni la reserva en línea: una diligencia de veinte minutos no le quita los turnos del resto del día. Para ausencias con hora de regreso conocida (almuerzo largo, cita médica) sigue "Bloqueos".
+- Cada día empieza en la barbería: una salida que nadie cerró ayer no lo deja fuera hoy. Quien no ha llegado al empezar el turno se marca con "Salió" hasta que llegue.
+- `staff_presence_events` es solo-inserción (la app no puede cambiar ni borrar marcas): manda la última marca del día, con la hora de la base, y queda quién marcó a quién (`src/db/staff-presence.ts`).
 
 ## 3. Faltas y reserva en línea
 
@@ -112,3 +120,4 @@ Lo pidió el dueño: *"Si un cliente solicita por primera vez me gustaría que n
   - `clients.no_shows_cleared_at`.
 - `0022_audit_no_shows_clear`: agrega `client.no_shows_clear` a los CHECK de `audit_events`.
 - `0023_booking_without_code`: `locations.booking_requires_code` (`false`).
+- `0024_staff_presence`: tabla `staff_presence_events` (solo-inserción para la app).

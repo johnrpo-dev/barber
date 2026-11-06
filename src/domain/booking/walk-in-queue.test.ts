@@ -151,6 +151,19 @@ describe("la fila del walk-in", () => {
     expect(q.map((e) => (e.kind === "excluded" ? e.reason.code : e.kind))).toEqual(["off_shift", "not_offered", "away"]);
   });
 
+  it("Salí / Llegué: quien salió queda fuera; al volver entra de último entre los libres", () => {
+    const out = queue({ appointments: owners(), staff: [{ ...barber(SERGIO), presence: { outSince: at(14, 50), backAt: null } }, barber(ANDRES), barber(FELIPE)] });
+    expect(freeIds(out)).toEqual([ANDRES, FELIPE]);
+    expect(out.find((e) => e.staffId === SERGIO)).toEqual({ kind: "excluded", staffId: SERGIO, reason: { code: "out", since: at(14, 50) } });
+    // Volvió a las 3:08: Felipe terminó a las 3:05, así que Sergio queda detrás de él.
+    const back = queue({ appointments: owners(), staff: [{ ...barber(SERGIO), presence: { outSince: null, backAt: at(15, 8) } }, barber(ANDRES), barber(FELIPE)] });
+    expect(freeIds(back)).toEqual([ANDRES, FELIPE, SERGIO]);
+    expect(back[2]).toMatchObject({ freeSince: at(15, 8) });
+    // Lo de ayer no cuenta: una vuelta de ayer no cambia nada.
+    const yesterday = queue({ appointments: owners(), staff: [{ ...barber(SERGIO), presence: { outSince: null, backAt: at(-10, 0) } }, barber(ANDRES), barber(FELIPE)] });
+    expect(freeIds(yesterday)).toEqual([SERGIO, ANDRES, FELIPE]);
+  });
+
   it("empate: primero quien menos ha atendido hoy", () => {
     const blocks = allWeek(8 * 60 + 55, 20 * 60);
     const q = queue({
@@ -289,6 +302,34 @@ describe("propiedades de la fila del walk-in", () => {
         expect(walkInQueue({ ...input, appointments: [...kept, ...noise] })).toEqual(walkInQueue({ ...input, appointments: kept }));
       }),
       { numRuns: 200 },
+    );
+  });
+
+  it("Salí / Llegué: quien está fuera nunca entra a la fila; quien volvió nunca va antes de su regreso", () => {
+    const presence = fc.uniqueArray(
+      fc.record({ staffId: fc.constantFrom(...STAFF_IDS), out: fc.boolean(), backMin: fc.option(fc.integer({ min: 7 * 60, max: 21 * 60 }), { nil: null }) }),
+      { maxLength: 5, selector: (p) => p.staffId },
+    );
+    fc.assert(
+      fc.property(scenario, presence, (s, marks) => {
+        const input = build(s);
+        const staff = input.staff.map((st): QueueStaff => {
+          const m = marks.find((x) => x.staffId === st.staffId);
+          if (!m) return st;
+          const backAt = m.backMin === null ? null : at(0, m.backMin);
+          return { ...st, presence: { outSince: m.out ? (backAt ?? at(7, 0)) : null, backAt: m.out ? null : backAt } };
+        });
+        const q = walkInQueue({ ...input, staff });
+        for (const st of staff) {
+          const e = q.find((x) => x.staffId === st.staffId)!;
+          if (st.offersService && st.presence?.outSince) expect(e).toMatchObject({ kind: "excluded", reason: { code: "out" } });
+          const back = st.presence?.backAt;
+          if (e.kind === "free" && back && back.getTime() <= input.now.getTime()) expect(e.freeSince.getTime()).toBeGreaterThanOrEqual(back.getTime());
+        }
+        // Sin marcas, la fila es la de siempre.
+        expect(walkInQueue({ ...input, staff: input.staff.map((st) => ({ ...st, presence: { outSince: null, backAt: null } })) })).toEqual(walkInQueue(input));
+      }),
+      { numRuns: 300 },
     );
   });
 

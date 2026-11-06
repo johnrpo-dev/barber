@@ -18,6 +18,7 @@ import { db } from "@/db/client";
 import { findOrCreateClient, searchClients } from "@/db/clients";
 import { clearNoShows, noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
+import { markPresence } from "@/db/staff-presence";
 import { appointments } from "@/db/schema";
 import type { Db } from "@/db/types";
 import { isDateString, localMinuteOf, localMinuteToInstant } from "@/domain/booking/clock";
@@ -255,7 +256,9 @@ export async function loadWalkInQueue(raw: { serviceId: string }): Promise<Actio
                 ? `Tiene cita a las ${at(r.at)}`
                 : r.code === "overdue_in_chair"
                   ? "Cita pasada de la hora sin marcar"
-                  : `Ausente hasta las ${at(r.until)}`;
+                  : r.code === "out"
+                    ? `Salió a las ${at(r.since)}`
+                    : `Ausente hasta las ${at(r.until)}`;
       }
       return { staffId: String(staffId), name: displayName, kind: entry.kind, reason: entry.kind === "excluded" ? entry.reason.code : null, detail };
     });
@@ -288,6 +291,24 @@ export async function startWalkIn(
       createdBy: staff.userId,
     });
     return { staffId: String(created.staffId), label: formatTime(localMinuteOf(created.start, rules.timeZone)) };
+  });
+  if (result.ok) refresh();
+  return result;
+}
+
+/**
+ * "Salí / Llegué" (decisión del dueño, sprint 7): quien sale queda fuera de la fila del walk-in hasta
+ * que llega y, al volver, entra de último. Recepción y el dueño marcan a cualquiera; el barbero, a sí
+ * mismo. La hora la pone la base.
+ */
+export async function setPresenceAction(raw: { staffId: string; kind: "out" | "in" }): Promise<ActionResult<{ changed: boolean }>> {
+  const staff = await requireAgenda();
+  const result = await runAction(async () => {
+    const input = z.object({ staffId: idSchema, kind: z.enum(["out", "in"]) }).parse(raw);
+    if (!can(staff.role, "appointments.manage.all") && input.staffId !== staff.staffId) redirect("/panel?sin-permiso=1");
+    const rules = await locationRules(database(), staff.locationId);
+    const dayStart = localMinuteToInstant(businessDate(new Date(), rules.timeZone), 0, rules.timeZone);
+    return markPresence(database(), { locationId: staff.locationId, staffId: input.staffId, kind: input.kind, dayStart, createdBy: staff.userId });
   });
   if (result.ok) refresh();
   return result;

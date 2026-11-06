@@ -1,9 +1,9 @@
 "use client";
 
-import { CalendarDays, ChevronLeft, ChevronRight, Lock, Plus, Receipt, Zap } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, DoorOpen, Lock, LogIn, Plus, Receipt, Zap } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useOptimistic, useRef, useState } from "react";
+import { useEffect, useMemo, useOptimistic, useRef, useState, useTransition } from "react";
 import { parseDate } from "@internationalized/date";
 import {
   Button,
@@ -20,9 +20,10 @@ import {
 import { addDays } from "@/domain/booking/clock";
 import { type AppointmentStatus, STATUS_LABELS } from "@/domain/booking/status";
 import { formatTime } from "@/domain/staff/schedule";
-import { Btn, cx } from "../../_components/ui";
+import { Btn, cx, useToast } from "../../_components/ui";
+import { setPresenceAction } from "../actions";
 import { CheckoutSheet } from "../../cobro/checkout-sheet";
-import type { AgendaAppointmentView, AgendaView } from "../data";
+import type { AgendaAppointmentView, AgendaColumnView, AgendaView } from "../data";
 import { AppointmentSheet } from "./appointment-sheet";
 import { type BookingMode, type BookingPrefill, BookingSheet, initials } from "./booking-sheet";
 import { longDate, relativeDate } from "./slot-picker";
@@ -234,12 +235,17 @@ export function AgendaBoard({ view, canCharge = false }: { view: AgendaView; can
                       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-botella text-xs font-semibold text-hueso" aria-hidden>
                         {initials(col.displayName)}
                       </span>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <h2 className="truncate text-sm font-semibold">{col.displayName}</h2>
-                        <p className="text-[11px] text-tinta/70">
-                          {col.blocks.length === 0 ? "No trabaja hoy" : col.blocks.map((b) => `${formatTime(b.startMin)}–${formatTime(b.endMin)}`).join(" · ")}
-                        </p>
+                        {col.presence?.out ? (
+                          <p className="text-[11px] font-semibold text-alerta">Salió a las {col.presence.sinceLabel}</p>
+                        ) : (
+                          <p className="text-[11px] text-tinta/70">
+                            {col.blocks.length === 0 ? "No trabaja hoy" : col.blocks.map((b) => `${formatTime(b.startMin)}–${formatTime(b.endMin)}`).join(" · ")}
+                          </p>
+                        )}
                       </div>
+                      {col.presence?.canMark && col.blocks.length > 0 ? <PresenceButton column={col} /> : null}
                     </div>
 
                     <div className="relative bg-tinta/[0.035]" style={{ height: h(startMin, endMin) }}>
@@ -475,4 +481,35 @@ function useNowMinute(dayStartMs: number, serverNowMs: number): number {
     return () => clearInterval(t);
   }, []);
   return Math.floor((nowMs - dayStartMs) / 60_000);
+}
+
+/**
+ * "Salí / Llegué" (decisión del dueño, sprint 7): quien sale queda fuera de la fila del walk-in hasta
+ * que llega y, al volver, entra de último. No toca la agenda ni la reserva en línea.
+ */
+function PresenceButton({ column }: { column: AgendaColumnView }) {
+  const toast = useToast();
+  const [pending, startTransition] = useTransition();
+  const out = !!column.presence?.out;
+  const first = column.displayName.split(" ")[0];
+  function mark() {
+    startTransition(async () => {
+      const r = await setPresenceAction({ staffId: column.staffId, kind: out ? "in" : "out" });
+      if (r.ok) toast(out ? `${first} llegó: entra de último a la fila del walk-in` : `${first} salió: queda fuera de la fila del walk-in`);
+      else toast(r.error, "error");
+    });
+  }
+  return (
+    <Btn
+      size="sm"
+      variant={out ? "success" : "ghost"}
+      className="min-h-11 shrink-0 px-2"
+      isPending={pending}
+      onPress={mark}
+      aria-label={out ? `Marcar que ${column.displayName} llegó` : `Marcar que ${column.displayName} salió`}
+    >
+      {out ? <LogIn size={16} aria-hidden /> : <DoorOpen size={16} aria-hidden />}
+      {out ? "Llegó" : "Salió"}
+    </Btn>
+  );
 }
