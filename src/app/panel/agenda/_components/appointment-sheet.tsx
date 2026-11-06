@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Dialog, Heading, Label, Modal, ModalOverlay, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { type AppointmentStatus, NEXT_STEP, NEXT_STEP_LABELS, STATUS_LABELS } from "@/domain/booking/status";
-import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../../_components/ui";
 import { CheckoutSheet } from "../../cobro/checkout-sheet";
 import { clearNoShowsAction, type HistoryEntry, loadHistory, reschedule, setStatus } from "../actions";
 import type { AgendaAppointmentView, AgendaColumnView } from "../data";
@@ -330,9 +330,11 @@ function ConfirmDialog({
       isOpen={kind !== null}
       onOpenChange={(open) => !open && onCancel()}
       isDismissable={!pending}
-      className="fixed inset-0 z-[55] grid place-items-center bg-tinta/40 p-4 data-[entering]:animate-fade-in"
+      // Alto = lo visible (React Aria lo mide): con el teclado abierto para la nota, el diálogo se
+      // achica y se desplaza por dentro en vez de quedar detrás del teclado.
+      className="fixed left-0 top-0 z-[55] flex h-[var(--visual-viewport-height,100vh)] w-full items-center justify-center bg-tinta/40 p-4 data-[entering]:animate-fade-in"
     >
-      <Modal className="w-full max-w-sm rounded-2xl bg-papel p-5 shadow-2xl data-[entering]:animate-pop-in">
+      <Modal className="max-h-full w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl bg-papel p-5 shadow-2xl data-[entering]:animate-pop-in">
         <Dialog role="alertdialog" aria-describedby="confirmar-detalle" className="flex flex-col gap-4 outline-none">
           <Heading slot="title" className="font-display text-2xl leading-tight">
             {kind === "cancel" ? `¿Cancelar la cita de ${name}?` : `¿${name} no vino?`}
@@ -464,14 +466,14 @@ function Reschedule({
         onChange={(m) => setMinute(m)}
         excludeAppointmentId={a.id}
       />
-      <div className="sticky bottom-0 flex gap-2 bg-papel pt-2">
+      <SheetFooter className="flex-row">
         <Btn variant="ghost" onPress={onCancel} isDisabled={pending}>
           Volver
         </Btn>
         <Btn className="flex-1" size="lg" isDisabled={minute === null} isPending={pending} onPress={submit}>
           Mover cita
         </Btn>
-      </div>
+      </SheetFooter>
     </div>
   );
 }

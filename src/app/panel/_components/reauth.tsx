@@ -6,7 +6,7 @@ import { Form, Input, Label, Radio, RadioGroup, Text, TextField } from "react-ar
 import type { ActionResult } from "@/lib/action";
 import { reauthenticateAction } from "../../cuenta/actions";
 import { FieldMessage, FormError, RadioDot, radioCard } from "../_manage/controls";
-import { Btn, cx, field, Sheet } from "./ui";
+import { Btn, cx, field, Sheet, SheetFooter } from "./ui";
 
 // Confirmar identidad antes de una acción crítica (crear o ascender dueños, cambiar roles,
 // contraseñas del personal y las acciones y ajustes de dinero). El servidor decide: si la acción
@@ -169,7 +169,7 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
 
       <FormError message={error} />
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
@@ -177,7 +177,7 @@ function ReauthForm({ canUseCode, onConfirmed, onCancel }: { canUseCode: boolean
           <ShieldCheck size={18} aria-hidden />
           {pending ? "Confirmando…" : "Confirmar y continuar"}
         </Btn>
-      </div>
+      </SheetFooter>
     </Form>
   );
 }

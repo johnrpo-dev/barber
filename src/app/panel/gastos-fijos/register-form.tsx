@@ -6,7 +6,7 @@ import { Form, Input, Label, TextField } from "react-aria-components";
 import { FieldMessage, FormError, useFieldErrors } from "../_manage/controls";
 import { callAction, MoneyField, unitsOf } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
-import { Btn, field } from "../_components/ui";
+import { Btn, field, SheetFooter } from "../_components/ui";
 import { registerRecurringExpenseAction } from "./actions";
 import type { RecurringDueItem } from "./view";
 
@@ -21,14 +21,14 @@ export const INACTIVE_CATEGORY_REASON = "Categoría desactivada: elige otra en l
 
 export function FormActions({ pending, onCancel, children, isDisabled }: { pending: boolean; onCancel: () => void; children: ReactNode; isDisabled?: boolean }) {
   return (
-    <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+    <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
       <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
         Cancelar
       </Btn>
       <Btn type="submit" isPending={pending} isDisabled={isDisabled}>
         {children}
       </Btn>
-    </div>
+    </SheetFooter>
   );
 }
 

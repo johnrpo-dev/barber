@@ -851,6 +851,21 @@ export const rateLimitCounters = pgTable(
   (t) => [primaryKey({ name: "rate_limit_counters_pkey", columns: [t.bucket, t.windowStart] })],
 );
 
+/**
+ * Latido del worker (migración 0030): una fila por proceso con la última vez que respondió. Si los
+ * avisos pendientes no avanzan y el latido tiene más de 5 minutos, Caja e Inicio lo dicen
+ * (src/db/worker-heartbeat.ts). Infraestructura, como rate_limit_counters: sin location_id (un solo
+ * worker atiende todas las sedes). Sin datos personales; la app solo puede cambiar beat_at.
+ */
+export const workerHeartbeats = pgTable(
+  "worker_heartbeats",
+  {
+    name: text("name").primaryKey(),
+    beatAt: timestamp("beat_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [check("worker_heartbeats_name_check", sql`${t.name} ~ '^[a-z][a-z0-9.-]{0,39}$'`)],
+);
+
 // ─── Cobro, caja y gastos (sprint 4) ─────────────────────────────────────────
 // Ver docs/sprint-4-cobro-caja.md §2. Dinero en bigint (centavos) con CHECK >= 0; FK compuestas
 // con location_id. Las garantías (solo-inserción, una venta pagada solo pasa a anulada, una caja

@@ -8,9 +8,10 @@ import { format, money, PESO } from "@/domain/money";
 import type { ActionResult } from "@/lib/action";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, useFieldErrors } from "../_manage/controls";
 import { callAction, MoneyField, newKey, onlyDigits, unitsOf } from "../_components/money-field";
+import { DeliveryStoppedNotice } from "../_components/delivery-notice";
 import { useReauth } from "../_components/reauth";
 import { SelectField } from "../_components/select-field";
-import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { plural } from "../_components/dates";
 import { longDate } from "../agenda/_components/slot-picker";
 import { requestVoidAction } from "../cobro/actions";
@@ -286,6 +287,8 @@ export function CashBoard({ initial }: { initial: CashView }) {
           </h2>
           {view.daySales.length > 0 ? <span className="monto text-sm text-tinta/70">{plural(view.daySales.filter((x) => x.status === "paid").length, "cobro", "cobros")}</span> : null}
         </div>
+        {/* Recibos en cola y el worker sin latir (migración 0030): que nadie crea que ya salieron. */}
+        {view.deliveryStalled ? <DeliveryStoppedNotice /> : null}
         {view.daySales.length === 0 ? (
           <p className={cx(card, "p-4 text-sm text-tinta/70")}>Todavía no hay cobros hoy.</p>
         ) : (
@@ -629,14 +632,14 @@ export function CashBoard({ initial }: { initial: CashView }) {
 
 function Actions({ pending, onCancel, children, variant = "primary" }: { pending: boolean; onCancel: () => void; children: ReactNode; variant?: "primary" | "success" | "danger" }) {
   return (
-    <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+    <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
       <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
         Cancelar
       </Btn>
       <Btn type="submit" variant={variant} isPending={pending}>
         {children}
       </Btn>
-    </div>
+    </SheetFooter>
   );
 }
 

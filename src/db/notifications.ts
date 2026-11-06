@@ -394,25 +394,32 @@ export async function createDueReminders(db: Db, ctx: DeliveryContext, now: Date
   return created;
 }
 
+/**
+ * Condición SQL de "pendiente de entregar": sin resultado definitivo (sent, suppressed, unknown),
+ * con menos de MAX_FAILED fallos, ya vencido para enviar y no tan viejo. La usan el barrido del
+ * worker y el aviso de envíos detenidos (src/db/worker-heartbeat.ts): una sola definición.
+ */
+export function pendingNotificationWhere(now: Date) {
+  return and(
+    ne(notifications.template, "otp"),
+    sql`${notifications.sendAfter} <= ${now.toISOString()}::timestamptz`,
+    sql`${notifications.createdAt} > ${new Date(now.getTime() - MAX_AGE_MS - 60 * MINUTE_MS).toISOString()}::timestamptz`,
+    sql`not exists (
+      select 1 from notification_events e
+      where e.location_id = ${notifications.locationId} and e.notification_id = ${notifications.id}
+        and e.kind in ('sent', 'suppressed', 'unknown')
+    )`,
+    sql`(select count(*) from notification_events e
+         where e.location_id = ${notifications.locationId} and e.notification_id = ${notifications.id} and e.kind = 'failed') < ${MAX_FAILED}`,
+  );
+}
+
 /** IDs pendientes de entregar: sin resultado definitivo, vencidos para enviar y no tan viejos. */
 export async function pendingNotificationIds(db: Db, now: Date, limit = 100): Promise<bigint[]> {
   const rows = await db
     .select({ id: notifications.id })
     .from(notifications)
-    .where(
-      and(
-        ne(notifications.template, "otp"),
-        sql`${notifications.sendAfter} <= ${now.toISOString()}::timestamptz`,
-        sql`${notifications.createdAt} > ${new Date(now.getTime() - MAX_AGE_MS - 60 * MINUTE_MS).toISOString()}::timestamptz`,
-        sql`not exists (
-          select 1 from notification_events e
-          where e.location_id = ${notifications.locationId} and e.notification_id = ${notifications.id}
-            and e.kind in ('sent', 'suppressed', 'unknown')
-        )`,
-        sql`(select count(*) from notification_events e
-             where e.location_id = ${notifications.locationId} and e.notification_id = ${notifications.id} and e.kind = 'failed') < ${MAX_FAILED}`,
-      ),
-    )
+    .where(pendingNotificationWhere(now))
     .orderBy(asc(notifications.id))
     .limit(limit);
   return rows.map((r) => r.id);

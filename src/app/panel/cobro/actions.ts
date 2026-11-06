@@ -16,7 +16,10 @@ import { bucketHash, publicConfig, receiptChannels } from "@/lib/public-readines
 import { requirePermission } from "@/lib/session";
 import { appointmentReceiptDestination, enqueueSaleReceipt } from "@/db/receipts";
 import type { ReceiptDestination } from "@/domain/notifications/channel";
+import { type DeliveryMode, deliveryModes } from "@/domain/notifications/delivery";
 import type { NotificationChannel } from "@/domain/notifications/templates";
+import { deliveryStatus } from "@/db/worker-heartbeat";
+import { consoleChannels } from "@/lib/notify";
 
 // Cobro (docs/sprint-4-cobro-caja.md §9). La sede, los precios, las comisiones, los medios de pago,
 // las reglas y el día contable salen de la base; del navegador solo llegan las elecciones.
@@ -61,8 +64,16 @@ export interface CheckoutView {
    * Recibo (riesgo B4): a dónde saldría, enmascarado y con la misma elección de canal que el envío
    * (null: el cliente no tiene cómo recibirlo), y los canales activos, para calcular en la hoja el
    * destino del celular que se teclee en un walk-in.
+   * `modes`: qué pasa de verdad por cada canal (`live`, `console` en desarrollo sin proveedor,
+   * `stopped` si el worker no late hace más de 5 minutos), para no prometer un envío que no ocurre.
    */
-  receipt: { to: ReceiptDestination | null; channels: NotificationChannel[] };
+  receipt: { to: ReceiptDestination | null; channels: NotificationChannel[]; modes: Record<NotificationChannel, DeliveryMode> };
+}
+
+/** El modo de envío de cada canal: el latido del worker (SQL) y si el notificador es la consola. */
+async function receiptModes(locationId: bigint): Promise<Record<NotificationChannel, DeliveryMode>> {
+  const { workerDown } = await deliveryStatus(database(), locationId);
+  return deliveryModes({ workerDown, consoleChannels: consoleChannels() });
 }
 
 const loadInput = z.object({ appointmentId: idSchema });
@@ -112,7 +123,7 @@ export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<Acti
       dayClosed: ctx.dayClosed,
       businessDate: ctx.businessDate,
       paid: ctx.paid ? { saleId: ctx.paid.id.toString(), totalLabel: moneyLabel(ctx.paid.totalPaid), paidAt: ctx.paid.createdAt.toISOString() } : null,
-      receipt: { to: receiptTo, channels },
+      receipt: { to: receiptTo, channels, modes: await receiptModes(staff.locationId) },
     };
   });
 }
@@ -149,7 +160,7 @@ export async function loadWalkInCheckout(): Promise<ActionResult<CheckoutView>> 
       paid: null,
       // El cliente se elige en la hoja: su destino llega con la búsqueda (findClients) o se calcula
       // allí con el celular tecleado.
-      receipt: { to: null, channels: receiptChannels() },
+      receipt: { to: null, channels: receiptChannels(), modes: await receiptModes(staff.locationId) },
     };
   });
 }

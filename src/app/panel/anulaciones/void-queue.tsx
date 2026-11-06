@@ -7,7 +7,7 @@ import { Form, Label, TextArea, TextField, ToggleButton, ToggleButtonGroup } fro
 import { card, Chip, FieldMessage, FormError, useFieldErrors } from "../_manage/controls";
 import { callAction, newKey } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
-import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { decideVoidAction, loadVoidQueue } from "./actions";
 
 // Anulaciones (docs/sprint-4-cobro-caja.md §7): el dueño ve la cola con la venta completa, quién
@@ -259,14 +259,14 @@ function DecideForm({
           </Link>
         </div>
       ) : null}
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" variant={approve ? "danger" : "primary"} isPending={pending}>
           {approve ? "Sí, anular la venta" : "Rechazar solicitud"}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

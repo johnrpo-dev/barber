@@ -11,6 +11,7 @@
     "build": "next build",
     "start": "next start",
     "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
+    "worker:dev": "tsx --env-file-if-exists=.env src/scripts/worker-dev.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

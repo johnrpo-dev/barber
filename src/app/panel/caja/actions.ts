@@ -23,6 +23,7 @@ import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import type { Db } from "@/db/types";
+import { deliveryStatus } from "@/db/worker-heartbeat";
 import { money, sum } from "@/domain/money";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
 import { formatDateLabel } from "@/domain/booking/public-labels";
@@ -128,6 +129,11 @@ export interface CashView {
    * tope de descuento de la sede es 100 %. El servidor lo vuelve a exigir al darla.
    */
   canCourtesy: boolean;
+  /**
+   * Hay recibos o avisos de la sede en cola y el worker no late hace más de 5 minutos (migración
+   * 0030): los envíos están detenidos. Solo el booleano; nada de los clientes.
+   */
+  deliveryStalled: boolean;
   daySales: {
     saleId: string;
     /** Para abrir el recibo (/panel/ventas/<publicId>). */
@@ -157,6 +163,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
     const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay, reopened } = await cashViewData(database(), staff.locationId);
     const rules = await checkoutRulesOf(database(), staff.locationId);
     const recurring = await dueRecurringExpenses(database(), { locationId: staff.locationId, payMode: "cash" });
+    const delivery = await deliveryStatus(database(), staff.locationId);
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -259,6 +266,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
         inChair: a.status === "in_chair",
       })),
       canCourtesy: canGiveCourtesy(staff.role, rules),
+      deliveryStalled: delivery.stalled,
       daySales: sales.map((s) => ({
         saleId: s.saleId.toString(),
         publicId: s.publicId,

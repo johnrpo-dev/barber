@@ -211,6 +211,13 @@
       "when": 1793962500338,
       "tag": "0029_courtesies_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1793974928855,
+      "tag": "0030_worker_heartbeats",
+      "breakpoints": true
     }
   ]
 }

@@ -16,9 +16,10 @@ import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
 import { saveRecurringExpense } from "@/db/recurring-expenses";
-import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
+import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user, workerHeartbeats } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
+import { recordHeartbeat } from "@/db/worker-heartbeat";
 import { addTimeOff } from "@/db/time-off";
 import type { Db } from "@/db/types";
 import { addDays, localMinuteToInstant } from "@/domain/booking/clock";
@@ -2957,5 +2958,69 @@ describe("gastos fijos", () => {
     const view = await caja.loadCashView();
     if (!view.ok) throw new Error(view.error);
     expect(view.data.recurringDue.some((d) => d.recurringId === id)).toBe(false);
+  });
+});
+
+// ─── Envíos detenidos (latido del worker, migración 0030) ────────────────────
+
+describe("envíos detenidos", () => {
+  afterAll(() => vi.unstubAllEnvs());
+
+  /** Un cobro con "enviar el recibo": deja un sale_receipt en cola en la sede A. */
+  async function queuedReceipt(): Promise<void> {
+    const id = await chairAppointment();
+    const units = String((await servicePrice()) / 100n);
+    await signInAs(A.users.reception);
+    const res = await cobro.checkoutAction({
+      appointmentId: String(id),
+      extras: [],
+      discounts: [],
+      tips: [],
+      payments: [{ methodId: String(A.methods.card), amountUnits: units }],
+      idempotencyKey: `cobro-cola-${uniq()}`,
+      sendReceipt: true,
+    });
+    expect(res).toMatchObject({ ok: true, data: { receiptSent: "whatsapp" } });
+  }
+
+  it("sin latido y con recibos en cola: Caja, Inicio y la hoja de cobro lo dicen; con latido, no", async () => {
+    // Sin credenciales: en tests (como en desarrollo) el notificador de los dos canales es la consola.
+    for (const name of ["WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "RESEND_API_KEY", "EMAIL_FROM"]) vi.stubEnv(name, "");
+    await db.delete(workerHeartbeats);
+    await queuedReceipt();
+
+    await signInAs(A.users.reception);
+    expect(await caja.loadCashView()).toMatchObject({ ok: true, data: { deliveryStalled: true } });
+    const chair = await chairAppointment();
+    expect(await cobro.loadCheckout({ appointmentId: String(chair) })).toMatchObject({
+      ok: true,
+      data: { receipt: { modes: { whatsapp: "stopped", email: "stopped" } } },
+    });
+    expect(await cobro.loadWalkInCheckout()).toMatchObject({ ok: true, data: { receipt: { modes: { whatsapp: "stopped", email: "stopped" } } } });
+    await signInAs(A.users.owner);
+    expect(await inicio.loadDashboard()).toMatchObject({ ok: true, data: { deliveryStalled: true } });
+
+    // La otra sede no tiene nada en cola: no ve el aviso (el latido es global; la cola, por sede).
+    await signInAs(B.owner);
+    expect(await caja.loadCashView()).toMatchObject({ ok: true, data: { deliveryStalled: false } });
+    expect(await inicio.loadDashboard()).toMatchObject({ ok: true, data: { deliveryStalled: false } });
+
+    // El worker vuelve: el aviso se va y la hoja dice la verdad del notificador (consola en pruebas).
+    await recordHeartbeat(db, new Date());
+    await signInAs(A.users.reception);
+    expect(await caja.loadCashView()).toMatchObject({ ok: true, data: { deliveryStalled: false } });
+    expect(await cobro.loadWalkInCheckout()).toMatchObject({ ok: true, data: { receipt: { modes: { whatsapp: "console", email: "console" } } } });
+    await signInAs(A.users.owner);
+    expect(await inicio.loadDashboard()).toMatchObject({ ok: true, data: { deliveryStalled: false } });
+  });
+
+  it("latido de hace más de 5 minutos: detenidos otra vez", async () => {
+    await queuedReceipt();
+    await recordHeartbeat(db, new Date(Date.now() - 6 * 60_000));
+    await signInAs(A.users.reception);
+    const view = await caja.loadCashView();
+    expect(view).toMatchObject({ ok: true, data: { deliveryStalled: true } });
+    // Solo un booleano: nada del cliente ni de la cola.
+    expect(JSON.stringify(view)).not.toMatch(/sale_receipt|recipient/);
   });
 });

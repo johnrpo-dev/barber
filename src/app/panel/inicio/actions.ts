@@ -4,6 +4,7 @@ import { db } from "@/db/client";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import { dashboardData } from "@/db/reports";
 import type { Db } from "@/db/types";
+import { deliveryStatus } from "@/db/worker-heartbeat";
 import { estimatedPayout } from "@/domain/commissions/settlement";
 import { money } from "@/domain/money";
 import { can } from "@/domain/staff/roles";
@@ -32,6 +33,8 @@ export type DashboardView = {
     label: string;
     href: string;
   }[];
+  /** Recibos o avisos de la sede en cola y el worker sin latir hace más de 5 minutos (migración 0030). */
+  deliveryStalled: boolean;
   owed: { staffId: string; name: string; commissionLabel: string; tipsLabel: string; receivableLabel: string; netMinor: string; netLabel: string }[];
   upcoming: { atLabel: string; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 };
@@ -52,6 +55,7 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
     // Gastos fijos vencidos (sprint 8, §5): solo los ya vencidos, no los que vencen en los próximos días.
     const recurring = await dueRecurringExpenses(db() as unknown as Db, { locationId: staff.locationId });
     const overdue = recurring.items.reduce((n, x) => n + x.due.filter((p) => p.status === "overdue").length, 0);
+    const delivery = await deliveryStatus(db() as unknown as Db, staff.locationId);
     // Conteo a ciegas: el esperado de un turno abierto solo lo ve quien revisa la caja.
     const expected = can(staff.role, "cash.review") ? d.cash.expected : null;
     const alerts: DashboardView["alerts"] = [];
@@ -144,6 +148,7 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
         expectedLabel: expected === null ? null : moneyLabel(expected),
       },
       alerts,
+      deliveryStalled: delivery.stalled,
       owed: d.owed.map((b) => {
         const net = estimatedPayout({
           commission: money(b.pendingCommission),

@@ -12,7 +12,7 @@ import { format, fromUnits, money, PESO, percentOf } from "@/domain/money";
 import { FieldMessage, FormError, Toggle } from "../_manage/controls";
 import { callAction, MoneyField, newKey, NETWORK_ERROR, unitsOf } from "../_components/money-field";
 import { SelectField } from "../_components/select-field";
-import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { longDate } from "../agenda/_components/slot-picker";
 import { type ClientChoice, ClientPicker, clientIsReady } from "../agenda/_components/client-picker";
 import { checkoutAction, loadCheckout, loadWalkInCheckout } from "./actions";
@@ -750,6 +750,16 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
                 <span className="monto font-semibold text-tinta">{receiptTo.label}</span>.{" "}
                 {walkIn && client.kind === "new" ? "Léeselo al cliente para confirmarlo." : "Confírmalo con el cliente."}
               </span>
+              {/* Lo que pasa de verdad con el envío (latido del worker, migración 0030; consola en desarrollo). */}
+              {view.receipt.modes[receiptTo.channel] === "stopped" ? (
+                <span className="text-xs font-semibold text-alerta">Los envíos están detenidos: el recibo queda en cola.</span>
+              ) : view.receipt.modes[receiptTo.channel] === "console" ? (
+                <span className="text-xs font-normal text-tinta/70">
+                  {receiptTo.channel === "whatsapp"
+                    ? "Modo de prueba: el recibo no sale por WhatsApp; queda en el registro del worker."
+                    : "Modo de prueba: el recibo no sale por correo; queda en el registro del worker."}
+                </span>
+              ) : null}
             </span>
           </Toggle>
         ) : (
@@ -761,12 +771,12 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         <FormError message={errors.summary ?? null} />
       </div>
 
-      <div className="sticky bottom-0 -mx-5 -mb-4 border-t border-tinta/10 bg-papel px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
+      <SheetFooter>
         <Btn variant="success" size="xl" className="h-16 w-full text-xl" isPending={pending} isDisabled={blocked || totalDue <= 0n} onPress={submit}>
           <Banknote size={24} aria-hidden />
           {pending ? "Cobrando…" : <span className="monto">Cobrar {fmt(totalDue)}</span>}
         </Btn>
-      </div>
+      </SheetFooter>
     </div>
   );
 }
@@ -1287,7 +1297,7 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
         </dl>
       </div>
 
-      <div className="flex flex-col gap-2 min-[400px]:flex-row">
+      <SheetFooter className="min-[400px]:flex-row">
         <Btn variant="secondary" size="lg" className="flex-1" onPress={share}>
           <Share2 size={18} aria-hidden /> Compartir
         </Btn>
@@ -1300,7 +1310,7 @@ function ReceiptView({ receipt, onDone }: { receipt: Receipt; onDone: () => void
         <Btn size="lg" className="flex-1" onPress={onDone}>
           Listo
         </Btn>
-      </div>
+      </SheetFooter>
     </div>
   );
 }

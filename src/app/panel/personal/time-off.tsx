@@ -4,7 +4,7 @@ import { CalendarOff, Clock } from "lucide-react";
 import { type FormEvent, useId, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextField } from "react-aria-components";
 import type { ActionResult } from "@/lib/action";
-import { Btn, cx, field, useToast } from "../_components/ui";
+import { Btn, cx, field, SheetFooter, useToast } from "../_components/ui";
 import { card, Chip, FormError, RadioDot, radioCard } from "../_manage/controls";
 import { cancelTimeOffAction } from "../bloqueos/actions";
 import type { TimeOffView } from "./time-off-view";
@@ -281,11 +281,11 @@ export function TimeOffForm({
 
       <FormError message={error} />
 
-      <div className="flex justify-end">
+      <SheetFooter className="min-[400px]:flex-row min-[400px]:justify-end">
         <Btn type="submit" isPending={pending} className="w-full min-[400px]:w-auto">
           {pending ? "Guardando…" : variant === "closure" ? "Cerrar la sede esos días" : "Agregar"}
         </Btn>
-      </div>
+      </SheetFooter>
     </Form>
   );
 }

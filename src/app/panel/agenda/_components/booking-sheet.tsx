@@ -5,7 +5,7 @@ import { Check, ChevronLeft, Clock, Scissors, UserRound, Users, Zap } from "luci
 import { useEffect, useState, useTransition } from "react";
 import { Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { parseTime, formatTime } from "@/domain/staff/schedule";
-import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../../_components/ui";
 import { bookAppointment, loadWalkInQueue, startWalkIn, type WalkInQueueOption } from "../actions";
 import type { AgendaColumnView, ServiceOption } from "../data";
 import { type ClientChoice, ClientPicker, clientIsReady, toActionClient } from "./client-picker";
@@ -402,6 +402,17 @@ function AppointmentFlow({
               {client.kind === "new" ? "Falta el nombre o el celular (10 dígitos)." : "Busca al cliente o crea uno nuevo."}
             </p>
           ) : null}
+        </section>
+      ) : null}
+
+      {step > 0 ? (
+        <Btn variant="ghost" className="self-start" onPress={() => setStep((s) => s - 1)}>
+          <ChevronLeft size={18} aria-hidden /> Atrás
+        </Btn>
+      ) : null}
+
+      {step === 3 ? (
+        <SheetFooter>
           <Btn
             size="xl"
             className="w-full"
@@ -412,13 +423,7 @@ function AppointmentFlow({
           >
             {pending ? "Agendando…" : "Agendar cita"}
           </Btn>
-        </section>
-      ) : null}
-
-      {step > 0 ? (
-        <Btn variant="ghost" className="self-start" onPress={() => setStep((s) => s - 1)}>
-          <ChevronLeft size={18} aria-hidden /> Atrás
-        </Btn>
+        </SheetFooter>
       ) : null}
     </div>
   );
@@ -523,9 +528,11 @@ function WalkInForm({
           {busyMessage}
         </p>
       ) : null}
-      <Btn variant="success" size="xl" className="w-full" isDisabled={!serviceId || !clientIsReady(client, true)} isPending={pending} onPress={submit}>
-        <Zap size={20} aria-hidden /> {pending ? "Buscando silla…" : "Empezar ahora"}
-      </Btn>
+      <SheetFooter>
+        <Btn variant="success" size="xl" className="w-full" isDisabled={!serviceId || !clientIsReady(client, true)} isPending={pending} onPress={submit}>
+          <Zap size={20} aria-hidden /> {pending ? "Buscando silla…" : "Empezar ahora"}
+        </Btn>
+      </SheetFooter>
     </div>
   );
 }

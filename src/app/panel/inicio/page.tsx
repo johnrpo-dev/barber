@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { requirePermission } from "@/lib/session";
 import { dayLong } from "../_components/dates";
+import { DeliveryStoppedNotice } from "../_components/delivery-notice";
 import { PageHeader } from "../_components/ui";
 import { FormError } from "../_manage/controls";
 import { loadDashboard } from "./actions";
@@ -90,7 +91,9 @@ export default async function InicioPage() {
         <h2 id="alertas" className="font-display text-2xl leading-tight">
           Alertas
         </h2>
-        {d.alerts.length === 0 ? (
+        {/* Recibos y avisos en cola con el worker sin latir (migración 0030). */}
+        {d.deliveryStalled ? <DeliveryStoppedNotice /> : null}
+        {d.alerts.length === 0 && d.deliveryStalled ? null : d.alerts.length === 0 ? (
           <p className={`${card} flex items-center gap-3 px-4 py-3 text-sm text-tinta/80`}>
             <CheckCircle2 size={18} className="shrink-0 text-botella" aria-hidden /> Todo en orden: nada pendiente por revisar.
           </p>

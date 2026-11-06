@@ -6,7 +6,7 @@ import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { percentToBps } from "@/domain/catalog/service";
 import { format, fromUnits, PESO, percentOf } from "@/domain/money";
 import { useReauth } from "../_components/reauth";
-import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, Chip, FieldMessage, FormError, MinutesField, Toggle, useFieldErrors } from "../_manage/controls";
 import { createServiceAction, setServiceActiveAction, updateServiceAction } from "./actions";
 
@@ -363,14 +363,14 @@ function ServiceForm({ service, onDone }: { service: ServiceRow | null; onDone: 
 
       <p className="text-xs text-tinta/70">Aplica a cobros desde hoy; los anteriores conservan su comisión.</p>
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onDone} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
           {pending ? "Guardando…" : service ? "Guardar cambios" : "Crear servicio"}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

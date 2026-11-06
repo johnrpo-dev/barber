@@ -5,7 +5,7 @@ import { type FormEvent, useState } from "react";
 import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { callAction } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
-import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, FormError } from "../_manage/controls";
 import { type ClientErasePreviewView, eraseClientAction, loadClientErasePreview } from "./actions";
 
@@ -118,7 +118,7 @@ function EraseForm({ preview, onCancel, onDone }: { preview: ClientErasePreviewV
 
       <FormError message={error} />
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
@@ -128,7 +128,7 @@ function EraseForm({ preview, onCancel, onDone }: { preview: ClientErasePreviewV
             {pending ? "Suprimiendo…" : "Suprimir datos"}
           </Btn>
         )}
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

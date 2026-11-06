@@ -84,20 +84,23 @@ export function Sheet({
       onOpenChange={onOpenChange}
       isDismissable
       className={cx(
-        "fixed inset-0 z-50 flex items-end bg-tinta/30 data-[entering]:animate-fade-in data-[exiting]:animate-fade-out",
+        // Alto = lo visible de verdad (React Aria lo mide): con el teclado abierto o la barra del
+        // navegador, la hoja se achica en vez de quedar detrás, y el botón final siempre se alcanza.
+        // 100vh si el navegador no la da (los que no entienden dvh tampoco).
+        "fixed left-0 top-0 z-50 flex h-[var(--visual-viewport-height,100vh)] w-full items-end bg-tinta/30 data-[entering]:animate-fade-in data-[exiting]:animate-fade-out",
         drawer ? "lg:items-stretch lg:justify-end lg:bg-tinta/10" : "md:items-center md:justify-center md:p-6",
       )}
     >
       <Modal
         className={cx(
-          "max-h-[92dvh] w-full overflow-hidden rounded-t-2xl bg-papel shadow-2xl outline-none",
+          "max-h-[calc(var(--visual-viewport-height,100vh)*0.92)] w-full overflow-hidden rounded-t-2xl bg-papel shadow-2xl outline-none",
           "data-[entering]:animate-sheet-in data-[exiting]:animate-sheet-out",
           drawer
-            ? "lg:h-dvh lg:max-h-none lg:w-[420px] lg:rounded-none lg:data-[entering]:animate-drawer-in lg:data-[exiting]:animate-drawer-out"
+            ? "lg:h-[var(--visual-viewport-height,100vh)] lg:max-h-none lg:w-[420px] lg:rounded-none lg:data-[entering]:animate-drawer-in lg:data-[exiting]:animate-drawer-out"
             : cx("md:rounded-2xl md:data-[entering]:animate-pop-in", wide ? "md:max-w-2xl" : "md:max-w-lg"),
         )}
       >
-        <Dialog className="flex max-h-[92dvh] flex-col outline-none lg:max-h-dvh">
+        <Dialog className="flex max-h-[calc(var(--visual-viewport-height,100vh)*0.92)] flex-col outline-none lg:max-h-[var(--visual-viewport-height,100vh)]">
           {({ close }) => (
             <>
               <div className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-tinta/15 md:hidden" aria-hidden />
@@ -112,14 +115,34 @@ export function Sheet({
                   <X size={20} strokeWidth={1.75} aria-hidden />
                 </Btn>
               </header>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
-                {children}
+              {/* El relleno de abajo va en el envoltorio y no en el contenedor que se desplaza: así
+                  un SheetFooter (sticky) se pega al borde real de lo visible, sin franja por debajo. */}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pt-4 [--sheet-pb:max(1rem,env(safe-area-inset-bottom))]">
+                <div className="pb-(--sheet-pb)">{children}</div>
               </div>
             </>
           )}
         </Dialog>
       </Modal>
     </ModalOverlay>
+  );
+}
+
+/**
+ * Pie fijo de una hoja para la acción que cierra el proceso (Cobrar, Empezar ahora, Agendar…):
+ * siempre a la vista, también con el teclado abierto, sin tener que desplazarse hasta el final.
+ * Va como último hijo de <Sheet> (o del contenido que la llena).
+ */
+export function SheetFooter({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div
+      className={cx(
+        "sticky bottom-0 z-10 -mx-5 -mb-(--sheet-pb) mt-4 flex flex-col gap-2 border-t border-tinta/10 bg-papel px-5 pb-(--sheet-pb) pt-3",
+        className,
+      )}
+    >
+      {children}
+    </div>
   );
 }
 

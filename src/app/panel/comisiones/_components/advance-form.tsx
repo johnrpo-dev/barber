@@ -8,7 +8,7 @@ import { Form, Label, Radio, RadioGroup, Text, TextArea, TextField } from "react
 import { callAction, MoneyField, newKey } from "../../_components/money-field";
 import { useReauth } from "../../_components/reauth";
 import { SelectField } from "../../_components/select-field";
-import { Btn, cx, field, useToast } from "../../_components/ui";
+import { Btn, cx, field, SheetFooter, useToast } from "../../_components/ui";
 import { FieldMessage, FormError, RadioDot, radioCard, useFieldErrors } from "../../_manage/controls";
 import { giveAdvanceAction } from "../actions";
 
@@ -153,14 +153,14 @@ export function AdvanceForm({
         </Link>
       ) : null}
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
           {pending ? "Registrando…" : name ? `Dar anticipo a ${name}` : "Dar anticipo"}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

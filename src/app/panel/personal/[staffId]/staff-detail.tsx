@@ -6,7 +6,7 @@ import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Tab, TabList, TabPanel, Tabs, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
 import { useReauth } from "../../_components/reauth";
-import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../../_components/ui";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../../_manage/controls";
 import { addStaffTimeOffAction } from "../../bloqueos/actions";
 import { resetStaffPasswordAction, revokeStaffSessionsAction, updateStaffProfileAction } from "../actions";
@@ -450,14 +450,14 @@ function ResetPasswordForm({
 
         <FormError message={error} />
 
-        <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+        <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
           <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
             Cancelar
           </Btn>
           <Btn type="submit" isPending={pending}>
             {pending ? "Guardando…" : "Poner contraseña temporal"}
           </Btn>
-        </div>
+        </SheetFooter>
       </Form>
     </>
   );

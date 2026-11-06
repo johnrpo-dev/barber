@@ -55,7 +55,7 @@ Sistema de la barbería Villa. Tiene dos partes:
 | `npm test` | Pruebas unitarias y de propiedades (Vitest + fast-check) |
 | `npm run typecheck` | Verificación de tipos |
 | `npm run build` | Build de producción (standalone) |
-| `npm run worker` | Proceso de jobs (pg-boss): recordatorios, expiraciones, mantenimiento (incluye la purga de datos personales vencidos) y avisos de seguridad |
+| `npm run worker` | Proceso de jobs (pg-boss): envía los recibos, confirmaciones y recordatorios; expiraciones, mantenimiento (incluye la purga de datos personales vencidos) y avisos de seguridad. Late cada minuto: si no late, Caja e Inicio avisan que los envíos están detenidos. En desarrollo, ver la nota de abajo |
 | `npm run db:generate` | Genera una migración a partir de `src/db/schema.ts` |
 | `npm run db:migrate` | Aplica las migraciones |
 | `npm run db:seed` | Crea la sede de Villa con su plan de cuentas (no duplica si ya existe) |
@@ -63,6 +63,21 @@ Sistema de la barbería Villa. Tiene dos partes:
 | `npm run staff:create-owner` | Crea la cuenta del dueño; la contraseña se escribe oculta |
 | `npm run staff:unlock -- <correo>` | Quita los bloqueos por intentos fallidos de esa cuenta (ingreso, reautenticación, código de la app). Necesita `BETTER_AUTH_SECRET` |
 | `npm run test:e2e` | Pruebas de extremo a extremo. La primera vez, instala el navegador con `npx playwright install chromium` |
+
+**Recibos, recordatorios y avisos en desarrollo.** `npm run dev` solo encola los mensajes; los envía
+el worker. Para verlos salir, corre también el worker de desarrollo en otra terminal (fija
+`NODE_ENV=development`; `npm run worker` sin esa variable se trata como producción y, sin
+credenciales, deja los envíos en pausa):
+
+```bash
+npm run worker:dev
+```
+
+Sin credenciales de WhatsApp (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`) ni de Resend
+(`RESEND_API_KEY`, `EMAIL_FROM`), los mensajes no salen: aparecen en la consola del worker
+(`[notify:consola] …`, con el destino enmascarado). La hoja de cobro lo dice ("Modo de prueba").
+Si el worker no corre, Caja e Inicio muestran que los envíos están detenidos y los mensajes esperan en
+cola hasta que arranque (los de más de 2 días ya no se envían).
 
 ## Despliegue
 

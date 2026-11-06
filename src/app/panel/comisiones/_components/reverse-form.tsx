@@ -6,7 +6,7 @@ import { type FormEvent, useRef, useState } from "react";
 import { Form, Label, Text, TextArea, TextField } from "react-aria-components";
 import { callAction, newKey } from "../../_components/money-field";
 import { useReauth } from "../../_components/reauth";
-import { Btn, cx, field } from "../../_components/ui";
+import { Btn, cx, field, SheetFooter } from "../../_components/ui";
 import { FieldMessage, FormError, useFieldErrors } from "../../_manage/controls";
 import { reverseAdvanceAction, reverseSettlementAction } from "../actions";
 
@@ -105,7 +105,7 @@ export function ReverseForm({
         </Link>
       ) : null}
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
@@ -113,7 +113,7 @@ export function ReverseForm({
           <Undo2 size={18} aria-hidden />
           {pending ? "Revirtiendo…" : `Revertir ${what} ${numberLabel}`}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

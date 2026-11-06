@@ -1,4 +1,4 @@
-import type { NotificationChannel } from "@/domain/notifications/templates";
+import { NOTIFICATION_CHANNELS, type NotificationChannel } from "@/domain/notifications/templates";
 import { type PublicEnv, publicEnv } from "../env";
 import { allowsDevFallbacks, publicConfig } from "../public-readiness";
 import { ConsoleNotifier } from "./console";
@@ -25,6 +25,22 @@ export function notifier(): Notifier {
     byChannel.email ??= consoleNotifier;
   }
   return new ChannelRouter(byChannel);
+}
+
+/**
+ * Canales que notifier() le daría a la consola: en desarrollo y tests, los que no tienen proveedor
+ * real. Fuera de eso, ninguno (la consola ni se construye). Para que la hoja de cobro no diga "Se
+ * enviará por WhatsApp" cuando el mensaje solo va a quedar en el registro del worker.
+ */
+export function consoleChannels(): NotificationChannel[] {
+  if (!allowsDevFallbacks()) return [];
+  let config: ReturnType<typeof publicConfig>;
+  try {
+    config = publicConfig();
+  } catch {
+    return [];
+  }
+  return NOTIFICATION_CHANNELS.filter((channel) => (channel === "whatsapp" ? !config.whatsapp : !config.email));
 }
 
 type AlertSend = (subject: string, text: string, idempotencyKey: string) => Promise<void>;

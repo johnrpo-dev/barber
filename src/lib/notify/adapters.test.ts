@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { maskDestination, ConsoleNotifier } from "./console";
+import { consoleChannels } from "./index";
 import { MemoryNotifier } from "./memory";
 import { ChannelRouter, NotifyError, type SendRequest } from "./ports";
 import { buildResendPayload, ResendNotifier } from "./resend";
@@ -145,6 +146,17 @@ describe("consola, memoria y enrutador", () => {
     expect(maskDestination("email", "ana@example.com")).toBe("a•••@example.com");
     vi.stubEnv("NODE_ENV", "production");
     expect(() => new ConsoleNotifier()).toThrow();
+  });
+
+  it("consoleChannels: en desarrollo, los canales sin proveedor; en producción, ninguno", () => {
+    for (const name of ["WHATSAPP_TOKEN", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "RESEND_API_KEY", "EMAIL_FROM"]) vi.stubEnv(name, "");
+    vi.stubEnv("NODE_ENV", "development");
+    expect(consoleChannels()).toEqual(["whatsapp", "email"]);
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_FROM", "Villa <recibos@villa.test>");
+    expect(consoleChannels()).toEqual(["whatsapp"]);
+    vi.stubEnv("NODE_ENV", "production");
+    expect(consoleChannels()).toEqual([]);
   });
 
   it("el enrutador manda cada canal a su adaptador y falla sin canal", async () => {

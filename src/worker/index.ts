@@ -11,11 +11,16 @@ import { runMaintenance } from "./jobs/maintenance";
 import { runOwnerAlerts } from "./jobs/owner-alerts";
 import { runScanNotifications } from "./jobs/scan-notifications";
 import { runSecurityAlerts } from "./jobs/security-alerts";
+import { runHeartbeat } from "./jobs/heartbeat";
 
 const TZ = "America/Bogota";
 
 // pg-boss no admite ":" en los nombres de cola: holds:expire → holds.expire, etc.
 const JOBS: { name: string; cron: string; run: (database: Db) => Promise<unknown> }[] = [
+  // Latido (migración 0030): pasa por la misma cola que los envíos, así que si pg-boss deja de
+  // correr trabajos (o falta la configuración para entregar), el latido también se detiene y Caja e
+  // Inicio avisan que los envíos están detenidos.
+  { name: "worker.heartbeat", cron: "* * * * *", run: (database) => runHeartbeat(database) },
   { name: "holds.expire", cron: "* * * * *", run: (database) => runExpireHolds(database) },
   { name: "notifications.scan", cron: "* * * * *", run: (database) => runScanNotifications(database) },
   { name: "security.alerts", cron: "* * * * *", run: (database) => runSecurityAlerts(database) },
@@ -58,6 +63,8 @@ async function main() {
       }
     });
   }
+  // Primer latido ya: el aviso de envíos detenidos se quita sin esperar al primer minuto del cron.
+  await runHeartbeat(database);
   console.log("[worker] Villa worker arrancó");
 
   const stop = async () => {

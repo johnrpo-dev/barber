@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import { Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
-import { Btn, cx, field, Sheet, useToast } from "@/app/panel/_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "@/app/panel/_components/ui";
 import { RadioDot, radioCard } from "@/app/panel/_manage/controls";
 import type { TicketView } from "../../../data";
 import { cancelByToken, loadRescheduleDays, loadRescheduleSlots, rescheduleByToken } from "../../../actions";
@@ -212,14 +212,14 @@ function CancelSheet({
           </p>
         ) : null}
 
-        <div className="flex flex-col gap-2">
+        <SheetFooter>
           <Btn variant="secondary" size="lg" autoFocus onPress={() => onOpenChange(false)}>
             Mantener mi cita
           </Btn>
           <Btn variant="danger" size="lg" isPending={pending} onPress={cancel}>
             {pending ? "Cancelando…" : "Sí, cancelar mi cita"}
           </Btn>
-        </div>
+        </SheetFooter>
       </div>
     </Sheet>
   );
@@ -307,9 +307,11 @@ function RescheduleForm({
         reloadToken={reloadToken}
         noDaysMessage="No hay horarios libres en las próximas dos semanas. Escríbenos y te ayudamos."
       />
-      <Btn size="lg" className="w-full" isDisabled={!date || !slot} isPending={pending} onPress={confirm}>
-        {pending ? "Cambiando…" : date && slot ? `Cambiar a ${shortWeekdayDay(date)}, ${slot.label}` : "Elige un horario"}
-      </Btn>
+      <SheetFooter>
+        <Btn size="lg" className="w-full" isDisabled={!date || !slot} isPending={pending} onPress={confirm}>
+          {pending ? "Cambiando…" : date && slot ? `Cambiar a ${shortWeekdayDay(date)}, ${slot.label}` : "Elige un horario"}
+        </Btn>
+      </SheetFooter>
     </div>
   );
 }

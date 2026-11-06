@@ -7,7 +7,7 @@ import { Form, Input, Label, Radio, RadioGroup, Text, TextField } from "react-ar
 import { bpsToPercentText, MoneyField, percentTextToBps } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
 import { SelectField } from "../_components/select-field";
-import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../_manage/controls";
 import { saveExpenseCategoryAction, savePaymentMethodAction, updateCheckoutRulesAction } from "./actions";
 
@@ -347,14 +347,14 @@ function MethodForm({ method, onDone }: { method: MethodRow | null; onDone: () =
       )}
 
       <FormError message={error} />
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onDone} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
           {pending ? "Guardando…" : "Guardar"}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );
@@ -467,14 +467,14 @@ function CategoryForm({ category, accounts, onDone }: { category: CategoryRow | 
         {active ? "Activa: aparece al registrar gastos" : "Inactiva: no aparece"}
       </Toggle>
       <FormError message={error} />
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onDone} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
           {pending ? "Guardando…" : "Guardar"}
         </Btn>
-      </div>
+      </SheetFooter>
       {reauth.dialog}
     </Form>
   );

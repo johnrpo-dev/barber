@@ -7,7 +7,7 @@ import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Radio, RadioGroup, Text, TextField } from "react-aria-components";
 import { ROLE_LABELS, type Role } from "@/domain/staff/roles";
 import { useReauth } from "../_components/reauth";
-import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, Chip, FieldMessage, FormError, RadioDot, radioCard, Toggle, useFieldErrors } from "../_manage/controls";
 import { addClosureAction } from "../bloqueos/actions";
 import { createStaffAction } from "./actions";
@@ -350,14 +350,14 @@ function AddStaffForm({ minPasswordLength, onDone }: { minPasswordLength: number
 
       <FormError message={error} />
 
-      <div className="flex flex-col-reverse gap-2 border-t border-tinta/10 pt-4 min-[400px]:flex-row min-[400px]:justify-end">
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onDone} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
           {pending ? "Guardando…" : "Agregar al equipo"}
         </Btn>
-      </div>
+      </SheetFooter>
     </Form>
     </>
   );
