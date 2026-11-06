@@ -1,5 +1,6 @@
 "use client";
 
+import { newUuid } from "@/lib/uuid";
 import { Check, ChevronLeft, Clock, Scissors, UserRound, Users, Zap } from "lucide-react";
 import { useEffect, useState, useTransition } from "react";
 import { Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
@@ -19,7 +20,7 @@ export interface BookingPrefill {
   minute?: number;
 }
 
-const newKey = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+const newKey = newUuid;
 
 export function BookingSheet({
   mode,

@@ -1,5 +1,6 @@
 "use client";
 
+import { newUuid } from "@/lib/uuid";
 import type { ReactNode } from "react";
 import { Input, Label, Text, TextField } from "react-aria-components";
 import type { ActionResult } from "@/lib/action";
@@ -40,8 +41,8 @@ export function percentTextToBps(text: string): bigint | null {
 }
 
 /** Clave de idempotencia de un formulario (el formId del contrato). */
-export const newKey = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+/** También fuera de HTTPS (celular por la red local): un UUID v4 válido. */
+export const newKey = newUuid;
 
 export const NETWORK_ERROR = "No hay conexión con el servidor. Revisa el internet e intenta de nuevo: no se registró dos veces.";
 

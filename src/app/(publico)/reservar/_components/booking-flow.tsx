@@ -1,5 +1,6 @@
 "use client";
 
+import { newUuid } from "@/lib/uuid";
 import { Clock, MessageCircle, Scissors } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -64,8 +65,8 @@ interface FlowState {
   formId: string;
 }
 
-const newId = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+// También fuera de HTTPS (celular por la red local): el servidor exige un UUID.
+const newId = newUuid;
 
 function initialState(serviceId: string | null, staffId: string | null): FlowState {
   return {
