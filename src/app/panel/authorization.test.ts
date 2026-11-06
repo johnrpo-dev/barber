@@ -160,6 +160,28 @@ async function appointmentFor(staffId: bigint): Promise<bigint> {
   return created.appointmentId;
 }
 
+/** Una cita de un cliente con 2 faltas (reserva en línea suspendida). */
+async function suspendedClientAppointment(): Promise<string> {
+  const c = await findOrCreateClient(db, { locationId: A.location, name: `Cliente ${uniq()}`, phone: `31${uniq()}` });
+  const ids: string[] = [];
+  for (let i = 0; i < 2; i++) {
+    const { date, minute } = nextSlot();
+    const created = await createAppointment(db, {
+      locationId: A.location,
+      serviceId: A.service,
+      staffId: A.users.barber.staffId,
+      start: localMinuteToInstant(date, minute, TZ),
+      clientId: c.id,
+      source: "staff",
+      idempotencyKey: `seed-${uniq()}`,
+      createdBy: "seed",
+    });
+    ids.push(String(created.appointmentId));
+  }
+  await client.query(`update appointments set status = 'no_show' where id = any($1::bigint[])`, [ids]);
+  return ids[0]!;
+}
+
 async function timeOffFor(staffId: bigint, offsetDays: number): Promise<bigint> {
   const date = addDays(base, offsetDays);
   const { id } = await addTimeOff(db, { locationId: A.location, staffId, kind: "block", createdBy: "seed", allDay: true, fromDate: date, toDate: date });
@@ -511,6 +533,15 @@ const CASES: Case[] = [
           client: { kind: "existing", id: String(A.client) },
           idempotencyKey: `book-${uniq()}`,
         });
+    },
+  },
+  {
+    name: "agenda · desbloquear la reserva en línea de un cliente con faltas",
+    action: "clearNoShowsAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const id = await suspendedClientAppointment();
+      return () => agenda.clearNoShowsAction({ appointmentId: id });
     },
   },
   {
@@ -2307,6 +2338,7 @@ describe("exportar informes", () => {
 /** Toda acción de escritura del dinero, la configuración y el personal, con su evento. */
 const AUDITED: Record<string, AuditAction> = {
   eraseClientAction: "client.erase",
+  clearNoShowsAction: "client.no_shows_clear",
   checkoutAction: "sale.checkout",
   requestVoidAction: "void.request",
   decideVoidAction: "void.approve",

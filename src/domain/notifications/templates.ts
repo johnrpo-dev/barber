@@ -99,20 +99,21 @@ const COPY: Record<NotificationTemplate, (p: Get) => EmailCopy> = {
     subject: `Mañana a las ${p("time")}: tu turno en ${BUSINESS_NAME}`,
     paragraphs: [
       `Hola, ${p("name")}. Te esperamos mañana a las ${p("time")} en ${BUSINESS_NAME} para tu ${p("service")} con ${p("staff")}.`,
-      "Si no puedes venir, avísanos desde el botón y liberamos el turno.",
+      "Si no puedes venir, avísanos desde el botón y liberamos el turno. Si faltas sin avisar, tu reserva en línea puede quedar suspendida.",
     ],
     button: { label: "Ver mi cita", url: p("url") },
   }),
   reminder_2h: (p) => ({
     subject: `Hoy a las ${p("time")}: te esperamos`,
-    paragraphs: [`Hola, ${p("name")}. Tu turno en ${BUSINESS_NAME} es hoy a las ${p("time")}. Estamos en ${p("address")}. ¡Nos vemos!`],
+    paragraphs: [`Hola, ${p("name")}. Tu turno en ${BUSINESS_NAME} es hoy a las ${p("time")}. Estamos en ${p("address")}. ¡Nos vemos!`, "Si faltas sin avisar, tu reserva en línea puede quedar suspendida."],
     button: { label: "Ver mi cita", url: p("url") },
   }),
   reminder_same_day: (p) => ({
     subject: `Hoy a las ${p("time")}: tu turno en ${BUSINESS_NAME}`,
     paragraphs: [
       `Hola, ${p("name")}. Te esperamos hoy a las ${p("time")} para tu ${p("service")}. Estamos en ${p("address")}.`,
-      "Si al final no puedes venir, avísanos desde el botón y le damos el turno a otra persona.",
+      // Decisión del dueño (sprint 7): el recordatorio avisa que faltar suspende la reserva en línea.
+      "Si al final no puedes venir, avísanos desde el botón y le damos el turno a otra persona. Si faltas sin avisar, tu reserva en línea puede quedar suspendida.",
     ],
     button: { label: "Ver o cancelar mi cita", url: p("url") },
   }),

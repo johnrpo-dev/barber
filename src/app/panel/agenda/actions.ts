@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
   appointmentHistory,
@@ -15,11 +16,14 @@ import {
 } from "@/db/appointments";
 import { db } from "@/db/client";
 import { findOrCreateClient, searchClients } from "@/db/clients";
+import { clearNoShows, noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
+import { appointments } from "@/db/schema";
 import type { Db } from "@/db/types";
 import { isDateString, localMinuteOf, localMinuteToInstant } from "@/domain/booking/clock";
 import { APPOINTMENT_STATUSES, STATUS_LABELS } from "@/domain/booking/status";
-import { formatPhone, maskPhone } from "@/domain/clients/client";
+import { formatPhone, InvalidClientError, maskPhone } from "@/domain/clients/client";
+import { noShowNotice } from "@/domain/clients/no-shows";
 import { businessDate } from "@/domain/ledger/business-date";
 import { can } from "@/domain/staff/roles";
 import { formatTime } from "@/domain/staff/schedule";
@@ -106,6 +110,8 @@ export interface ClientOption {
   id: string;
   name: string;
   phone: string | null;
+  /** Faltas: "Reserva en línea suspendida: 2 faltas". El personal puede agendarle igual. */
+  noShowNotice: string | null;
 }
 
 export async function findClients(query: string): Promise<ActionResult<ClientOption[]>> {
@@ -119,11 +125,16 @@ export async function findClients(query: string): Promise<ActionResult<ClientOpt
       const shown = rows.filter((c) => c.phoneE164).map((c) => c.id);
       await recordContactReads(database(), { locationId: staff.locationId, staffId: staff.staffId, context: "client_search", clientIds: shown });
     }
-    return rows.map((c) => ({
-      id: String(c.id),
-      name: c.name,
-      phone: c.phoneE164 ? (seeContact ? formatPhone(c.phoneE164) : maskPhone(c.phoneE164)) : null,
-    }));
+    const standings = await noShowStandings(database(), { locationId: staff.locationId, clientIds: rows.map((c) => c.id), now: new Date() });
+    return rows.map((c) => {
+      const standing = standings.get(c.id);
+      return {
+        id: String(c.id),
+        name: c.name,
+        phone: c.phoneE164 ? (seeContact ? formatPhone(c.phoneE164) : maskPhone(c.phoneE164)) : null,
+        noShowNotice: standing ? noShowNotice(standing) : null,
+      };
+    });
   });
 }
 
@@ -283,6 +294,27 @@ export async function startWalkIn(
 }
 
 // ─── Cambios ─────────────────────────────────────────────────────────────────
+
+/**
+ * Desbloquea la reserva en línea del cliente de una cita (suspendida por faltas). Recepción o el
+ * dueño (decisión del dueño, sprint 7). Por la cita y no por el id del cliente: la sede sale de la
+ * sesión y la cita la ata al cliente.
+ */
+export async function clearNoShowsAction(raw: { appointmentId: string }): Promise<ActionResult> {
+  const staff = await requirePermission("appointments.manage.all");
+  const result = await runAction(async () => {
+    const { appointmentId } = z.object({ appointmentId: idSchema }).parse(raw);
+    const [appt] = await database()
+      .select({ clientId: appointments.clientId })
+      .from(appointments)
+      .where(and(eq(appointments.locationId, staff.locationId), eq(appointments.id, appointmentId)));
+    if (!appt?.clientId) throw new InvalidClientError("Esta cita no tiene un cliente registrado");
+    await clearNoShows(database(), { locationId: staff.locationId, clientId: appt.clientId, actor: { userId: staff.userId, staffId: staff.staffId }, now: new Date() });
+    return undefined;
+  });
+  if (result.ok) refresh();
+  return result;
+}
 
 const statusInput = z.object({
   appointmentId: idSchema,

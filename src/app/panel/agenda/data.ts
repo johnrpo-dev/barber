@@ -1,11 +1,13 @@
 import { dayAgenda, locationRules } from "@/db/appointments";
 import { listServices } from "@/db/catalog";
 import { db } from "@/db/client";
+import { noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
 import type { Db } from "@/db/types";
 import { addDays, isDateString, localMinuteToInstant, MINUTE_MS } from "@/domain/booking/clock";
 import { type AppointmentStatus, availableTransitions } from "@/domain/booking/status";
 import { formatPhone, maskPhone } from "@/domain/clients/client";
+import { noShowNotice } from "@/domain/clients/no-shows";
 import { businessDate } from "@/domain/ledger/business-date";
 import { format } from "@/domain/money";
 import { can } from "@/domain/staff/roles";
@@ -37,6 +39,8 @@ export interface AgendaAppointmentView {
   /** Cambios de estado que este usuario puede ofrecer ahora (el servidor vuelve a validar). */
   transitions: AppointmentStatus[];
   canReschedule: boolean;
+  /** Faltas del cliente (solo para quien maneja toda la agenda): aviso y si puede desbloquearlo. */
+  noShow: { notice: string; suspended: boolean } | null;
 }
 
 export interface AgendaColumnView {
@@ -108,6 +112,14 @@ export async function loadAgenda(
     await recordContactReads(database, { locationId: staff.locationId, staffId: staff.staffId, context: "agenda_day", clientIds: shown, now });
   }
 
+  const standings = manageAll
+    ? await noShowStandings(database, {
+        locationId: staff.locationId,
+        clientIds: agenda.appointments.flatMap((a) => (a.clientId !== null ? [a.clientId] : [])),
+        now,
+      })
+    : new Map();
+
   const dayStart = localMinuteToInstant(date, 0, rules.timeZone).getTime();
   const dayEnd = localMinuteToInstant(addDays(date, 1), 0, rules.timeZone).getTime();
   const toMin = (d: Date) => Math.round((Math.min(Math.max(d.getTime(), dayStart), dayEnd) - dayStart) / MINUTE_MS);
@@ -152,6 +164,11 @@ export async function loadAgenda(
         price: format(a.price),
         transitions,
         canReschedule: manageAll && (a.status === "pending" || a.status === "confirmed" || a.status === "arrived"),
+        noShow: (() => {
+          const s = a.clientId !== null ? standings.get(a.clientId) : undefined;
+          const notice = s ? noShowNotice(s) : null;
+          return s && notice ? { notice, suspended: s.suspended } : null;
+        })(),
       };
     }),
     timeOff: agenda.timeOff

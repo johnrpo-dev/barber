@@ -655,6 +655,45 @@ const CASES: Case[] = [
     },
   },
   {
+    action: "verifyCode",
+    name: "con 2 faltas la reserva en línea queda suspendida (después del código); al desbloquear, vuelve",
+    run: async () => {
+      newIp();
+      const phone = newPhone();
+      for (let i = 0; i < 2; i++) {
+        const appt = await appointmentByToken(await bookAndVerify(phone));
+        await db.update(appointments).set({ status: "no_show" }).where(eq(appointments.id, appt.id));
+      }
+      newBrowser();
+      await actions.startBooking(startInput(phone));
+      const r = await actions.verifyCode({ code: notifier.lastCode(e164(phone))! });
+      expect(r).toEqual({ ok: false, error: PUBLIC_MESSAGES.noShowSuspended });
+      const [c] = await db.select({ id: clients.id }).from(clients).where(eq(clients.phoneE164, e164(phone)));
+      expect(await db.$count(appointments, and(eq(appointments.clientId, c!.id), eq(appointments.status, "pending")))).toBe(0);
+      // Recepción lo desbloquea (src/db/no-shows.ts): las faltas anteriores dejan de contar.
+      await db.update(clients).set({ noShowsClearedAt: sql`now()` }).where(eq(clients.id, c!.id));
+      newBrowser();
+      expect(await bookAndVerify(phone)).toEqual(expect.any(String));
+    },
+  },
+  {
+    action: "bookAsKnown",
+    name: "con 2 faltas, el navegador recordado tampoco reserva; el reintento da el mismo mensaje",
+    run: async () => {
+      newIp();
+      const phone = newPhone();
+      for (let i = 0; i < 2; i++) {
+        const appt = await appointmentByToken(await bookAndVerify(phone));
+        await db.update(appointments).set({ status: "no_show" }).where(eq(appointments.id, appt.id));
+      }
+      const input = { serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() };
+      expect(await actions.bookAsKnown(input)).toEqual({ ok: false, error: PUBLIC_MESSAGES.noShowSuspended });
+      expect(await actions.bookAsKnown(input)).toEqual({ ok: false, error: PUBLIC_MESSAGES.noShowSuspended });
+      const [c] = await db.select({ id: clients.id }).from(clients).where(eq(clients.phoneE164, e164(phone)));
+      expect(await db.$count(appointments, and(eq(appointments.clientId, c!.id), inArray(appointments.status, ["pending", "confirmed"])))).toBe(0);
+    },
+  },
+  {
     action: "resendCode",
     name: "espera 60 s, reemplaza el código anterior y descuenta envíos",
     run: async () => {

@@ -252,7 +252,7 @@ La web no usa pg-boss: escribe el outbox dentro de la transacción del dominio, 
 - Verificación del negocio y número aprobado.
 - Plantillas en `es`:
   - `villa_otp`: autenticación, con botón de copiar código;
-  - utilidad: `villa_reserva_confirmada`, `villa_cita_reprogramada` y `villa_cita_cancelada`, con botón URL cuyo sufijo es el token. En el texto, el negocio es "Barbería Villa". *(Sprint 6: `villa_recordatorio_24h` y `villa_recordatorio_2h` ya no hacen falta; no se envían recordatorios.)*;
+  - utilidad: `villa_reserva_confirmada`, `villa_cita_reprogramada` y `villa_cita_cancelada`, con botón URL cuyo sufijo es el token. En el texto, el negocio es "Barbería Villa". *(Sprint 6: `villa_recordatorio_24h` y `villa_recordatorio_2h` ya no hacen falta; solo se envía `villa_recordatorio`, el del mismo día, con botón URL. Sprint 7: su cuerpo termina con "Si faltas sin avisar, tu reserva en línea puede quedar suspendida.", ver docs/sprint-7-walk-in-faltas.md §4.)*;
   - utilidad, sin botón: `villa_cita_cancelada_sede` y `villa_recibo` (recibo de una venta; variables en orden: nombre, número, fecha, servicios, total y medio de pago). Ejemplo de cuerpo: "Gracias por venir, {{1}}. Tu recibo N.º {{2}} del {{3}}: {{4}}. Total {{5}}, pagado con {{6}}. Documento no válido como factura." Mientras no esté aprobada, el recibo sale por correo si el cliente lo tiene.
 - Variables: `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET` y `WHATSAPP_VERIFY_TOKEN`.
 

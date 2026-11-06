@@ -1,13 +1,13 @@
 "use client";
 
-import { Banknote, CalendarClock, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
+import { Banknote, CalendarClock, LockOpen, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Dialog, Heading, Label, Modal, ModalOverlay, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { type AppointmentStatus, NEXT_STEP, NEXT_STEP_LABELS, STATUS_LABELS } from "@/domain/booking/status";
 import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
 import { CheckoutSheet } from "../../cobro/checkout-sheet";
-import { type HistoryEntry, loadHistory, reschedule, setStatus } from "../actions";
+import { clearNoShowsAction, type HistoryEntry, loadHistory, reschedule, setStatus } from "../actions";
 import type { AgendaAppointmentView, AgendaColumnView } from "../data";
 import { relativeDate, SlotPicker } from "./slot-picker";
 import { STATUS_ICON, StatusBadge } from "./status";
@@ -161,6 +161,14 @@ function Detail({
 
   const NextIcon = next ? STATUS_ICON[next] : null;
 
+  const [unblocking, startUnblock] = useTransition();
+  function unblock() {
+    startUnblock(async () => {
+      const r = await clearNoShowsAction({ appointmentId: a.id });
+      toast(r.ok ? "Reserva en línea desbloqueada" : r.error, r.ok ? undefined : "error");
+    });
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
@@ -189,6 +197,21 @@ function Detail({
                 <span className="monto">{a.clientPhone}</span>
               )}
             </dd>
+          </div>
+        ) : null}
+        {a.noShow ? (
+          <div className="col-span-2 flex flex-col gap-2 rounded-lg border border-alerta/25 bg-alerta/5 p-3">
+            <p className="flex items-center gap-2 text-sm font-semibold text-alerta">
+              <UserX size={16} aria-hidden /> {a.noShow.notice}
+            </p>
+            {a.noShow.suspended ? (
+              <>
+                <p className="text-xs text-tinta/80">Desde el panel se le puede agendar igual. Desbloquéalo si el cliente se compromete a avisar cuando no pueda venir.</p>
+                <Btn variant="secondary" size="sm" className="self-start" isPending={unblocking} onPress={unblock}>
+                  <LockOpen size={16} aria-hidden /> Desbloquear reserva en línea
+                </Btn>
+              </>
+            ) : null}
           </div>
         ) : null}
         {a.notes ? (

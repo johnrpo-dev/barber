@@ -19,7 +19,7 @@ import { type ClientOption, findClients } from "../actions";
 // En un walk-in el cliente es opcional (basta un nombre para llamarlo).
 
 export type ClientChoice =
-  | { kind: "existing"; id: string; name: string; phone: string | null }
+  | { kind: "existing"; id: string; name: string; phone: string | null; noShowNotice?: string | null }
   | { kind: "new"; name: string; phone: string }
   | { kind: "none"; name: string };
 
@@ -73,6 +73,7 @@ export function ClientPicker({
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold">{value.name}</p>
           {value.phone ? <p className="monto text-sm text-tinta/70">{value.phone}</p> : null}
+          {value.noShowNotice ? <p className="text-xs font-semibold text-alerta">{value.noShowNotice}</p> : null}
         </div>
         <Btn variant="ghost" size="sm" autoFocus onPress={() => onChange({ kind: "none", name: "" })}>
           Cambiar
@@ -133,7 +134,7 @@ export function ClientPicker({
         }}
         onSelectionChange={(key) => {
           const c = results.find((r) => r.id === key);
-          if (c) onChange({ kind: "existing", id: c.id, name: c.name, phone: c.phone });
+          if (c) onChange({ kind: "existing", id: c.id, name: c.name, phone: c.phone, noShowNotice: c.noShowNotice });
         }}
         menuTrigger="input"
         allowsEmptyCollection
@@ -167,6 +168,7 @@ export function ClientPicker({
               >
                 <span className="font-semibold">{c.name}</span>
                 {c.phone ? <span className="monto text-sm text-tinta/70">{c.phone}</span> : null}
+                {c.noShowNotice ? <span className="text-xs font-semibold text-alerta">{c.noShowNotice}</span> : null}
               </ListBoxItem>
             )}
           </ListBox>

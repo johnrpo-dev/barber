@@ -40,6 +40,7 @@ export const AUDIT_ACTIONS = [
   "account.backup_codes",
   // Datos personales: el evento nunca lleva el nombre ni el contacto de la persona.
   "client.erase",
+  "client.no_shows_clear",
   // Informes
   "report.export",
 ] as const;
@@ -89,6 +90,7 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "account.two_factor_disable": "personal",
   "account.backup_codes": "personal",
   "client.erase": "personal",
+  "client.no_shows_clear": "personal",
   "report.export": "informes",
 };
 
@@ -126,6 +128,7 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "account.two_factor_disable": "Desactivó su verificación en dos pasos",
   "account.backup_codes": "Generó códigos de respaldo nuevos",
   "client.erase": "Suprimió los datos de un cliente",
+  "client.no_shows_clear": "Desbloqueó la reserva en línea de un cliente",
   "report.export": "Exportó un informe",
 };
 

@@ -32,6 +32,7 @@ import { type KnownClient, touchClientDevice, rememberClientDevice } from "./cli
 import { latestConsents, recordConsents } from "./consents";
 import { findByManageToken, issueManageLink, revokeManageLinks } from "./manage-links";
 import { checkQuotaAlert, enqueueNotification, globalQuotaReached, messageParams, preferredChannel, recordOtpAttempt, recordOtpOutcome } from "./notifications";
+import { noShowStandingOf } from "./no-shows";
 import { enforce } from "./rate-limit";
 import { appointmentEvents, appointments, bookingVerifications, clients, locations, services, staffMembers, staffSchedules } from "./schema";
 import { serviceIdsByStaff } from "./staff";
@@ -64,6 +65,8 @@ export const PUBLIC_MESSAGES = {
   sendingPaused: "Hoy no podemos enviar más códigos. Para reservar, llámanos o escríbenos por WhatsApp.",
   generic: "No se pudo completar. Intenta de nuevo.",
   deviceUnknown: "Por seguridad, esta vez confirma tu celular con un código.",
+  noShowSuspended:
+    "Tu reserva en línea está suspendida porque no llegaste a tus últimas citas. Escríbenos por WhatsApp o llámanos y te agendamos.",
 } as const;
 
 /** Retenciones en línea vivas a la vez por sede: más que esto es alguien acaparando la agenda. */
@@ -654,7 +657,7 @@ async function confirmOnlineAppointment(
     contactName: string | null;
     contactEmail: string | null;
   },
-): Promise<{ kind: "ok"; token: string } | { kind: "limit"; max: number }> {
+): Promise<{ kind: "ok"; token: string } | { kind: "limit"; max: number } | { kind: "suspended" }> {
   const now = ctx.now;
   // Tope de citas futuras activas, con el cliente bloqueado para que dos verificaciones
   // simultáneas no pasen las dos.
@@ -663,6 +666,21 @@ async function confirmOnlineAppointment(
     .from(clients)
     .where(and(eq(clients.locationId, ctx.locationId), eq(clients.id, args.clientId)))
     .for("update");
+  // Faltas (sprint 7): con el límite de "No vino", la reserva en línea queda suspendida hasta que
+  // recepción lo desbloquee. Se mira aquí, con el celular ya comprobado: antes del código, decirlo
+  // le contaría a cualquiera que escriba un número si esa persona falta a sus citas.
+  if ((await noShowStandingOf(tx, { locationId: ctx.locationId, clientId: args.clientId, now }))?.suspended) {
+    await changeStatus(tx, {
+      locationId: ctx.locationId,
+      appointmentId: args.appt.id,
+      to: "cancelled",
+      actor: { kind: "system" },
+      cancelReason: "expired",
+      note: "Reserva en línea suspendida por faltas",
+      now,
+    });
+    return { kind: "suspended" };
+  }
   const [loc] = await tx.select({ max: locations.maxActivePerClient }).from(locations).where(eq(locations.id, ctx.locationId));
   const [active] = await tx
     .select({ count: sql<number>`count(*)::int` })
@@ -797,7 +815,7 @@ export async function verifyBooking(
   }
 
   // 2. Coincide: todo en una transacción.
-  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string } | { kind: "expired" } | { kind: "used" } | { kind: "limit"; max: number }> => {
+  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string; deviceToken: string } | { kind: "expired" } | { kind: "used" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
     const tx = txRaw as unknown as Db;
     const [appt] = await tx
       .select({ id: appointments.id, publicId: appointments.publicId, status: appointments.status, expiresAt: appointments.expiresAt, during: appointments.during })
@@ -843,6 +861,8 @@ export async function verifyBooking(
       throw new BookingError(PUBLIC_MESSAGES.codeUsed);
     case "limit":
       throw new BookingError(activeLimitMessage(outcome.max));
+    case "suspended":
+      throw new BookingError(PUBLIC_MESSAGES.noShowSuspended);
   }
 }
 
@@ -883,7 +903,7 @@ export async function bookAsKnownClient(
     .where(and(eq(appointments.locationId, location.id), eq(appointments.idempotencyKey, `online:${input.formId}`)));
   if (!replay) await assertSlotOffered(db, { location, serviceId: input.serviceId, staffId: input.staffId, start: input.start, now });
 
-  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string } | { kind: "expired" } | { kind: "limit"; max: number }> => {
+  const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string } | { kind: "expired" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
     const tx = txRaw as unknown as Db;
     let created;
     try {
@@ -926,7 +946,11 @@ export async function bookAsKnownClient(
       });
       return { kind: "ok", token };
     }
-    if (!holdAlive({ apptStatus: appt.status, holdExpiresAt: appt.expiresAt }, now)) return { kind: "expired" };
+    if (!holdAlive({ apptStatus: appt.status, holdExpiresAt: appt.expiresAt }, now)) {
+      // Reintento de una reserva que se liberó por faltas: el mismo mensaje, no "se acabó el tiempo".
+      if ((await noShowStandingOf(tx, { locationId: location.id, clientId, now }))?.suspended) return { kind: "suspended" };
+      return { kind: "expired" };
+    }
     const confirmed = await confirmOnlineAppointment(tx, ctx, { appt, clientId, channel: "whatsapp", consent: null, contactName: null, contactEmail: null });
     if (confirmed.kind === "ok") await touchClientDevice(tx, { locationId: location.id, deviceId: input.device.deviceId, now });
     return confirmed;
@@ -939,6 +963,8 @@ export async function bookAsKnownClient(
       throw new BookingError(PUBLIC_MESSAGES.holdExpired);
     case "limit":
       throw new BookingError(activeLimitMessage(outcome.max));
+    case "suspended":
+      throw new BookingError(PUBLIC_MESSAGES.noShowSuspended);
   }
 }
 

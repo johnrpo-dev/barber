@@ -155,6 +155,13 @@
       "when": 1793929590341,
       "tag": "0021_walk_in_no_shows",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793931330864,
+      "tag": "0022_audit_no_shows_clear",
+      "breakpoints": true
     }
   ]
 }
