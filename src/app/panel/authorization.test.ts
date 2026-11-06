@@ -11,7 +11,9 @@ import { giveAdvance, previewSettlement, reverseSettlement, settleCommissions } 
 import { checkout } from "@/db/sales";
 import { decideVoid, requestVoid } from "@/db/voids";
 import { createService } from "@/db/catalog";
+import { rememberClientDevice } from "@/db/client-devices";
 import { findOrCreateClient } from "@/db/clients";
+import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
@@ -25,6 +27,7 @@ import type { AuditAction } from "@/domain/audit/events";
 import { CSV_REPORTS } from "@/domain/reports/csv";
 import type { PaymentKind } from "@/domain/sales/checkout";
 import type { Role } from "@/domain/staff/roles";
+import { CURRENT_PRIVACY_VERSION } from "@/content/privacy/versions";
 
 // Pruebas de autorización: cada rol contra cada server action del panel, más el aislamiento
 // entre sedes. Corre el `requireStaff`/`requirePermission` REAL sobre un PostgreSQL en memoria;
@@ -302,6 +305,36 @@ async function seedClient(): Promise<string> {
   return c.id.toString();
 }
 
+/** Un cliente con el recordatorio y las promociones autorizados en línea (ficha, sprint 7). */
+async function clientWithConsents(): Promise<string> {
+  const id = await seedClient();
+  await recordConsents(db, {
+    locationId: A.location,
+    clientId: BigInt(id),
+    appointmentId: null,
+    choices: { dataProcessing: true, reminders: true, marketing: true },
+    textVersion: CURRENT_PRIVACY_VERSION,
+    ip: null,
+    userAgent: null,
+    source: "online",
+  });
+  return id;
+}
+
+/** Un cliente con dos navegadores recordados. */
+async function clientWithDevices(): Promise<string> {
+  const id = await seedClient();
+  for (let i = 0; i < 2; i++) await rememberClientDevice(db, { locationId: A.location, clientId: BigInt(id), now: new Date() });
+  return id;
+}
+
+/** Un cliente con 2 faltas (reserva en línea suspendida), por su id. */
+async function suspendedClient(): Promise<string> {
+  const appointmentId = await suspendedClientAppointment();
+  const { rows } = await client.query<{ id: string }>(`select client_id::text as id from appointments where id = $1`, [appointmentId]);
+  return rows[0]!.id;
+}
+
 async function seedAdvance(): Promise<string> {
   const done = await giveAdvance(db, {
     locationId: A.location,
@@ -386,6 +419,11 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select coalesce(string_agg(id || ':' || (cancelled_at is null), ',' order by id), '')
          from time_off where ${loc}::bigint is null or location_id = ${loc}) as time_off,
       (select count(*) from clients where ${loc}::bigint is null or location_id = ${loc}) as clients,
+      (select coalesce(string_agg(id || ':' || coalesce(no_shows_cleared_at::text, '-'), ',' order by id), '')
+         from clients where ${loc}::bigint is null or location_id = ${loc}) as clients_cleared,
+      (select count(*) from client_consents where ${loc}::bigint is null or location_id = ${loc}) as consents,
+      (select coalesce(string_agg(id || ':' || (revoked_at is null), ',' order by id), '')
+         from client_devices where ${loc}::bigint is null or location_id = ${loc}) as devices,
       (select count(*) from "user") as users,
       (select coalesce(string_agg(id || ':' || must_change_password, ',' order by id), '') from "user") as user_flags,
       (select coalesce(string_agg(user_id || ':' || password, ',' order by user_id), '') from account) as passwords,
@@ -474,12 +512,6 @@ interface Case {
 
 const CASES: Case[] = [
   {
-    name: "clientes · buscar para suprimir",
-    action: "loadClientsToErase",
-    allowed: ["owner"],
-    prepare: async () => () => clientes.loadClientsToErase("Juan"),
-  },
-  {
     name: "clientes · vista previa de la supresión",
     action: "loadClientErasePreview",
     allowed: ["owner"],
@@ -495,6 +527,57 @@ const CASES: Case[] = [
     prepare: async () => {
       const clientId = await seedClient();
       return () => clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" });
+    },
+  },
+  {
+    name: "clientes · buscar para abrir la ficha",
+    action: "loadClientSearch",
+    allowed: ["owner", "reception"],
+    prepare: async () => () => clientes.loadClientSearch("Juan"),
+  },
+  {
+    name: "clientes · ver la ficha",
+    action: "loadClientRecord",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const clientId = await clientWithDevices();
+      return () => clientes.loadClientRecord({ clientId });
+    },
+  },
+  {
+    name: "clientes · retirar el recordatorio",
+    action: "withdrawConsentAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const clientId = await clientWithConsents();
+      return () => clientes.withdrawConsentAction({ clientId, purpose: "reminders" });
+    },
+  },
+  {
+    name: "clientes · retirar las promociones",
+    action: "withdrawConsentAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const clientId = await clientWithConsents();
+      return () => clientes.withdrawConsentAction({ clientId, purpose: "marketing" });
+    },
+  },
+  {
+    name: "clientes · olvidar los navegadores",
+    action: "forgetClientDevicesAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const clientId = await clientWithDevices();
+      return () => clientes.forgetClientDevicesAction({ clientId });
+    },
+  },
+  {
+    name: "clientes · desbloquear la reserva en línea desde la ficha",
+    action: "clearClientNoShowsAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      const clientId = await suspendedClient();
+      return () => clientes.clearClientNoShowsAction({ clientId });
     },
   },
   {
@@ -1311,6 +1394,34 @@ describe("barbero frente a la cita de otro barbero", () => {
 
 const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
   {
+    name: "ver la ficha de un cliente",
+    prepare: async () => {
+      const clientId = await clientWithDevices();
+      return () => clientes.loadClientRecord({ clientId });
+    },
+  },
+  {
+    name: "retirar una autorización de un cliente",
+    prepare: async () => {
+      const clientId = await clientWithConsents();
+      return () => clientes.withdrawConsentAction({ clientId, purpose: "marketing" });
+    },
+  },
+  {
+    name: "olvidar los navegadores de un cliente",
+    prepare: async () => {
+      const clientId = await clientWithDevices();
+      return () => clientes.forgetClientDevicesAction({ clientId });
+    },
+  },
+  {
+    name: "desbloquear la reserva en línea de un cliente",
+    prepare: async () => {
+      const clientId = await suspendedClient();
+      return () => clientes.clearClientNoShowsAction({ clientId });
+    },
+  },
+  {
     name: "suprimir los datos de un cliente",
     prepare: async () => {
       const clientId = await seedClient();
@@ -1788,6 +1899,101 @@ describe("suprimir datos de un cliente", () => {
     expect(rows[0]!.target).toBe(clientId);
     expect(rows[0]!.row).not.toContain(before[0]!.name);
     expect(rows[0]!.row).not.toContain(before[0]!.phone);
+  });
+});
+
+describe("ficha del cliente (sprint 7)", () => {
+  it("retirar el recordatorio inserta una fila nueva del personal con la versión vigente; el evento no lleva datos de la persona", async () => {
+    const clientId = await clientWithConsents();
+    const { rows: who } = await client.query<{ name: string; phone: string }>(`select name, phone_e164 as phone from clients where id = $1`, [clientId]);
+    await signInAs(A.users.reception);
+    expect(await clientes.withdrawConsentAction({ clientId, purpose: "reminders" })).toMatchObject({ ok: true });
+    const { rows } = await client.query<{ purpose: string; granted: boolean; version: string; source: string }>(
+      `select purpose, granted, text_version as version, source from client_consents where client_id = $1 order by id`,
+      [clientId],
+    );
+    expect(rows).toHaveLength(4); // las tres de la reserva + el retiro; nada se editó
+    expect(rows.at(-1)).toEqual({ purpose: "reminders", granted: false, version: CURRENT_PRIVACY_VERSION, source: "staff" });
+    const { rows: events } = await client.query<{ row: string; target: string }>(
+      `select row(a.*)::text as row, target_ref as target from audit_events a where action = 'client.consent_withdraw' order by id desc limit 1`,
+    );
+    expect(events[0]!.target).toBe(clientId);
+    expect(events[0]!.row).toContain("recordatorio");
+    expect(events[0]!.row).not.toContain(who[0]!.name);
+    expect(events[0]!.row).not.toContain(who[0]!.phone);
+    // Ya retirada: la segunda vez no escribe nada.
+    const before = await fingerprint();
+    expect(await clientes.withdrawConsentAction({ clientId, purpose: "reminders" })).toMatchObject({ ok: false });
+    expect(await fingerprint()).toBe(before);
+  });
+
+  it("el tratamiento de datos no se retira desde la ficha (eso es la supresión)", async () => {
+    const clientId = await clientWithConsents();
+    await signInAs(A.users.owner);
+    const before = await fingerprint();
+    expect(await clientes.withdrawConsentAction({ clientId, purpose: "data_processing" as never })).toMatchObject({ ok: false });
+    expect(await fingerprint()).toBe(before);
+  });
+
+  it("olvidar los navegadores revoca todos los activos; sin navegadores, no hace nada", async () => {
+    const clientId = await clientWithDevices();
+    await signInAs(A.users.reception);
+    expect(await clientes.forgetClientDevicesAction({ clientId })).toEqual({ ok: true, data: { forgotten: 2 } });
+    const { rows } = await client.query<{ n: number }>(`select count(*)::int as n from client_devices where client_id = $1 and revoked_at is null`, [clientId]);
+    expect(rows[0]!.n).toBe(0);
+    const before = await fingerprint();
+    expect(await clientes.forgetClientDevicesAction({ clientId })).toMatchObject({ ok: false });
+    expect(await fingerprint()).toBe(before);
+  });
+
+  it("la ficha trae historial, faltas, autorizaciones y navegadores; deja constancia de quién vio el celular", async () => {
+    const clientId = await clientWithConsents();
+    await rememberClientDevice(db, { locationId: A.location, clientId: BigInt(clientId), now: new Date() });
+    await signInAs(A.users.reception);
+    const r = await clientes.loadClientRecord({ clientId });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.data.phone).toMatch(/^3\d{2} \d{3} \d{4}$/);
+    expect(r.data.devices.active).toBe(1);
+    expect(r.data.consents.map((c) => [c.purpose, c.granted, c.withdrawable])).toEqual([
+      ["data_processing", true, false],
+      ["reminders", true, true],
+      ["marketing", true, true],
+    ]);
+    expect(r.data.consents[0]!.version).toBe(CURRENT_PRIVACY_VERSION);
+    const { rows } = await client.query<{ n: number }>(
+      `select count(*)::int as n from personal_data_reads where staff_id = $1 and $2::bigint = any(client_ids)`,
+      [String(A.users.reception.staffId), clientId],
+    );
+    expect(rows[0]!.n).toBeGreaterThan(0);
+  });
+
+  it("la búsqueda trae hasta 8 y avisa si hay más; solo deja constancia de los que se muestran", async () => {
+    const tag = uniq().replace(/d/g, (d) => "abcdefghij"[Number(d)]!);
+    const ids: string[] = [];
+    for (let i = 0; i < 9; i++) ids.push((await findOrCreateClient(db, { locationId: A.location, name: `Afinar ${tag} ${i}`, phone: `31${uniq()}` })).id.toString());
+    await signInAs(A.users.reception);
+    const r = await clientes.loadClientSearch(`Afinar ${tag}`);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.data.clients).toHaveLength(8);
+    expect(r.data.hasMore).toBe(true);
+    const shown = r.data.clients.map((c) => c.id);
+    const hidden = ids.filter((id) => !shown.includes(id));
+    expect(hidden).toHaveLength(1);
+    const { rows } = await client.query<{ n: number }>(
+      `select count(*)::int as n from personal_data_reads where staff_id = $1 and $2::bigint = any(client_ids)`,
+      [String(A.users.reception.staffId), hidden[0]!],
+    );
+    expect(rows[0]!.n).toBe(0);
+    const narrowed = await clientes.loadClientSearch(`Afinar ${tag} 3`);
+    if (!narrowed.ok) throw new Error(narrowed.error);
+    expect(narrowed.data).toEqual({ clients: [expect.objectContaining({ id: ids[3] })], hasMore: false });
+  });
+
+  it("un cliente suprimido ya no tiene ficha", async () => {
+    const clientId = await seedClient();
+    await signInAs(A.users.owner);
+    expect(await clientes.eraseClientAction({ clientId, confirmation: "SUPRIMIR" })).toMatchObject({ ok: true });
+    expect(await clientes.loadClientRecord({ clientId })).toMatchObject({ ok: false });
   });
 });
 
@@ -2352,6 +2558,9 @@ describe("exportar informes", () => {
 const AUDITED: Record<string, AuditAction> = {
   eraseClientAction: "client.erase",
   clearNoShowsAction: "client.no_shows_clear",
+  clearClientNoShowsAction: "client.no_shows_clear",
+  withdrawConsentAction: "client.consent_withdraw",
+  forgetClientDevicesAction: "client.devices_forget",
   checkoutAction: "sale.checkout",
   requestVoidAction: "void.request",
   decideVoidAction: "void.approve",

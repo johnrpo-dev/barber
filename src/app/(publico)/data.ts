@@ -3,7 +3,7 @@ import { db } from "@/db/client";
 import { DEVICE_COOKIE, knownClient } from "@/db/client-devices";
 import { maskPhone } from "@/domain/clients/client";
 import { firstNameForMessage } from "@/domain/notifications/templates";
-import { loadPortalData, loadTicketData, publicLocation } from "@/db/public-booking";
+import { knownClientNeedsConsent, loadPortalData, loadTicketData, publicLocation } from "@/db/public-booking";
 import type { Db } from "@/db/types";
 import type { AppointmentStatus } from "@/domain/booking/status";
 import { publicBookingReadiness, publicConfig } from "@/lib/public-readiness";
@@ -43,6 +43,8 @@ export async function loadPortal(): Promise<PortalView | null> {
 export interface KnownClientView {
   firstName: string;
   maskedPhone: string; // "312 •••• 994"
+  /** Autorizó con una política anterior: la pantalla pide una vez la casilla de la vigente (sprint 7). */
+  needsConsent: boolean;
 }
 
 /** El cliente recordado en este navegador (cookie villa_device), o null. Nunca el celular completo. */
@@ -51,7 +53,9 @@ export async function loadKnownClient(): Promise<KnownClientView | null> {
   if (!location) return null;
   const token = (await cookies()).get(DEVICE_COOKIE)?.value;
   const client = await knownClient(database(), { locationId: location.id, token, now: new Date() });
-  return client ? { firstName: firstNameForMessage(client.name), maskedPhone: maskPhone(client.phoneE164) } : null;
+  if (!client) return null;
+  const needsConsent = await knownClientNeedsConsent(database(), { locationId: location.id, clientId: client.clientId });
+  return { firstName: firstNameForMessage(client.name), maskedPhone: maskPhone(client.phoneE164), needsConsent };
 }
 
 export interface TicketView {

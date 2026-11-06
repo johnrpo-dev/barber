@@ -27,6 +27,7 @@ export const PERMISSIONS = [
   "appointments.manage.own",
   "clients.view.contact", // teléfono y correo completos
   "clients.erase", // suprimir los datos personales de un cliente a su solicitud
+  "clients.manage", // ficha del cliente: historial, faltas, retirar autorizaciones, olvidar navegadores
   "time_off.manage.all", // ausencias y bloqueos de cualquiera, cierres de la sede
   "time_off.manage.own", // el barbero bloquea su propio tiempo
   "settings.manage", // reglas de la sede y reserva en línea
@@ -48,6 +49,7 @@ const GRANTS: Record<Role, ReadonlySet<Permission>> = {
     "cash.manage",
     "appointments.manage.all",
     "clients.view.contact",
+    "clients.manage",
     "time_off.manage.all",
   ]),
   barber: new Set<Permission>(["commissions.view.own", "appointments.manage.own", "time_off.manage.own"]),

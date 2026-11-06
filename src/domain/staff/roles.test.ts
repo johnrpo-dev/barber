@@ -64,6 +64,16 @@ describe("permisos por rol", () => {
     }
   });
 
+  it("ficha del cliente (sprint 7): dueño y recepción; el barbero no", () => {
+    expect(can("owner", "clients.manage")).toBe(true);
+    expect(can("reception", "clients.manage")).toBe(true);
+    expect(can("barber", "clients.manage")).toBe(false);
+  });
+
+  it("quien puede suprimir datos también abre la ficha (la supresión solo se llega desde ella)", () => {
+    for (const role of ROLES) if (can(role, "clients.erase")) expect(can(role, "clients.manage")).toBe(true);
+  });
+
   it("liquidar y la bitácora son solo del dueño", () => {
     for (const p of ["commissions.settle", "audit.view", "clients.erase"] as const) {
       expect(can("owner", p)).toBe(true);

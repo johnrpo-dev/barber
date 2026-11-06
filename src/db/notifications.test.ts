@@ -13,7 +13,7 @@ import { bucketHash } from "@/lib/public-readiness";
 import { changeStatus, createAppointment, rescheduleAppointment } from "./appointments";
 import { createService } from "./catalog";
 import { findOrCreateClient } from "./clients";
-import { recordConsents } from "./consents";
+import { recordConsents, withdrawConsent } from "./consents";
 import { createLocation } from "./ledger";
 import { findByManageToken, issueManageLink } from "./manage-links";
 import {
@@ -429,6 +429,77 @@ describe("barrido", () => {
     expect(keys).not.toContain(dedupeKey("rem", old.publicId, old.start));
     expect(keys).not.toContain(dedupeKey("rem", revoked.publicId, revoked.start));
     expect(n.sent.some((s) => s.to === old.phone || s.to === revoked.phone)).toBe(false);
+  });
+
+  it("retiro desde la ficha (sprint 7): la última fila manda en el barrido y en la entrega ya encolada", async () => {
+    const actor = { userId: "recepcion", staffId: barber };
+    // Retirado antes del barrido: no se crea el recordatorio.
+    const before = await booked(32, { reminders: true });
+    await withdrawConsent(db, { locationId: location, clientId: before.clientId, purpose: "reminders", actor });
+    // Retirado con el recordatorio ya en la cola: la entrega lo suprime.
+    const queued = await booked(32.25, { reminders: true });
+    expect(await createDueReminders(db, ctxWith(), twoHoursBefore(queued.start))).toBeGreaterThanOrEqual(1);
+    await withdrawConsent(db, { locationId: location, clientId: queued.clientId, purpose: "reminders", actor });
+    // Retirar las promociones no toca el recordatorio.
+    const marketingOnly = await booked(32.5, { reminders: true });
+    await recordConsents(db, {
+      locationId: location,
+      clientId: marketingOnly.clientId,
+      appointmentId: null,
+      choices: { dataProcessing: true, reminders: true, marketing: true },
+      textVersion: CURRENT_PRIVACY_VERSION,
+      ip: null,
+      userAgent: null,
+      source: "online",
+    });
+    await withdrawConsent(db, { locationId: location, clientId: marketingOnly.clientId, purpose: "marketing", actor });
+
+    const n = new MemoryNotifier();
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(before.start));
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(queued.start));
+    await scanNotifications(db, n, ctxWith(), twoHoursBefore(marketingOnly.start));
+    const keys = (await db.select({ key: notifications.dedupeKey }).from(notifications)).map((r) => r.key);
+    expect(keys).not.toContain(dedupeKey("rem", before.publicId, before.start));
+    expect(n.sent.some((s) => s.to === before.phone || s.to === queued.phone)).toBe(false);
+    const [row] = await db.select({ id: notifications.id }).from(notifications).where(eq(notifications.dedupeKey, dedupeKey("rem", queued.publicId, queued.start)));
+    expect(await kinds(row!.id)).toContain("suppressed");
+    expect(n.sent.some((s) => s.to === marketingOnly.phone)).toBe(true);
+  });
+
+  it("propiedad: con cualquier secuencia de autorizaciones y retiros, el recordatorio sale solo si la última fila lo autoriza", { timeout: 120_000 }, async () => {
+    const actor = { userId: "recepcion", staffId: barber };
+    let k = 0;
+    await fc.assert(
+      fc.asyncProperty(fc.array(fc.constantFrom("grant" as const, "withdraw" as const), { minLength: 1, maxLength: 4 }), async (steps) => {
+        const b = await booked(40 + 0.25 * k++);
+        let granted = false;
+        for (const step of steps) {
+          if (step === "grant") {
+            await recordConsents(db, {
+              locationId: location,
+              clientId: b.clientId,
+              appointmentId: null,
+              choices: { dataProcessing: true, reminders: true, marketing: false },
+              textVersion: CURRENT_PRIVACY_VERSION,
+              ip: null,
+              userAgent: null,
+              source: "online",
+            });
+            granted = true;
+          } else if (granted) {
+            await withdrawConsent(db, { locationId: location, clientId: b.clientId, purpose: "reminders", actor });
+            granted = false;
+          } else {
+            // Sin autorización vigente, retirar no escribe nada.
+            await expect(withdrawConsent(db, { locationId: location, clientId: b.clientId, purpose: "reminders", actor })).rejects.toThrow();
+          }
+        }
+        const n = new MemoryNotifier();
+        await scanNotifications(db, n, ctxWith(), twoHoursBefore(b.start));
+        expect(n.sent.some((s) => s.to === b.phone)).toBe(granted);
+      }),
+      { numRuns: 12 },
+    );
   });
 
   it("ya encolado: si la autorización vigente no es de la versión nueva, la entrega lo suprime", async () => {

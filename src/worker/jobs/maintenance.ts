@@ -1,7 +1,7 @@
 import { anonymizeNeverVerifiedClients } from "@/db/clients";
 import { pruneLoginThrottles } from "@/db/login-throttle";
 import { checkQuotaAlert } from "@/db/notifications";
-import { purgeExpiredPersonalData } from "@/db/privacy";
+import { type PurgeResult, purgeExpiredPersonalData } from "@/db/privacy";
 import { pruneRateLimits } from "@/db/rate-limit";
 import { pruneSecurityAlerts } from "@/db/security-alerts";
 import type { Db } from "@/db/types";
@@ -12,13 +12,14 @@ import { deliveryContext } from "./scan-notifications";
 /**
  * Diario a las 03:00 (Bogotá): borra contadores viejos, anonimiza a quienes nunca confirmaron
  * el código (más de 7 días, solo con retenciones vencidas), purga los datos personales vencidos
- * (Ley 1581, retenciones en src/domain/clients/retention.ts) y revisa la alerta de cuota.
+ * (Ley 1581, retenciones en src/domain/clients/retention.ts), borra los navegadores recordados que
+ * dejaron de servir hace más de 30 días y revisa la alerta de cuota.
  * La purga va DESPUÉS de anonimizar: los restos de un cliente recién anonimizado se borran hoy mismo.
  */
 export async function runMaintenance(
   db: Db,
   now: Date = new Date(),
-): Promise<{ pruned: number; anonymized: number; purged: { verifications: number; notifications: number; reads: number }; alerts: number }> {
+): Promise<{ pruned: number; anonymized: number; purged: PurgeResult; alerts: number }> {
   // Contadores de límites (también los del ingreso), bloqueos de cuenta vencidos y avisos de
   // seguridad ya entregados hace mucho.
   const pruned = (await pruneRateLimits(db, now)) + (await pruneLoginThrottles(db, now)) + (await pruneSecurityAlerts(db, now));

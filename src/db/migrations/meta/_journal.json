@@ -176,6 +176,13 @@
       "when": 1793934669726,
       "tag": "0024_staff_presence",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793943487788,
+      "tag": "0025_client_record",
+      "breakpoints": true
     }
   ]
 }

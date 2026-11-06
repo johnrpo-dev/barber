@@ -14,7 +14,9 @@ export interface ClientSummary {
 const columns = { id: clients.id, name: clients.name, phoneE164: clients.phoneE164 };
 
 /** Busca por nombre o por celular (con cualquier formato). Máximo 8 resultados. */
-export async function searchClients(db: Db, input: { locationId: bigint; query: string }): Promise<ClientSummary[]> {
+export const CLIENT_SEARCH_LIMIT = 8;
+
+export async function searchClients(db: Db, input: { locationId: bigint; query: string; limit?: number }): Promise<ClientSummary[]> {
   const q = input.query.trim();
   if (q.length < 2) return [];
   const digits = q.replace(/\D/g, "");
@@ -25,7 +27,7 @@ export async function searchClients(db: Db, input: { locationId: bigint; query: 
     .from(clients)
     .where(and(eq(clients.locationId, input.locationId), sql`${clients.anonymizedAt} is null`, where))
     .orderBy(asc(clients.name))
-    .limit(8);
+    .limit(input.limit ?? CLIENT_SEARCH_LIMIT);
 }
 
 /** Si el celular ya existe en la sede, devuelve ese cliente (no duplica); si no, lo crea. */

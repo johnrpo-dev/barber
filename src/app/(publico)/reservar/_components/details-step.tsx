@@ -170,8 +170,7 @@ export function DetailsStep({
           isRequired
           errorId="error-dataProcessing"
         >
-          Autorizo a {BUSINESS_NAME} a tratar mis datos para gestionar mi cita y a escribirme para confirmarla y recordármela ese
-          mismo día. <span className="text-tinta/70">(Obligatoria)</span>
+          <DataProcessingConsentText />
         </ConsentBox>
         {errors.dataProcessing ? (
           <p id="error-dataProcessing" className={cx(field.error, "pl-9")}>
@@ -235,7 +234,17 @@ export function DetailsStep({
   );
 }
 
-function ConsentBox({
+/** El texto de la autorización obligatoria: el mismo aquí y al renovarla desde un navegador recordado. */
+export function DataProcessingConsentText() {
+  return (
+    <>
+      Autorizo a {BUSINESS_NAME} a tratar mis datos para gestionar mi cita y a escribirme para confirmarla y recordármela ese
+      mismo día. <span className="text-tinta/70">(Obligatoria)</span>
+    </>
+  );
+}
+
+export function ConsentBox({
   name,
   isSelected,
   onChange,

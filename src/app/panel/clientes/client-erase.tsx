@@ -1,98 +1,60 @@
 "use client";
 
-import { Search, UserX } from "lucide-react";
+import { UserX } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { Button, Form, Input, Label, Text, TextField } from "react-aria-components";
+import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { callAction } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
-import { Btn, cx, field, PageHeader, Sheet, useToast } from "../_components/ui";
+import { Btn, cx, field, Sheet, useToast } from "../_components/ui";
 import { card, FormError } from "../_manage/controls";
-import { type ClientErasePreviewView, type ClientOption, eraseClientAction, loadClientErasePreview, loadClientsToErase } from "./actions";
+import { type ClientErasePreviewView, eraseClientAction, loadClientErasePreview } from "./actions";
 
-// Suprimir los datos de un cliente a su solicitud: buscarlo, ver qué se borra y qué se conserva, y
-// confirmar escribiendo SUPRIMIR. El servidor exige el permiso y la reautenticación.
+// Suprimir los datos de un cliente a su solicitud, desde su ficha (sprint 7): ver qué se borra y qué
+// se conserva, y confirmar escribiendo SUPRIMIR. El servidor exige el permiso y la reautenticación.
 
 const CONFIRMATION = "SUPRIMIR";
 
-export function ClientErase() {
+/** Desde la ficha del cliente: abre la misma vista previa y la misma confirmación. Solo el dueño. */
+export function EraseClientButton({ clientId, onErased }: { clientId: string; onErased: () => void }) {
   const toast = useToast();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<ClientOption[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ClientErasePreviewView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-  async function search(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  async function open() {
     setError(null);
-    if (query.trim().length < 2) return setError("Escribe al menos 2 letras o números.");
-    setSearching(true);
-    const r = await callAction(() => loadClientsToErase(query.trim()));
-    setSearching(false);
-    if (!r.ok) return setError(r.error);
-    setResults(r.data);
-  }
-
-  async function select(id: string) {
-    setError(null);
-    const r = await callAction(() => loadClientErasePreview({ clientId: id }));
+    setLoading(true);
+    const r = await callAction(() => loadClientErasePreview({ clientId }));
+    setLoading(false);
     if (!r.ok) return setError(r.error);
     setPreview(r.data);
   }
 
   return (
-    <>
-      <PageHeader eyebrow="Datos personales" title="Clientes" />
-      <p className="text-sm text-tinta/80">Cuando un cliente pide que borren sus datos, búscalo aquí. Se suprime lo personal; lo contable se conserva como exige la ley.</p>
-
-      <Form onSubmit={search} validationBehavior="aria" className="flex flex-col gap-3 min-[400px]:flex-row min-[400px]:items-end">
-        <TextField value={query} onChange={setQuery} maxLength={80} className={cx(field.root, "min-[400px]:flex-1")}>
-          <Label className={field.label}>Nombre o celular</Label>
-          <Input className={field.input} autoComplete="off" />
-        </TextField>
-        <Btn type="submit" variant="secondary" size="lg" isPending={searching}>
-          <Search size={18} aria-hidden />
-          {searching ? "Buscando…" : "Buscar"}
-        </Btn>
-      </Form>
-
+    <div className="flex flex-col gap-2">
+      <Btn variant="danger" className="self-start" isPending={loading} onPress={() => void open()}>
+        <UserX size={18} aria-hidden />
+        Suprimir datos del cliente
+      </Btn>
       <FormError message={error} />
+      <EraseSheet
+        preview={preview}
+        onClose={() => setPreview(null)}
+        onDone={() => {
+          setPreview(null);
+          toast("Datos del cliente suprimidos");
+          onErased();
+        }}
+      />
+    </div>
+  );
+}
 
-      {results !== null ? (
-        results.length === 0 ? (
-          <p className="text-sm text-tinta/70">No hay clientes con esa búsqueda.</p>
-        ) : (
-          <ul className={cx(card, "divide-y divide-tinta/10")}>
-            {results.map((c) => (
-              <li key={c.id}>
-                <Button
-                  onPress={() => void select(c.id)}
-                  className="flex min-h-14 w-full cursor-pointer flex-col items-start justify-center gap-0.5 px-4 py-2 text-left outline-none data-[hovered]:bg-tinta/5 data-[focus-visible]:outline-3 data-[focus-visible]:-outline-offset-3 data-[focus-visible]:outline-cuero"
-                >
-                  <span className="font-semibold text-tinta">{c.name}</span>
-                  {c.phone ? <span className="text-sm text-tinta/70">{c.phone}</span> : null}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )
-      ) : null}
-
-      <Sheet isOpen={preview !== null} onOpenChange={(open) => !open && setPreview(null)} title="Suprimir datos del cliente" description={preview?.name}>
-        {preview ? (
-          <EraseForm
-            key={preview.id}
-            preview={preview}
-            onCancel={() => setPreview(null)}
-            onDone={() => {
-              setPreview(null);
-              setResults((rows) => rows?.filter((r) => r.id !== preview.id) ?? null);
-              toast("Datos del cliente suprimidos");
-            }}
-          />
-        ) : null}
-      </Sheet>
-    </>
+function EraseSheet({ preview, onClose, onDone }: { preview: ClientErasePreviewView | null; onClose: () => void; onDone: () => void }) {
+  return (
+    <Sheet isOpen={preview !== null} onOpenChange={(open) => !open && onClose()} title="Suprimir datos del cliente" description={preview?.name}>
+      {preview ? <EraseForm key={preview.id} preview={preview} onCancel={onClose} onDone={onDone} /> : null}
+    </Sheet>
   );
 }
 

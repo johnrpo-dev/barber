@@ -3,7 +3,9 @@ import type { PGlite } from "@electric-sql/pglite";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAppointment } from "@/db/appointments";
+import { CURRENT_PRIVACY_VERSION } from "@/content/privacy/versions";
 import { DEVICE_COOKIE } from "@/db/client-devices";
+import { recordConsents } from "@/db/consents";
 import { createService } from "@/db/catalog";
 import { findOrCreateClient } from "@/db/clients";
 import { createLocation } from "@/db/ledger";
@@ -978,7 +980,7 @@ const CASES: Case[] = [
       expect(state.cookieOptions).toMatchObject({ httpOnly: true, sameSite: "lax", path: "/" });
       // La página sabe quién es, sin el celular completo.
       const known = await data.loadKnownClient();
-      expect(known).toEqual({ firstName: "Ana", maskedPhone: expect.not.stringContaining(phone) });
+      expect(known).toEqual({ firstName: "Ana", maskedPhone: expect.not.stringContaining(phone), needsConsent: false });
 
       const sentBefore = notifier.sent.length;
       const input = { serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() };
@@ -1035,6 +1037,57 @@ const CASES: Case[] = [
       const r = await actions.bookAsKnown({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID() });
       expect(r.ok).toBe(false);
       expect((r as { error: string }).error).toMatch(/rápido/);
+    },
+  },
+  {
+    action: "bookAsKnown",
+    name: "autorizó con una política anterior: pide una vez la casilla de la vigente; sin ella no reserva, con ella guarda las filas nuevas y respeta su no al recordatorio (sprint 7)",
+    run: async () => {
+      newIp();
+      const phone = newPhone();
+      await bookAndVerify(phone);
+      const c = await clientRow(phone);
+      // Como si hubiera autorizado con la política del 3 de noviembre, diciendo que no al recordatorio y sí a las promociones.
+      await recordConsents(db, {
+        locationId: A.location,
+        clientId: c.id,
+        appointmentId: null,
+        choices: { dataProcessing: true, reminders: false, marketing: true },
+        textVersion: "2026-11-03",
+        ip: null,
+        userAgent: null,
+        source: "online",
+      });
+      expect(await data.loadKnownClient()).toMatchObject({ needsConsent: true });
+      const input = (acceptsPolicy?: boolean) => ({ serviceId: A.servicePublic, staffId: A.barberPublic, ...nextSlot(), turnstileToken: "ok", formId: randomUUID(), acceptsPolicy });
+
+      const appointmentsBefore = await db.$count(appointments, eq(appointments.clientId, c.id));
+      const consentsBefore = await db.$count(clientConsents, eq(clientConsents.clientId, c.id));
+      expect(await actions.bookAsKnown(input())).toEqual({ ok: false, error: PUBLIC_MESSAGES.consentRenewal });
+      expect(await actions.bookAsKnown(input(false))).toEqual({ ok: false, error: PUBLIC_MESSAGES.consentRenewal });
+      expect(await db.$count(appointments, eq(appointments.clientId, c.id))).toBe(appointmentsBefore);
+      expect(await db.$count(clientConsents, eq(clientConsents.clientId, c.id))).toBe(consentsBefore);
+
+      const r = await actions.bookAsKnown(input(true));
+      expect(r.ok, JSON.stringify(r)).toBe(true);
+      const latest = await db
+        .selectDistinctOn([clientConsents.purpose], { purpose: clientConsents.purpose, granted: clientConsents.granted, v: clientConsents.textVersion, ip: clientConsents.ip })
+        .from(clientConsents)
+        .where(eq(clientConsents.clientId, c.id))
+        .orderBy(clientConsents.purpose, sql`${clientConsents.id} desc`);
+      expect(latest).toEqual(
+        expect.arrayContaining([
+          { purpose: "data_processing", granted: true, v: CURRENT_PRIVACY_VERSION, ip: state.ip },
+          // Su no al recordatorio (en línea) se respeta: la renovación no lo convierte en sí (Ley 1581).
+          { purpose: "reminders", granted: false, v: "2026-11-03", ip: null },
+          // Las promociones no se tocan: siguen como las dejó.
+          { purpose: "marketing", granted: true, v: "2026-11-03", ip: null },
+        ]),
+      );
+
+      // La próxima vez no se vuelve a pedir.
+      expect(await data.loadKnownClient()).toMatchObject({ needsConsent: false });
+      expect((await actions.bookAsKnown(input())).ok).toBe(true);
     },
   },
   {

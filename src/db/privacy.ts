@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { type ContactReadContext, contactReadKey, readWindowStart } from "@/domain/clients/retention";
+import { purgeClientDevices } from "./client-devices";
 import { personalDataReads } from "./schema";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
@@ -11,12 +12,16 @@ export interface PurgeResult {
   verifications: number;
   notifications: number;
   reads: number;
+  /** Navegadores recordados revocados o vencidos hace más de 30 días (sprint 7). */
+  devices: number;
 }
 
 /**
  * Mantenimiento diario: purge_expired_personal_data() (SECURITY DEFINER, dueña villa_owner) borra
  * la IP, el navegador, el nombre y el correo de los códigos viejos, vacía los params de los avisos
  * viejos y borra la auditoría de lecturas vencida. No recibe fechas: solo hace lo que ya venció.
+ * Después borra los navegadores recordados que dejaron de servir hace más de 30 días (client_devices,
+ * con DELETE propio de villa_app y un trigger que exige la misma regla, migración 0025).
  */
 export async function purgeExpiredPersonalData(db: Db): Promise<PurgeResult> {
   const [row] = rowsOf<{ purged_verifications: number; purged_notifications: number; purged_reads: number }>(
@@ -26,6 +31,7 @@ export async function purgeExpiredPersonalData(db: Db): Promise<PurgeResult> {
     verifications: Number(row?.purged_verifications ?? 0),
     notifications: Number(row?.purged_notifications ?? 0),
     reads: Number(row?.purged_reads ?? 0),
+    devices: await purgeClientDevices(db),
   };
 }
 

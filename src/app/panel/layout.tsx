@@ -43,7 +43,8 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   if (can(role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal", more: true });
   if (can(role, "settings.manage")) items.push({ href: "/panel/ajustes", label: "Ajustes", icon: "ajustes", more: true });
   if (can(role, "audit.view")) items.push({ href: "/panel/auditoria", label: "Auditoría", icon: "auditoria", more: true });
-  if (can(role, "clients.erase")) items.push({ href: "/panel/clientes", label: "Clientes", icon: "clientes", more: true });
+  // Ficha del cliente (sprint 7): dueño y recepción; la supresión vive en la misma página.
+  if (can(role, "clients.manage")) items.push({ href: "/panel/clientes", label: "Clientes", icon: "clientes", more: true });
 
   return (
     <ToastProvider>

@@ -299,12 +299,12 @@ export function BookingFlow({
     goTo("code");
   }
 
-  async function confirmKnown(turnstileToken: string) {
+  async function confirmKnown(turnstileToken: string, acceptsPolicy: boolean) {
     if (!s.serviceId || !s.date || s.minute === null) return;
     setPending(true);
     setServerError(null);
     const r = await safeCall(() =>
-      bookAsKnown({ serviceId: s.serviceId!, staffId: s.staffId, date: s.date!, minute: s.minute!, turnstileToken, formId: s.formId }),
+      bookAsKnown({ serviceId: s.serviceId!, staffId: s.staffId, date: s.date!, minute: s.minute!, turnstileToken, formId: s.formId, acceptsPolicy }),
     );
     if (r.ok) {
       verified(r.data.manageUrl);
@@ -318,6 +318,10 @@ export function BookingFlow({
       setNotice(r.error);
       goTo("details");
       return;
+    }
+    if (isError(r.error, "consentRenewal")) {
+      // La política cambió después de cargar la página: se muestra la casilla de la vigente.
+      setKnown((k) => (k ? { ...k, needsConsent: true } : k));
     }
     handleError(r);
   }

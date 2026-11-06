@@ -108,6 +108,7 @@ export const KNOWN_ERRORS = {
   tooManyAttempts: "Demasiados intentos",
   rateLimited: "Vas muy rápido",
   deviceUnknown: "Por seguridad, esta vez confirma",
+  consentRenewal: "Actualizamos nuestra política de datos.",
 } as const;
 
 export const isError = (message: string, kind: keyof typeof KNOWN_ERRORS) => message.startsWith(KNOWN_ERRORS[kind]);

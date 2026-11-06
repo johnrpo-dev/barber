@@ -315,9 +315,14 @@ const knownInput = z.object({
   minute: minuteSchema,
   turnstileToken: z.string().max(2048),
   formId: uuid,
+  /** La casilla de la autorización vigente: la pide la pantalla solo si autorizó con una política anterior. */
+  acceptsPolicy: z.boolean().optional(),
 });
 
-/** Reserva sin código desde un navegador recordado. Sin cookie vigente responde deviceUnknown. */
+/**
+ * Reserva sin código desde un navegador recordado. Sin cookie vigente responde deviceUnknown; si
+ * autorizó con una política anterior y no marcó la casilla nueva, consentRenewal.
+ */
 export async function bookAsKnown(raw: z.input<typeof knownInput>): Promise<ActionResult<{ manageUrl: string }>> {
   return runAction(async () => {
     const input = knownInput.parse(raw);
@@ -340,6 +345,7 @@ export async function bookAsKnown(raw: z.input<typeof knownInput>): Promise<Acti
       start: localMinuteToInstant(input.date, input.minute, scope.location.timeZone),
       formId: input.formId,
       device,
+      renewal: { accepted: input.acceptsPolicy === true, ip, userAgent: await clientUserAgent() },
     });
     return { manageUrl: `/cita/${token}` };
   });

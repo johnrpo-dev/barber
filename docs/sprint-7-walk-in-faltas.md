@@ -74,7 +74,7 @@ El dominio está en `src/domain/clients/no-shows.ts` y la base en `src/db/no-sho
 - Reprogramar o cancelar una cita que ya existe sigue funcionando.
 
 **Desbloqueo:**
-- Lo hacen recepción o el dueño desde la cita en la agenda, con el botón "Desbloquear reserva en línea".
+- Lo hacen recepción o el dueño desde la cita en la agenda o desde la ficha del cliente (§8), con el botón "Desbloquear reserva en línea".
 - Guarda `clients.no_shows_cleared_at` con la hora de la base; las faltas anteriores dejan de contar.
 - Queda en la bitácora (`client.no_shows_clear`, categoría Personal) sin datos de la persona.
 
@@ -121,3 +121,43 @@ Lo pidió el dueño: *"Si un cliente solicita por primera vez me gustaría que n
 - `0022_audit_no_shows_clear`: agrega `client.no_shows_clear` a los CHECK de `audit_events`.
 - `0023_booking_without_code`: `locations.booking_requires_code` (`false`).
 - `0024_staff_presence`: tabla `staff_presence_events` (solo-inserción para la app).
+- `0025_client_record` (ficha del cliente, §8):
+  - agrega `client.consent_withdraw` y `client.devices_forget` a los CHECK de `audit_events`;
+  - DELETE de `villa_app` solo sobre `client_devices`, con el trigger `client_devices_before_delete` (solo lo revocado o vencido hace más de 30 días) y TRUNCATE prohibido.
+
+## 8. Ficha del cliente y privacidad
+
+Cierra cuatro pendientes de la tabla "Seguridad: estado y plan" ([arquitectura.md](arquitectura.md)): retirar autorizaciones, olvidar los navegadores recordados, purgar `client_devices` y volver a autorizar al cliente recordado.
+
+**La ficha (`/panel/clientes`):**
+- Permiso nuevo `clients.manage`: dueño y recepción; el barbero no. El enlace "Clientes" del panel se ve con `clients.manage` o `clients.erase`.
+- Se busca por nombre o celular (`searchClients`) y se abre la ficha. Buscar y abrir la ficha dejan constancia de quién vio el celular completo (`recordContactReads`, contexto `client_search`).
+- Muestra:
+  - nombre, celular y si lo verificó con el código;
+  - historial: las últimas 20 citas (fecha y hora de la sede, servicio, profesional, estado) y los conteos (citas, próximas, terminadas, "No vino", canceladas), sumados en SQL (`src/db/client-record.ts`);
+  - faltas que cuentan hoy y si la reserva en línea está suspendida, con el mismo botón de desbloqueo de la agenda (misma regla: `clearNoShows`);
+  - autorizaciones: la última fila de cada propósito, con versión de la política, fecha y origen (en línea o en la barbería);
+  - navegadores recordados activos (sin revocar y sin vencer): cuántos y el último uso.
+- La supresión de datos sigue siendo solo del dueño, con reautenticación y "SUPRIMIR": ahora se abre desde la ficha.
+
+**Retirar el recordatorio o las promociones (Ley 1581, derecho a revocar):**
+- Lo hace el personal cuando la persona lo pide. Pide confirmación.
+- Inserta una fila nueva en `client_consents`: `granted = false`, `source = 'staff'`, versión vigente de la política. Nada se edita ni se borra; manda la última fila.
+- El tratamiento de datos no se retira desde aquí: eso es la supresión.
+- En la misma transacción queda `client.consent_withdraw` en la bitácora, solo con el propósito (sin nombre ni celular). Si la autorización ya no estaba vigente, no escribe nada.
+- El worker ya respetaba la última fila: no crea el recordatorio y, si estaba en la cola, lo suprime al entregarlo (prueba en `src/db/notifications.test.ts`).
+
+**Olvidar los navegadores de este cliente:**
+- Revoca (`revoked_at = now()`) todos los navegadores activos del cliente, con `client.devices_forget` en la misma transacción. Pide confirmación.
+- Revocar sigue siendo definitivo (trigger de 0017). La próxima reserva en línea vuelve a confirmar el celular.
+
+**Tope y purga de `client_devices`:**
+- Al recordar un navegador nuevo quedan como máximo 5 activos por cliente. Se revocan los que llevan más tiempo sin usarse (último uso o, si nunca se usó, cuando se recordó); el nuevo nunca (`src/domain/clients/devices.ts`, con prueba de propiedades). Cuenta con la fila del cliente bloqueada (`FOR UPDATE`), así dos verificaciones a la vez no se saltan el tope.
+- El mantenimiento diario borra las filas revocadas o vencidas hace más de 30 días (`purgeClientDevices`, desde `purgeExpiredPersonalData`).
+- Para eso `villa_app` tiene DELETE **solo** sobre `client_devices`. Un trigger exige la misma regla fila por fila: con la app tomada no se puede borrar un navegador activo ni uno que dejó de servir hace menos de 30 días. TRUNCATE sigue prohibido.
+
+**Volver a autorizar al cliente recordado:**
+- Si su última autorización de datos (o la del recordatorio) es de una política anterior a la vigente, la pantalla "Confirmar" pide una vez la casilla obligatoria, con el mismo texto del formulario. Sin ella no se reserva (`consentRenewal`).
+- Con la casilla, en la misma transacción de la reserva se guarda una fila nueva de tratamiento de datos con la versión vigente, la IP y el navegador. La del recordatorio solo se escribe si no había fila o si la última era un sí de una política anterior. Las promociones no se tocan. La próxima vez no se vuelve a pedir.
+- Un no previo al recordatorio se respeta siempre, lo haya marcado la persona en línea o lo haya retirado el personal: no obliga a renovar y la renovación no lo convierte en sí (Ley 1581).
+- Lo que se escribe sale de una relectura dentro de la transacción, con la fila del cliente bloqueada (`FOR UPDATE`): un retiro del personal en paralelo no se deshace y dos reservas a la vez no duplican las filas.

@@ -16,7 +16,7 @@ import {
 } from "@/domain/booking/public-labels";
 import type { AppointmentStatus } from "@/domain/booking/status";
 import { assertValidClientName, InvalidClientError, maskPhone, normalizePhone } from "@/domain/clients/client";
-import { assertBookingConsent, type ConsentChoices } from "@/domain/clients/consent";
+import { assertBookingConsent, type ConsentChoices, needsConsentRenewal, renewalRows } from "@/domain/clients/consent";
 import { businessDate } from "@/domain/ledger/business-date";
 import { format, money } from "@/domain/money";
 import { dedupeKey } from "@/domain/notifications/schedule";
@@ -29,7 +29,7 @@ import type { Notifier } from "@/lib/notify/ports";
 import { availability, changeStatus, createAppointment, locationRules, rescheduleAppointment, SlotTakenError } from "./appointments";
 import { findOrCreateClient } from "./clients";
 import { type KnownClient, touchClientDevice, rememberClientDevice } from "./client-devices";
-import { latestConsents, recordConsents } from "./consents";
+import { latestConsentRecords, recordConsentRenewal, recordConsents } from "./consents";
 import { findByManageToken, issueManageLink, revokeManageLinks } from "./manage-links";
 import { checkQuotaAlert, enqueueNotification, globalQuotaReached, messageParams, preferredChannel, recordOtpAttempt, recordOtpOutcome } from "./notifications";
 import { noShowStandingOf } from "./no-shows";
@@ -69,6 +69,8 @@ export const PUBLIC_MESSAGES = {
     "Tu reserva en línea está suspendida porque no llegaste a tus últimas citas. Escríbenos por WhatsApp o llámanos y te agendamos.",
   // Sin código no se sabe si el número es de quien reserva: no se le cuenta el historial de otro.
   cannotBookOnline: "No pudimos confirmar tu reserva en línea. Escríbenos por WhatsApp o llámanos y te agendamos.",
+  // Cliente recordado que autorizó con una política anterior (sprint 7): se le pide una vez la nueva.
+  consentRenewal: "Actualizamos nuestra política de datos. Para reservar, marca la autorización.",
 } as const;
 
 /** Retenciones en línea vivas a la vez por sede: más que esto es alguien acaparando la agenda. */
@@ -1006,12 +1008,27 @@ export interface KnownBookingInput {
   formId: string;
   /** El cliente del navegador, ya resuelto con knownClient() (cookie villa_device vigente). */
   device: KnownClient;
+  /**
+   * La casilla de la autorización vigente (sprint 7): obligatoria solo si autorizó con una política
+   * anterior. La IP y el navegador son la evidencia, como en el flujo de siempre.
+   */
+  renewal?: { accepted: boolean; ip: string | null; userAgent: string | null };
+}
+
+/** El cliente recordado autorizó con una política anterior y hay que pedirle la vigente. */
+export async function knownClientNeedsConsent(db: Db, input: { locationId: bigint; clientId: bigint }): Promise<boolean> {
+  return needsConsentRenewal(await latestConsentRecords(db, input), CURRENT_PRIVACY_VERSION);
 }
 
 /**
  * Reserva sin código para quien ya verificó su celular en este navegador: crea la cita y la
  * confirma en la misma transacción (mismo tope de citas activas, enlace y aviso que verifyBooking).
- * Sin una autorización de tratamiento vigente, pide el flujo con código (deviceUnknown).
+ * Sin una autorización de tratamiento vigente, pide el flujo con código (deviceUnknown). Si autorizó
+ * con una política anterior, exige la casilla de la vigente (consentRenewal) y guarda las filas
+ * nuevas en la misma transacción: la próxima vez no se vuelve a pedir. La lectura de antes de la
+ * transacción solo decide si hace falta la casilla; lo que se escribe sale de una relectura con el
+ * cliente bloqueado, así un retiro del personal en paralelo no se deshace y dos reservas a la vez
+ * no duplican las filas.
  * Reintentar el mismo formulario devuelve la misma cita.
  */
 export async function bookAsKnownClient(
@@ -1023,8 +1040,9 @@ export async function bookAsKnownClient(
   const now = ctx.now;
   const clientId = input.device.clientId;
   assertBookableDate(location, localParts(input.start, location.timeZone).date, now);
-  const consents = await latestConsents(db, { locationId: location.id, clientId });
-  if (!consents.data_processing) throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
+  const consents = await latestConsentRecords(db, { locationId: location.id, clientId });
+  if (!consents.data_processing?.granted) throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
+  if (needsConsentRenewal(consents, CURRENT_PRIVACY_VERSION) && !input.renewal?.accepted) throw new BookingError(PUBLIC_MESSAGES.consentRenewal);
   await enforce(db, "booking_known", { contact: ctx.hash(`device:${input.device.deviceId}`), location: `location:${location.id}` }, now);
   // Doble toque o reintento por red: si este formulario ya creó la cita, ese horario ya no figura
   // como libre (lo ocupa ella misma); se salta la comprobación y la transacción devuelve la misma.
@@ -1036,6 +1054,16 @@ export async function bookAsKnownClient(
 
   const outcome = await db.transaction(async (txRaw): Promise<{ kind: "ok"; token: string } | { kind: "expired" } | { kind: "limit"; max: number } | { kind: "suspended" }> => {
     const tx = txRaw as unknown as Db;
+    // El cliente bloqueado y las autorizaciones releídas: lo que se escribe abajo sale de aquí.
+    await tx
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.locationId, location.id), eq(clients.id, clientId)))
+      .for("update");
+    const current = await latestConsentRecords(tx, { locationId: location.id, clientId });
+    if (!current.data_processing?.granted) throw new BookingError(PUBLIC_MESSAGES.deviceUnknown);
+    const renew = needsConsentRenewal(current, CURRENT_PRIVACY_VERSION);
+    if (renew && !input.renewal?.accepted) throw new BookingError(PUBLIC_MESSAGES.consentRenewal);
     let created;
     try {
       created = await createAppointment(tx, {
@@ -1083,7 +1111,19 @@ export async function bookAsKnownClient(
       return { kind: "expired" };
     }
     const confirmed = await confirmOnlineAppointment(tx, ctx, { appt, clientId, channel: "whatsapp", consent: null, contactName: null, contactEmail: null });
-    if (confirmed.kind === "ok") await touchClientDevice(tx, { locationId: location.id, deviceId: input.device.deviceId, now });
+    if (confirmed.kind === "ok") {
+      await touchClientDevice(tx, { locationId: location.id, deviceId: input.device.deviceId, now });
+      if (renew) {
+        await recordConsentRenewal(tx, {
+          locationId: location.id,
+          clientId,
+          appointmentId: appt.id,
+          rows: renewalRows(current, CURRENT_PRIVACY_VERSION),
+          ip: input.renewal?.ip ?? null,
+          userAgent: input.renewal?.userAgent ?? null,
+        });
+      }
+    }
     return confirmed;
   });
 
