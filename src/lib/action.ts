@@ -4,6 +4,7 @@ import { TransitionError } from "@/domain/booking/status";
 import { InvalidServiceError } from "@/domain/catalog/service";
 import { InvalidClientError } from "@/domain/clients/client";
 import { SettlementError } from "@/domain/commissions/settlement";
+import { RecurringExpenseError } from "@/domain/expenses/recurring";
 import { ReportError } from "@/domain/reports/period";
 import { CashError } from "@/domain/sales/cash";
 import { CheckoutError } from "@/domain/sales/checkout";
@@ -47,6 +48,7 @@ const BUSINESS_ERRORS = [
   VoidError,
   SettlementError,
   ReportError,
+  RecurringExpenseError,
 ];
 
 export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {

@@ -16,9 +16,16 @@ import type { Db } from "./types";
 //    voids.ts, ni triggers en esas tablas): solo lee.
 // 2. deliverOwnerAlerts: a lo sumo UN correo por sede cada 15 minutos con todo lo pendiente, como
 //    deliverSecurityAlerts. notified_at se marca SOLO si el correo salió. Sin correo configurado no se
-//    marca nada: los avisos esperan y el dueño los sigue viendo en Inicio.
+//    marca nada: los avisos esperan en owner_alerts.
+// Sin correo (o si el worker falla más de 2 días), lo que el dueño ve en Inicio (loadDashboard) es:
+// las anulaciones pendientes y los turnos por revisar (todos, sin importar la fecha), la reapertura de
+// HOY al abrir la caja (las de días anteriores, no) y las cortesías de los últimos 7 días que no dio
+// él. Una cortesía más vieja solo queda en el informe de Cortesías y en la bitácora.
 
-/** Lo que se barre hacia atrás. Más viejo que esto ya no se avisa (lo ve en Inicio). */
+/**
+ * Lo que se barre hacia atrás. Lo más viejo ya no genera correo: queda lo que muestran Inicio (ver
+ * arriba), los informes y la bitácora.
+ */
 export const OWNER_ALERT_LOOKBACK_MS = 2 * 86_400_000;
 /** Como mucho un correo de avisos por sede cada 15 minutos. */
 export const OWNER_ALERT_WINDOW_SEC = 15 * 60;

@@ -197,6 +197,20 @@
       "when": 1793958653284,
       "tag": "0027_owner_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793960850505,
+      "tag": "0028_recurring_expenses",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793962500338,
+      "tag": "0029_courtesies_append_only",
+      "breakpoints": true
     }
   ]
 }

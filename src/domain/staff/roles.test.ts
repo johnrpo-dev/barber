@@ -40,6 +40,10 @@ describe("permisos por rol", () => {
     expect(can("owner", "expenses.bank")).toBe(true);
     expect(can("reception", "expenses.bank")).toBe(false);
     expect(can("barber", "expenses.bank")).toBe(false);
+    // Gastos fijos (sprint 8): omitir un periodo es solo del dueño.
+    expect(can("owner", "expenses.recurring.skip")).toBe(true);
+    expect(can("reception", "expenses.recurring.skip")).toBe(false);
+    expect(can("barber", "expenses.recurring.skip")).toBe(false);
     // Conteo a ciegas (sprint 4, MEDIUM-3): solo el dueño ve el esperado con la caja abierta.
     expect(can("owner", "cash.review")).toBe(true);
     expect(can("reception", "cash.review")).toBe(false);

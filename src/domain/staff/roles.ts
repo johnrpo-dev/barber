@@ -34,6 +34,7 @@ export const PERMISSIONS = [
   "sales.discount", // dar descuentos al cobrar (recepción solo si el dueño lo habilita: canDiscount)
   "cash.manage", // abrir y cerrar caja, pagar propinas, consignar
   "expenses.bank", // registrar gastos pagados desde el banco
+  "expenses.recurring.skip", // omitir un periodo de un gasto fijo (con motivo): solo el dueño
   "cash.review", // ver el esperado durante el turno y revisar cierres con diferencia (conteo a ciegas)
   "commissions.settle", // liquidar comisiones, revertir liquidaciones, dar y revertir anticipos
   "audit.view", // ver la bitácora de auditoría

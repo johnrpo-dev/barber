@@ -1253,6 +1253,8 @@ export const expenses = pgTable(
   (t) => [
     unique("expenses_idempotency_key").on(t.locationId, t.idempotencyKey),
     unique("expenses_journal_entry_key").on(t.journalEntryId),
+    // Para la FK compuesta de recurring_expense_runs (0028): el gasto de un periodo es de la misma sede.
+    unique("expenses_location_id_id_key").on(t.locationId, t.id),
     foreignKey({
       name: "expenses_category_fk",
       columns: [t.locationId, t.categoryId],
@@ -1744,5 +1746,97 @@ export const ownerAlerts = pgTable(
     unique("owner_alerts_ref_key").on(t.locationId, t.kind, t.refId),
     check("owner_alerts_kind_check", sql`${t.kind} in ('void_requested','cash_review','day_reopened','courtesy')`),
     index("owner_alerts_pending_idx").on(t.locationId, t.id).where(sql`${t.notifiedAt} is null`),
+  ],
+);
+
+// ─── Gastos fijos (sprint 8, migración 0028) ─────────────────────────────────
+// docs/sprint-8-gastos-controles.md §5. Una plantilla (arriendo, servicios, internet) dice cuánto se
+// estima, de dónde sale, qué día vence y cada cuántos meses. NADA se asienta solo: cada periodo se
+// registra con el formulario de gasto normal (un gasto de `expenses`, con su asiento de siempre) o se
+// omite con un motivo, y queda UNA fila en recurring_expense_runs (solo-inserción) por periodo.
+
+/** Plantilla de gasto fijo. La app la edita (solo las columnas de la plantilla: grant de 0028). */
+export const recurringExpenses = pgTable(
+  "recurring_expenses",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    name: text("name").notNull(),
+    categoryId: bigint("category_id", { mode: "bigint" }).notNull(),
+    /** Monto estimado en centavos (pesos enteros), como `expenses.amount`. Al registrar se puede cambiar. */
+    estimatedAmount: amount("estimated_amount").notNull(),
+    payMode: text("pay_mode", { enum: ["cash", "bank"] }).notNull(),
+    /** Día del mes en que vence (1 a 28: existe en todos los meses). */
+    dayOfMonth: smallint("day_of_month").notNull(),
+    /** Cada cuántos meses (1 a 12). */
+    intervalMonths: smallint("interval_months").notNull(),
+    /** Primer día del primer mes que se paga. */
+    startMonth: date("start_month", { mode: "string" }).notNull(),
+    active: boolean("active").notNull().default(true),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("recurring_expenses_location_id_id_key").on(t.locationId, t.id),
+    foreignKey({
+      name: "recurring_expenses_category_fk",
+      columns: [t.locationId, t.categoryId],
+      foreignColumns: [expenseCategories.locationId, expenseCategories.id],
+    }),
+    check(
+      "recurring_expenses_name_check",
+      sql`char_length(${t.name}) between 3 and 60 and ${t.name} = btrim(${t.name}) and ${t.name} !~ '[[:cntrl:]]'`,
+    ),
+    check("recurring_expenses_amount_check", sql`${t.estimatedAmount} > 0 and ${wholePesos(t.estimatedAmount)} and ${t.estimatedAmount} <= 10000000000000`),
+    check("recurring_expenses_pay_mode_check", sql`${t.payMode} in ('cash','bank')`),
+    check("recurring_expenses_day_check", sql`${t.dayOfMonth} between 1 and 28`),
+    check("recurring_expenses_interval_check", sql`${t.intervalMonths} between 1 and 12`),
+    check("recurring_expenses_start_month_check", sql`extract(day from ${t.startMonth}) = 1`),
+    index("recurring_expenses_location_idx").on(t.locationId, t.active),
+  ],
+);
+
+/**
+ * Lo que pasó con un periodo de un gasto fijo: se registró (con su gasto) o se omitió (con el motivo).
+ * Solo-inserción (sin UPDATE ni DELETE para la app, y triggers que lo prohíben a cualquiera). Un
+ * periodo de una plantilla tiene a lo sumo una fila.
+ */
+export const recurringExpenseRuns = pgTable(
+  "recurring_expense_runs",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    recurringId: bigint("recurring_id", { mode: "bigint" }).notNull(),
+    /** Primer día del mes del periodo. */
+    period: date("period", { mode: "string" }).notNull(),
+    outcome: text("outcome", { enum: ["registered", "skipped"] }).notNull(),
+    /** El gasto que lo pagó (registered); null si se omitió. */
+    expenseId: bigint("expense_id", { mode: "bigint" }),
+    /** Por qué se omitió (skipped); null si se registró. */
+    skipReason: text("skip_reason"),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("recurring_expense_runs_period_key").on(t.locationId, t.recurringId, t.period),
+    unique("recurring_expense_runs_expense_key").on(t.locationId, t.expenseId),
+    foreignKey({
+      name: "recurring_expense_runs_recurring_fk",
+      columns: [t.locationId, t.recurringId],
+      foreignColumns: [recurringExpenses.locationId, recurringExpenses.id],
+    }),
+    foreignKey({
+      name: "recurring_expense_runs_expense_fk",
+      columns: [t.locationId, t.expenseId],
+      foreignColumns: [expenses.locationId, expenses.id],
+    }),
+    check("recurring_expense_runs_period_check", sql`extract(day from ${t.period}) = 1`),
+    check(
+      "recurring_expense_runs_outcome_check",
+      sql`(${t.outcome} = 'registered' and ${t.expenseId} is not null and ${t.skipReason} is null)
+        or (${t.outcome} = 'skipped' and ${t.expenseId} is null and ${t.skipReason} is not null
+            and char_length(${t.skipReason}) between 3 and 300 and ${t.skipReason} = btrim(${t.skipReason}) and ${t.skipReason} !~ '[[:cntrl:]]')`,
+    ),
   ],
 );

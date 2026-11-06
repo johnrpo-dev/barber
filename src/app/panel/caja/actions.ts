@@ -21,6 +21,7 @@ import { giveCourtesy } from "@/db/courtesies";
 import { cashSessionsInPeriod } from "@/db/history";
 import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
+import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import type { Db } from "@/db/types";
 import { money, sum } from "@/domain/money";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
@@ -32,6 +33,7 @@ import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, atLabel, minorText, moneyLabel, signedLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
+import { dueItems, type RecurringDueItem, sortDue } from "../gastos-fijos/view";
 
 // Caja (docs/sprint-4-cobro-caja.md §4 y §9). El esperado sale SIEMPRE de SQL (saldo de 1105);
 // la sede y el día contable salen de la sesión y de la base, nunca del navegador.
@@ -105,6 +107,11 @@ export interface CashView {
   }[];
   tipsOwed: { staffId: string; name: string; owedMinor: string; owedLabel: string }[];
   categories: { id: string; name: string }[];
+  /**
+   * Gastos fijos de caja vencidos o por vencer (sprint 8, §5): un aviso con "Registrar", que abre el
+   * formulario de gasto prellenado. Nada se asienta solo.
+   */
+  recurringDue: RecurringDueItem[];
   canBankExpense: boolean;
   canCloseDay: boolean;
   canReopenDay: boolean;
@@ -149,6 +156,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
     // Todo en UNA transacción REPEATABLE READ de solo lectura (L3): una sola foto del libro.
     const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay, reopened } = await cashViewData(database(), staff.locationId);
     const rules = await checkoutRulesOf(database(), staff.locationId);
+    const recurring = await dueRecurringExpenses(database(), { locationId: staff.locationId, payMode: "cash" });
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -234,6 +242,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
         : [],
       tipsOwed: owed.map((t) => ({ staffId: t.staffId.toString(), name: t.name, owedMinor: minorText(t.owed), owedLabel: moneyLabel(t.owed) })),
       categories: categories.map((c) => ({ id: c.id.toString(), name: c.name })),
+      recurringDue: sortDue(dueItems(recurring.items)),
       canBankExpense: can(staff.role, "expenses.bank"),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),

@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  CalendarClock,
   CalendarDays,
   CalendarOff,
   Contact,
@@ -47,7 +48,8 @@ export type NavIcon =
   | "informes"
   | "auditoria"
   | "clientes"
-  | "ventas";
+  | "ventas"
+  | "gastos-fijos";
 export interface NavItem {
   href: string;
   label: string;
@@ -77,6 +79,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   auditoria: ScrollText,
   clientes: Contact,
   ventas: Receipt,
+  "gastos-fijos": CalendarClock,
 };
 
 function isActive(pathname: string, href: string) {

@@ -22,6 +22,9 @@ export const AUDIT_ACTIONS = [
   "advance.reverse",
   // Sprint 8: una cita atendida que el negocio regala (sin venta, sin asiento y sin comisión).
   "appointment.courtesy",
+  // Sprint 8: gastos fijos. Registrar un periodo (el gasto normal deja además su expense.add) u omitirlo.
+  "recurring_expense.register",
+  "recurring_expense.skip",
   // Configuración
   "service.create",
   "service.update",
@@ -31,6 +34,7 @@ export const AUDIT_ACTIONS = [
   "payment_method.save",
   "expense_category.save",
   "staff.bookable",
+  "recurring_expense.save",
   // Personal
   "staff.create",
   "staff.update",
@@ -78,6 +82,8 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "advance.create": "finanzas",
   "advance.reverse": "finanzas",
   "appointment.courtesy": "finanzas",
+  "recurring_expense.register": "finanzas",
+  "recurring_expense.skip": "finanzas",
   "service.create": "configuracion",
   "service.update": "configuracion",
   "service.active": "configuracion",
@@ -86,6 +92,7 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "payment_method.save": "configuracion",
   "expense_category.save": "configuracion",
   "staff.bookable": "configuracion",
+  "recurring_expense.save": "configuracion",
   "staff.create": "personal",
   "staff.update": "personal",
   "staff.password_reset": "personal",
@@ -119,6 +126,8 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "advance.create": "Dio un anticipo",
   "advance.reverse": "Revirtió un anticipo",
   "appointment.courtesy": "Dio una cita como cortesía",
+  "recurring_expense.register": "Registró un gasto fijo",
+  "recurring_expense.skip": "Omitió un gasto fijo",
   "service.create": "Creó un servicio",
   "service.update": "Cambió un servicio",
   "service.active": "Activó o retiró un servicio",
@@ -127,6 +136,7 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "payment_method.save": "Guardó un medio de pago",
   "expense_category.save": "Guardó una categoría de gasto",
   "staff.bookable": "Cambió quién aparece en la reserva en línea",
+  "recurring_expense.save": "Guardó un gasto fijo",
   "staff.create": "Agregó a alguien del personal",
   "staff.update": "Cambió los datos de alguien del personal",
   "staff.password_reset": "Reinició una contraseña",
@@ -199,10 +209,11 @@ export const AUDIT_FIELDS = {
     "receiptFooter",
   ],
   staff: ["displayName", "role", "active", "bookableOnline"],
+  recurringExpense: ["name", "category", "estimatedAmount", "payMode", "dayOfMonth", "intervalMonths", "startMonth", "active"],
 } as const satisfies Record<string, readonly string[]>;
 
 /** Campos que son dinero (texto de centavos) o puntos básicos: el visor los formatea. */
-export const AUDIT_MONEY_FIELDS: ReadonlySet<string> = new Set(["price", "cashReviewThreshold"]);
+export const AUDIT_MONEY_FIELDS: ReadonlySet<string> = new Set(["price", "cashReviewThreshold", "estimatedAmount"]);
 export const AUDIT_BPS_FIELDS: ReadonlySet<string> = new Set(["commissionBps", "feeBps", "maxDiscountBps"]);
 
 export const AUDIT_FIELD_LABELS: Record<string, string> = {
@@ -237,4 +248,10 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   displayName: "Nombre",
   role: "Rol",
   bookableOnline: "En la reserva en línea",
+  category: "Categoría",
+  estimatedAmount: "Monto estimado",
+  payMode: "Sale de",
+  dayOfMonth: "Día de pago",
+  intervalMonths: "Cada cuántos meses",
+  startMonth: "Mes de inicio",
 };

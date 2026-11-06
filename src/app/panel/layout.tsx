@@ -41,6 +41,8 @@ export default async function PanelLayout({ children }: { children: React.ReactN
   }
   if (can(role, "services.manage")) items.push({ href: "/panel/servicios", label: "Servicios", icon: "servicios", more: true });
   if (can(role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal", more: true });
+  // Gastos fijos (sprint 8): las plantillas son del dueño; recepción registra los de caja desde Caja.
+  if (can(role, "settings.manage")) items.push({ href: "/panel/gastos-fijos", label: "Gastos fijos", icon: "gastos-fijos", short: "Fijos", more: true });
   if (can(role, "settings.manage")) items.push({ href: "/panel/ajustes", label: "Ajustes", icon: "ajustes", more: true });
   if (can(role, "audit.view")) items.push({ href: "/panel/auditoria", label: "Auditoría", icon: "auditoria", more: true });
   // Ficha del cliente (sprint 7): dueño y recepción; la supresión vive en la misma página.

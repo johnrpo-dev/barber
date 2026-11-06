@@ -1,6 +1,7 @@
 "use server";
 
 import { db } from "@/db/client";
+import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import { dashboardData } from "@/db/reports";
 import type { Db } from "@/db/types";
 import { estimatedPayout } from "@/domain/commissions/settlement";
@@ -25,7 +26,12 @@ export type DashboardView = {
     trend: "up" | "down" | "flat" | null;
   }[];
   cash: { open: boolean; openedAtLabel: string | null; openedBy: string | null; expectedLabel: string | null };
-  alerts: { kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened"; count: number; label: string; href: string }[];
+  alerts: {
+    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies";
+    count: number;
+    label: string;
+    href: string;
+  }[];
   owed: { staffId: string; name: string; commissionLabel: string; tipsLabel: string; receivableLabel: string; netMinor: string; netLabel: string }[];
   upcoming: { atLabel: string; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 };
@@ -43,6 +49,9 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
   const staff = await requirePermission("reports.financial");
   return runAction(async () => {
     const d = await dashboardData(db() as unknown as Db, { locationId: staff.locationId });
+    // Gastos fijos vencidos (sprint 8, §5): solo los ya vencidos, no los que vencen en los próximos días.
+    const recurring = await dueRecurringExpenses(db() as unknown as Db, { locationId: staff.locationId });
+    const overdue = recurring.items.reduce((n, x) => n + x.due.filter((p) => p.status === "overdue").length, 0);
     // Conteo a ciegas: el esperado de un turno abierto solo lo ve quien revisa la caja.
     const expected = can(staff.role, "cash.review") ? d.cash.expected : null;
     const alerts: DashboardView["alerts"] = [];
@@ -60,6 +69,25 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
         count: d.voidPendingCount,
         label: plural(d.voidPendingCount, "Una anulación pendiente", `${d.voidPendingCount} anulaciones pendientes`),
         href: "/panel/anulaciones",
+      });
+    }
+    if (overdue > 0) {
+      alerts.push({
+        kind: "recurring_overdue",
+        count: overdue,
+        label: plural(overdue, "Un gasto fijo vencido sin registrar", `${overdue} gastos fijos vencidos sin registrar`),
+        href: "/panel/gastos-fijos",
+      });
+    }
+    // Cortesías (sprint 8, auditoría M1): visibles aquí aunque no haya correo de avisos. Sin las que
+    // dio el propio dueño, como el barrido de avisos. El enlace abre el informe de esos 7 días.
+    if (d.recentCourtesies.count > 0) {
+      const n = d.recentCourtesies.count;
+      alerts.push({
+        kind: "courtesies",
+        count: n,
+        label: plural(n, "Una cortesía en los últimos 7 días", `${n} cortesías en los últimos 7 días`),
+        href: `/panel/informes?desde=${d.recentCourtesies.from}&hasta=${d.businessDate}#sec-courtesies`,
       });
     }
     if (d.yesterdayUnclosed) alerts.push({ kind: "day_unclosed", count: 1, label: "Ayer no se cerró el día", href: "/panel/caja" });

@@ -307,3 +307,25 @@ describe("agenda", () => {
     expect(await courtesyAppointmentIds(db, shop.locationId, [])).toEqual(new Set());
   });
 });
+
+// Auditoría del sprint 8 (B1, migración 0029): además de los permisos de villa_app, triggers que
+// rechazan cambiar o borrar una cortesía a CUALQUIER rol (aquí, el administrador de la base de prueba).
+describe("solo-inserción en la base", () => {
+  it("ni el administrador edita, borra ni vacía appointment_courtesies", async () => {
+    const admin = await createTestDb();
+    try {
+      const s = await setupShop(admin.db, "Admin");
+      await admin.db.update(locations).set({ maxDiscountBps: 10_000 }).where(eq(locations.id, s.locationId));
+      const id = await chairAppointment(admin.db, s);
+      const done = await giveCourtesy(admin.db, { locationId: s.locationId, appointmentId: id, reason: "Cliente frecuente", actor: s.owner, now: NOW });
+      const fail = (p: Promise<unknown>) => p.then(() => "ok", (e: Error) => e.message);
+      expect(await fail(admin.client.query(`update appointment_courtesies set list_price = 0 where id = $1`, [String(done.courtesyId)]))).toMatch(/no admite UPDATE/);
+      expect(await fail(admin.client.query(`delete from appointment_courtesies where id = $1`, [String(done.courtesyId)]))).toMatch(/no admite DELETE/);
+      expect(await fail(admin.client.query(`truncate appointment_courtesies cascade`))).toMatch(/no admite TRUNCATE/);
+      const [row] = (await admin.client.query<{ n: string }>(`select count(*)::text as n from appointment_courtesies`)).rows;
+      expect(row!.n).toBe("1");
+    } finally {
+      await admin.client.close();
+    }
+  }, 120_000);
+});

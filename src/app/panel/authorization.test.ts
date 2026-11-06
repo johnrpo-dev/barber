@@ -15,6 +15,7 @@ import { rememberClientDevice } from "@/db/client-devices";
 import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
+import { saveRecurringExpense } from "@/db/recurring-expenses";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
 import { createTestDb } from "@/db/testing";
@@ -112,6 +113,7 @@ const auditoria = await import("./auditoria/actions");
 const clientes = await import("./clientes/actions");
 const ventas = await import("./ventas/actions");
 const panelRoot = await import("./actions");
+const gastosFijos = await import("./gastos-fijos/actions");
 
 const TZ = "America/Bogota";
 const PASSWORD = "clave-de-prueba-123"; // valor de prueba, solo existe en esta base en memoria
@@ -269,6 +271,43 @@ async function courtesyRules(locationId: bigint, opts: { maxDiscountBps?: number
     opts.receptionCanDiscount ?? false,
   ]);
 }
+
+// ─── Gastos fijos (sprint 8): estado de partida para cada intento ───────────
+
+/** Primer día del mes de hoy (el periodo que ya toca) y un día de pago que ya venció o vence hoy. */
+const thisPeriod = () => `${businessDate(new Date(), TZ).slice(0, 7)}-01`;
+const dueDay = () => Math.min(Number(businessDate(new Date(), TZ).slice(8, 10)), 28);
+
+/** Una plantilla de la sede A (por defecto) cuyo periodo de este mes ya toca. */
+async function seedRecurring(payMode: "cash" | "bank", opts: { locationId?: bigint; categoryId?: bigint; startMonth?: string } = {}): Promise<string> {
+  const { id } = await saveRecurringExpense(db, {
+    locationId: opts.locationId ?? A.location,
+    categoryId: opts.categoryId ?? A.category,
+    draft: {
+      name: `Gasto fijo ${uniq()}`,
+      estimatedAmount: fromUnits(payMode === "cash" ? 5_000n : 800_000n),
+      payMode,
+      dayOfMonth: dueDay(),
+      intervalMonths: 1,
+      startMonth: opts.startMonth ?? thisPeriod(),
+      active: true,
+    },
+    actor: { userId: "seed" },
+  });
+  return id.toString();
+}
+
+const recurringDraft = (over: Record<string, unknown> = {}) => ({
+  name: `Internet ${uniq()}`,
+  categoryId: String(A.category),
+  estimatedUnits: "120000",
+  payMode: "bank" as const,
+  dayOfMonth: 10,
+  intervalMonths: 1,
+  startMonth: thisPeriod(),
+  active: true,
+  ...over,
+});
 
 // ─── Comisiones: estado de partida para cada intento ────────────────────────
 
@@ -458,7 +497,11 @@ async function fingerprint(locationId?: bigint): Promise<string> {
          from payment_methods where ${loc}::bigint is null or location_id = ${loc}) as payment_methods,
       (select coalesce(string_agg(id || ':' || name || ':' || account_code || ':' || active, ',' order by id), '')
          from expense_categories where ${loc}::bigint is null or location_id = ${loc}) as expense_categories,
-      (select count(*) from appointment_courtesies where ${loc}::bigint is null or location_id = ${loc}) as courtesies
+      (select count(*) from appointment_courtesies where ${loc}::bigint is null or location_id = ${loc}) as courtesies,
+      (select coalesce(string_agg(id || ':' || name || ':' || category_id || ':' || estimated_amount || ':' || pay_mode || ':' || day_of_month
+                || ':' || interval_months || ':' || start_month || ':' || active, ',' order by id), '')
+         from recurring_expenses where ${loc}::bigint is null or location_id = ${loc}) as recurring_expenses,
+      (select count(*) from recurring_expense_runs where ${loc}::bigint is null or location_id = ${loc}) as recurring_runs
   `);
   return JSON.stringify(rows);
 }
@@ -1353,6 +1396,55 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "gastos fijos · ver",
+    action: "loadRecurringExpenses",
+    allowed: ["owner"],
+    prepare: async () => () => gastosFijos.loadRecurringExpenses(),
+  },
+  {
+    name: "gastos fijos · crear una plantilla",
+    action: "saveRecurringExpenseAction",
+    allowed: ["owner"],
+    prepare: async () => () => gastosFijos.saveRecurringExpenseAction(recurringDraft()),
+  },
+  {
+    name: "gastos fijos · editar una plantilla",
+    action: "saveRecurringExpenseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const id = await seedRecurring("bank");
+      return () => gastosFijos.saveRecurringExpenseAction(recurringDraft({ id, estimatedUnits: "850000" }));
+    },
+  },
+  {
+    name: "gastos fijos · registrar uno de caja",
+    action: "registerRecurringExpenseAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      await drawerWithCash();
+      const recurringId = await seedRecurring("cash");
+      return () => gastosFijos.registerRecurringExpenseAction({ recurringId, period: thisPeriod(), amountUnits: "5000", description: "Aseo del mes" });
+    },
+  },
+  {
+    name: "gastos fijos · registrar uno de banco",
+    action: "registerRecurringExpenseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const recurringId = await seedRecurring("bank");
+      return () => gastosFijos.registerRecurringExpenseAction({ recurringId, period: thisPeriod(), amountUnits: "812000", description: "Arriendo del mes" });
+    },
+  },
+  {
+    name: "gastos fijos · omitir un periodo",
+    action: "skipRecurringExpenseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const recurringId = await seedRecurring("bank");
+      return () => gastosFijos.skipRecurringExpenseAction({ recurringId, period: thisPeriod(), reason: "Se pagó junto con el mes anterior" });
+    },
+  },
+  {
     name: "tablero del dueño",
     action: "loadDashboard",
     allowed: ["owner"],
@@ -1415,6 +1507,31 @@ describe("barbero frente a la cita de otro barbero", () => {
 // ─── Aislamiento entre sedes (IDOR) ──────────────────────────────────────────
 
 const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
+  {
+    name: "registrar un gasto fijo de esta sede",
+    prepare: async () => {
+      const recurringId = await seedRecurring("bank");
+      return () => gastosFijos.registerRecurringExpenseAction({ recurringId, period: thisPeriod(), amountUnits: "1000", description: "Intruso" });
+    },
+  },
+  {
+    name: "omitir un gasto fijo de esta sede",
+    prepare: async () => {
+      const recurringId = await seedRecurring("bank");
+      return () => gastosFijos.skipRecurringExpenseAction({ recurringId, period: thisPeriod(), reason: "Intruso de otra sede" });
+    },
+  },
+  {
+    name: "editar un gasto fijo de esta sede",
+    prepare: async () => {
+      const id = await seedRecurring("bank");
+      return () => gastosFijos.saveRecurringExpenseAction(recurringDraft({ id, name: "Hackeado", active: false }));
+    },
+  },
+  {
+    name: "crear un gasto fijo con una categoría de esta sede",
+    prepare: async () => () => gastosFijos.saveRecurringExpenseAction(recurringDraft()),
+  },
   {
     name: "dar como cortesía una cita de esta sede",
     prepare: async () => {
@@ -2259,6 +2376,7 @@ const STAFF_MODULES: Record<string, Record<string, unknown>> = {
   "panel/ajustes/actions.ts": ajustes,
   "panel/cobro/actions.ts": cobro,
   "panel/caja/actions.ts": caja,
+  "panel/gastos-fijos/actions.ts": gastosFijos,
   "panel/anulaciones/actions.ts": anulaciones,
   "panel/ventas/actions.ts": ventas,
   "cuenta/actions.ts": cuenta,
@@ -2608,6 +2726,9 @@ const AUDITED: Record<string, AuditAction> = {
   giveAdvanceAction: "advance.create",
   reverseAdvanceAction: "advance.reverse",
   giveCourtesyAction: "appointment.courtesy",
+  registerRecurringExpenseAction: "recurring_expense.register",
+  skipRecurringExpenseAction: "recurring_expense.skip",
+  saveRecurringExpenseAction: "recurring_expense.save",
   createServiceAction: "service.create",
   updateServiceAction: "service.update",
   setServiceActiveAction: "service.active",
@@ -2752,5 +2873,89 @@ describe("cortesías", () => {
         actor: SEED_ACTOR(),
       }),
     ).rejects.toThrow(/cortesía/);
+  });
+
+  it("Inicio avisa al dueño las cortesías de los últimos 7 días que no dio él, con enlace al informe", async () => {
+    const courtesiesAlert = async () => {
+      await signInAs(A.users.owner);
+      const dash = await inicio.loadDashboard();
+      if (!dash.ok) throw new Error(dash.error);
+      return dash.data.alerts.find((a) => a.kind === "courtesies");
+    };
+    const before = (await courtesiesAlert())?.count ?? 0;
+    await courtesyRules(A.location, { receptionCanDiscount: true });
+
+    // Una de recepción suma.
+    const byReception = await chairAppointment();
+    await signInAs(A.users.reception);
+    expect(await caja.giveCourtesyAction({ appointmentId: String(byReception), reason: "Cliente afectado por la espera" })).toMatchObject({ ok: true });
+    const alert = await courtesiesAlert();
+    expect(alert).toMatchObject({ count: before + 1 });
+    expect(alert?.label).toMatch(/cortesías? en los últimos 7 días/);
+    const today = businessDate(new Date(), TZ);
+    expect(alert?.href).toBe(`/panel/informes?desde=${addDays(today, -6)}&hasta=${today}#sec-courtesies`);
+
+    // Una del dueño no (la dio él mismo: no tiene que avisarse).
+    const byOwner = await chairAppointment();
+    expect(await caja.giveCourtesyAction({ appointmentId: String(byOwner), reason: "Cortesía de la casa" })).toMatchObject({ ok: true });
+    expect(await courtesiesAlert()).toMatchObject({ count: before + 1 });
+    await courtesyRules(A.location);
+  });
+});
+
+// ─── Gastos fijos (sprint 8, docs/sprint-8-gastos-controles.md §5) ───────────
+
+describe("gastos fijos", () => {
+  it("registrar uno de banco pide confirmar identidad; sin ella no toca nada y tras confirmar pasa", async () => {
+    const recurringId = await seedRecurring("bank");
+    const attempt = () => gastosFijos.registerRecurringExpenseAction({ recurringId, period: thisPeriod(), amountUnits: "800000", description: "Arriendo" });
+    await signInAs(A.users.owner, { stale: true });
+    const before = await fingerprint();
+    expect(await attempt()).toMatchObject({ ok: false, code: "reauth_required" });
+    expect(await fingerprint()).toBe(before);
+    expect(await cuenta.reauthenticateAction({ method: "totp", code: state.totpCode })).toMatchObject({ ok: true });
+    expect(await attempt()).toMatchObject({ ok: true, data: { created: true } });
+    // Repetir (doble toque) devuelve el mismo gasto y no deja otro.
+    const after = await fingerprint();
+    expect(await attempt()).toMatchObject({ ok: true, data: { created: false } });
+    expect(await fingerprint()).toBe(after);
+  });
+
+  it("registrar uno de caja no la pide (pasa por el conteo de la caja)", async () => {
+    await drawerWithCash();
+    const recurringId = await seedRecurring("cash");
+    await signInAs(A.users.owner, { stale: true });
+    expect(await gastosFijos.registerRecurringExpenseAction({ recurringId, period: thisPeriod(), amountUnits: "4000", description: "Aseo" })).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it("recepción ve en Caja los de caja por pagar (no los de banco); el dueño ve los vencidos en Inicio", async () => {
+    const lastMonth = `${addDays(thisPeriod(), -1).slice(0, 7)}-01`;
+    const cash = await seedRecurring("cash", { startMonth: lastMonth });
+    const bank = await seedRecurring("bank");
+    await signInAs(A.users.reception);
+    const view = await caja.loadCashView();
+    if (!view.ok) throw new Error(view.error);
+    const mine = view.data.recurringDue.filter((d) => d.recurringId === cash);
+    expect(mine.map((d) => d.period)).toEqual([lastMonth, thisPeriod()]);
+    expect(mine[0]).toMatchObject({ status: "overdue", payMode: "cash" });
+    expect(view.data.recurringDue.some((d) => d.recurringId === bank)).toBe(false);
+
+    await signInAs(A.users.owner);
+    const dash = await inicio.loadDashboard();
+    if (!dash.ok) throw new Error(dash.error);
+    expect(dash.data.alerts.find((a) => a.kind === "recurring_overdue")).toMatchObject({ href: "/panel/gastos-fijos" });
+  });
+
+  it("de otra sede no se ve nada en Caja ni en Gastos fijos", async () => {
+    const id = await seedRecurring("cash");
+    await signInAs(B.owner);
+    const list = await gastosFijos.loadRecurringExpenses();
+    if (!list.ok) throw new Error(list.error);
+    expect(list.data.templates.some((t) => t.id === id)).toBe(false);
+    const view = await caja.loadCashView();
+    if (!view.ok) throw new Error(view.error);
+    expect(view.data.recurringDue.some((d) => d.recurringId === id)).toBe(false);
   });
 });

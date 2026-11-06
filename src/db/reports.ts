@@ -439,6 +439,12 @@ export interface DashboardData {
   yesterdayUnclosed: boolean;
   /** Hoy se reabrió el día al abrir la caja: quién (la última vez) y cuántas veces. */
   todayAutoReopen: { by: string; times: number } | null;
+  /**
+   * Cortesías de los últimos 7 días contables (hoy incluido) que NO dio una cuenta con rol de dueño
+   * en la sede: el mismo criterio del barrido de avisos (owner-alerts.ts). Se ven en Inicio aunque no
+   * haya correo configurado. `from`: el primer día de la ventana (para el enlace al informe).
+   */
+  recentCourtesies: { count: number; from: string };
   owed: StaffBalances[];
   upcoming: { at: Date; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 }
@@ -539,6 +545,17 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
          limit 5
       `),
     );
+    const courtesyFrom = addDays(day.businessDate, -6);
+    const [courtesyRow] = rowsOf<{ n: string }>(
+      await tx.execute(sql`
+        select count(*)::text as n
+          from appointment_courtesies c
+         where c.location_id = ${locationId}::bigint
+           and c.business_date between ${courtesyFrom}::date and ${day.businessDate}::date
+           and not exists (select 1 from staff_members sm
+                            where sm.location_id = c.location_id and sm.user_id = c.created_by and sm.role = 'owner')
+      `),
+    );
     const balances = await commissionBalances(tx, locationId);
 
     return {
@@ -558,6 +575,7 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
       voidPendingCount: Number(alerts?.voids ?? "0"),
       yesterdayUnclosed: alerts?.unclosed === true,
       todayAutoReopen: reopen ? { by: reopen.by ?? "Personal", times: Number(reopen.times) } : null,
+      recentCourtesies: { count: Number(courtesyRow?.n ?? "0"), from: courtesyFrom },
       owed: balances.filter((b) => b.commissionOwed !== 0n || b.tipsOwed !== 0n || b.receivable !== 0n),
       upcoming: upcoming.map((u) => ({ at: new Date(u.at), staffName: u.staff_name, serviceName: u.service_name, clientName: u.client_name, status: u.status })),
     };

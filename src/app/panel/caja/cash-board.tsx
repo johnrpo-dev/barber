@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarX, CheckCircle2, EyeOff, Gift, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarClock, CalendarX, CheckCircle2, EyeOff, Gift, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
@@ -15,6 +15,8 @@ import { plural } from "../_components/dates";
 import { longDate } from "../agenda/_components/slot-picker";
 import { requestVoidAction } from "../cobro/actions";
 import { CheckoutSheet } from "../cobro/checkout-sheet";
+import { INACTIVE_CATEGORY_REASON, RecurringRegisterForm } from "../gastos-fijos/register-form";
+import type { RecurringDueItem } from "../gastos-fijos/view";
 import {
   addExpenseAction,
   cashDepositAction,
@@ -58,6 +60,7 @@ type SheetState =
   | { kind: "open" | "close" | "expense" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
   | { kind: "void"; sale: DaySale }
   | { kind: "courtesy"; appointment: ToCharge }
+  | { kind: "recurring"; item: RecurringDueItem }
   | null;
 
 /** Clave de idempotencia de un formulario: se conserva ante un fallo de red y se renueva tras una respuesta. */
@@ -99,6 +102,8 @@ export function CashBoard({ initial }: { initial: CashView }) {
   const stale = s?.staleDayLabel ?? null;
   /** El día pendiente no se cierra con una caja abierta de ese día o anterior (lo exige también la base). */
   const pendingBlocked = !!s && !!view.pendingDay && s.businessDate <= view.pendingDay.date;
+  /** Un gasto de caja (también uno fijo) necesita la caja de hoy abierta y el día abierto. */
+  const cashOk = !!s && !stale && !view.dayClosed;
   const closeSheet = () => setSheet(null);
   const startClose = () => {
     void refresh();
@@ -192,6 +197,35 @@ export function CashBoard({ initial }: { initial: CashView }) {
             </Btn>
           ) : null}
         </div>
+      ) : null}
+
+      {/* Gastos fijos de caja vencidos o por vencer (sprint 8, §5): nada se asienta solo; "Registrar"
+          abre el formulario de gasto prellenado con el estimado. */}
+      {view.recurringDue.length > 0 ? (
+        <section aria-labelledby="gastos-fijos" className="flex flex-col gap-2 rounded-xl border border-cuero/30 bg-cuero/5 p-4">
+          <h2 id="gastos-fijos" className="flex items-center gap-2 font-semibold">
+            <CalendarClock size={18} className="shrink-0 text-cuero" aria-hidden /> Gastos fijos por pagar
+          </h2>
+          <ul className="flex flex-col divide-y divide-tinta/10" role="list">
+            {view.recurringDue.map((item) => (
+              <li key={`${item.recurringId}-${item.period}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">
+                    {item.name} · {item.periodLabel}
+                  </p>
+                  <p className={cx("text-xs", item.status === "overdue" ? "font-semibold text-alerta" : "text-tinta/70")}>
+                    {item.statusLabel} · estimado <span className="monto">{item.estimatedLabel}</span>
+                  </p>
+                </div>
+                <Btn size="sm" className="h-11 shrink-0" onPress={() => setSheet({ kind: "recurring", item })} isDisabled={!cashOk || !item.categoryActive}>
+                  <Receipt size={16} aria-hidden /> Registrar<span className="sr-only"> {item.name} de {item.periodLabel}</span>
+                </Btn>
+                {!item.categoryActive ? <p className="basis-full text-xs text-tinta/80">{INACTIVE_CATEGORY_REASON}</p> : null}
+              </li>
+            ))}
+          </ul>
+          {!cashOk ? <p className="text-xs text-tinta/80">Salen del efectivo: abre la caja de hoy para registrarlos.</p> : null}
+        </section>
       ) : null}
 
       {/* Cobrar: la acción principal de la pantalla */}
@@ -562,6 +596,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
       </Sheet>
       <Sheet isOpen={sheet?.kind === "expense"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto">
         <ExpenseForm view={view} onDone={done} onCancel={closeSheet} />
+      </Sheet>
+      <Sheet isOpen={sheet?.kind === "recurring"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto fijo" description="Queda como un gasto de caja normal.">
+        {sheet?.kind === "recurring" ? <RecurringRegisterForm item={sheet.item} cashOk={cashOk} onDone={done} onCancel={closeSheet} /> : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "tips"} onOpenChange={(o) => !o && closeSheet()} title="Pagar propinas" description="Sale efectivo de la caja para el barbero.">
         <TipsForm view={view} onDone={done} onCancel={closeSheet} />
