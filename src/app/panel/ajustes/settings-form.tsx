@@ -20,6 +20,8 @@ export interface SettingsView {
   freeCancelHours: number;
   noShowGraceMin: number;
   maxActivePerClient: number;
+  walkInGuardMin: number;
+  noShowLimit: number;
   taxId: string | null;
   receiptFooter: string | null;
 }
@@ -168,6 +170,23 @@ export function SettingsForm({ settings, staff }: { settings: SettingsView; staf
               minValue={1}
               maxValue={10}
               step={1}
+            />
+            <MinutesField
+              label="Faltas para suspender la reserva"
+              value={s.noShowLimit}
+              onChange={set("noShowLimit")}
+              minValue={1}
+              maxValue={10}
+              step={1}
+              description="Con este número de «No vino», el cliente ya no reserva en línea hasta que recepción lo desbloquee."
+            />
+            <MinutesField
+              label="Walk-in: sin cita en los próximos (min)"
+              value={s.walkInGuardMin}
+              onChange={set("walkInGuardMin")}
+              minValue={0}
+              maxValue={240}
+              description="Un barbero con una cita más cerca que esto no recibe clientes sin cita."
             />
           </div>
         </section>

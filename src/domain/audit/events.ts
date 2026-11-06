@@ -177,6 +177,8 @@ export const AUDIT_FIELDS = {
     "freeCancelHours",
     "noShowGraceMin",
     "maxActivePerClient",
+    "walkInGuardMin",
+    "noShowLimit",
     "address",
     "mapsUrl",
     // El NIT o cédula no entra: si el negocio es persona natural, es su documento.
@@ -212,6 +214,8 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   freeCancelHours: "Horas para cancelar",
   noShowGraceMin: "Tolerancia de llegada (min)",
   maxActivePerClient: "Citas activas por cliente",
+  walkInGuardMin: "Walk-in: sin cita en los próximos (min)",
+  noShowLimit: "Faltas para suspender la reserva",
   address: "Dirección",
   mapsUrl: "Enlace del mapa",
   receiptFooter: "Pie del recibo",

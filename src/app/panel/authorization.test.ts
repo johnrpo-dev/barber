@@ -514,6 +514,12 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "agenda · fila del walk-in",
+    action: "loadWalkInQueue",
+    allowed: ["owner", "reception"],
+    prepare: async () => () => agenda.loadWalkInQueue({ serviceId: String(A.service) }),
+  },
+  {
     name: "agenda · walk-in",
     action: "startWalkIn",
     allowed: ["owner", "reception"],
@@ -741,6 +747,8 @@ const CASES: Case[] = [
           freeCancelHours: 4,
           noShowGraceMin: 15,
           maxActivePerClient: 2,
+          walkInGuardMin: 60,
+          noShowLimit: 2,
           taxId: "900.123.456-7",
           receiptFooter: `Gracias ${n}`,
         });

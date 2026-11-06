@@ -19,6 +19,10 @@ export interface LocationSettings {
   freeCancelHours: number;
   noShowGraceMin: number;
   maxActivePerClient: number;
+  /** Walk-in: con una cita dentro de estos minutos, el barbero no entra en la fila (migración 0021). */
+  walkInGuardMin: number;
+  /** Faltas ("No vino") con las que se suspende la reserva en línea del cliente (migración 0021). */
+  noShowLimit: number;
   /** Recibo impreso: NIT o cédula del negocio y mensaje del pie (migración 0014). */
   taxId: string | null;
   receiptFooter: string | null;
@@ -39,6 +43,8 @@ export async function locationSettings(db: Db, locationId: bigint): Promise<Loca
       freeCancelHours: locations.freeCancelHours,
       noShowGraceMin: locations.noShowGraceMin,
       maxActivePerClient: locations.maxActivePerClient,
+      walkInGuardMin: locations.walkInGuardMin,
+      noShowLimit: locations.noShowLimit,
       taxId: locations.taxId,
       receiptFooter: locations.receiptFooter,
     })

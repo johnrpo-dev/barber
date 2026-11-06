@@ -148,6 +148,13 @@
       "when": 1793909782985,
       "tag": "0020_day_close_later_cash",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793929590341,
+      "tag": "0021_walk_in_no_shows",
+      "breakpoints": true
     }
   ]
 }

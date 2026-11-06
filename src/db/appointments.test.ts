@@ -16,6 +16,7 @@ import {
   SlotTakenError,
   type StaffActor,
   walkIn,
+  walkInQueueFor,
 } from "./appointments";
 import { createService } from "./catalog";
 import { findOrCreateClient } from "./clients";
@@ -195,6 +196,45 @@ describe("walk-in", () => {
     expect((await dayAgenda(db, { locationId, date: DAY })).appointments).toHaveLength(1);
     // Otro servicio con la misma clave no es un reintento.
     await expect(walkIn(db, { ...input, serviceId: corte, now: at("10:13") })).rejects.toThrow(IdempotencyConflictError);
+  });
+});
+
+// Turno del walk-in (sprint 7): "Cualquiera" es el que lleva más tiempo libre, salvo que tenga una
+// cita en menos de 60 minutos. La fila se calcula dentro de la transacción que crea la cita.
+describe("walk-in: la fila por tiempo libre", () => {
+  /** Walk-in de barba con `staffId` a la hora `start`, en la silla y terminado a la hora `done`. */
+  async function served(staffId: bigint, start: string, done: string) {
+    const w = await walkIn(db, { locationId, serviceId: barba, staffId, clientId: null, createdBy: "u", now: at(start), idempotencyKey: `s${++key}` });
+    await changeStatus(db, { locationId, appointmentId: w.appointmentId, to: "in_chair", actor: reception, now: at(start) });
+    await changeStatus(db, { locationId, appointmentId: w.appointmentId, to: "completed", actor: reception, now: at(done) });
+  }
+  const anyWalkIn = (now: string) =>
+    walkIn(db, { locationId, serviceId: barba, staffId: "any", clientId: null, createdBy: "u", now: at(now), idempotencyKey: `a${++key}` });
+
+  it("el primero en terminar recibe al siguiente; el segundo walk-in va al que sigue en la fila", async () => {
+    // Terminar se redondea a 5 minutos y nunca pasa de la hora programada (barba: 20 min sin limpieza).
+    await served(brayan, "10:00", "10:12"); // queda libre 10:15
+    await served(andres, "10:05", "10:22"); // queda libre 10:25
+    const queue = await walkInQueueFor(db, { locationId, serviceId: barba, now: at("10:30") });
+    expect(queue.filter((r) => r.entry.kind === "free").map((r) => [r.displayName, r.entry.kind === "free" ? hhmm(r.entry.freeSince) : ""])).toEqual([
+      ["Brayan", "10:15"],
+      ["Andrés", "10:25"],
+    ]);
+    expect((await anyWalkIn("10:30")).staffId).toBe(brayan);
+    expect((await anyWalkIn("10:31")).staffId).toBe(andres);
+    await expect(anyWalkIn("10:32")).rejects.toThrow(/^Nadie está libre ahora\. (Brayan|Andrés) se libera a las 10:50/);
+  });
+
+  it("con una cita en menos de 60 minutos no entra en la fila, aunque haya terminado primero; elegido a mano, sí", async () => {
+    await served(brayan, "10:00", "10:12");
+    await served(andres, "10:05", "10:22");
+    await book("11:00", { staffId: brayan });
+    const queue = await walkInQueueFor(db, { locationId, serviceId: barba, now: at("10:30") });
+    expect(queue.find((r) => r.staffId === brayan)?.entry).toMatchObject({ kind: "excluded", reason: { code: "booking_soon", at: at("11:00") } });
+    expect((await anyWalkIn("10:30")).staffId).toBe(andres);
+    // La regla reparte; no bloquea: recepción puede dárselo a Brayan si el cliente lo pide.
+    const chosen = await walkIn(db, { locationId, serviceId: barba, staffId: brayan, clientId: null, createdBy: "u", now: at("10:31"), idempotencyKey: "a-mano" });
+    expect(chosen.staffId).toBe(brayan);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   assertTransition,
   type CancelReason,
 } from "@/domain/booking/status";
+import { type QueueEntry, walkInQueue } from "@/domain/booking/walk-in-queue";
 import { businessDate } from "@/domain/ledger/business-date";
 import { type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
@@ -69,6 +70,8 @@ export interface LocationRules {
   holdMin: number;
   freeCancelHours: number;
   noShowGraceMin: number;
+  /** Walk-in: con una cita dentro de estos minutos, el barbero no entra en la fila. */
+  walkInGuardMin: number;
 }
 
 export async function locationRules(db: Db, locationId: bigint): Promise<LocationRules> {
@@ -81,6 +84,7 @@ export async function locationRules(db: Db, locationId: bigint): Promise<Locatio
       holdMin: locations.holdMin,
       freeCancelHours: locations.freeCancelHours,
       noShowGraceMin: locations.noShowGraceMin,
+      walkInGuardMin: locations.walkInGuardMin,
     })
     .from(locations)
     .where(eq(locations.id, locationId));
@@ -283,7 +287,7 @@ export async function availability(
 export interface CreateAppointmentInput {
   locationId: bigint;
   serviceId: bigint;
-  /** "any" = Cualquiera: el barbero libre con menos carga ese día. */
+  /** "any" = Cualquiera: el barbero libre con menos carga ese día (walk-in: el primero de la fila). */
   staffId: bigint | "any";
   start: Date;
   clientId: bigint | null;
@@ -300,6 +304,12 @@ export interface CreateAppointmentInput {
    * inicio se calcula en el servidor y cambia entre reintentos.
    */
   requestHash?: string;
+  /**
+   * Orden de "Cualquiera" calculado DENTRO de la transacción (walk-in: la fila por tiempo libre).
+   * Si dos recepcionistas empiezan a la vez, la segunda choca con la restricción EXCLUDE y pasa al
+   * siguiente de la fila.
+   */
+  anyOrder?: (tx: Db) => Promise<bigint[]>;
 }
 
 /**
@@ -370,7 +380,11 @@ export async function createAppointment(db: Db, input: CreateAppointmentInput): 
       }
     }
     let order = inHours.map((s) => s.staffId);
-    if (input.staffId === "any") {
+    if (input.staffId === "any" && input.anyOrder) {
+      const eligible = new Set(order);
+      order = (await input.anyOrder(tx)).filter((id) => eligible.has(id));
+      if (order.length === 0) throw new SlotTakenError("Nadie está libre ahora");
+    } else if (input.staffId === "any") {
       if (order.length === 0) throw new SlotTakenError("Ningún barbero está libre en ese horario");
       const booked = await bookedMinutes(tx, input.locationId, businessDate(input.start, rules.timeZone), rules.timeZone);
       const first = pickStaffForAny(order, booked);
@@ -491,7 +505,64 @@ async function bookedMinutes(db: Db, locationId: bigint, date: string, timeZone:
   return new Map(rows.map((r) => [r.staffId, Number(r.minutes)]));
 }
 
-/** Walk-in: empieza ahora. Si el barbero pedido está ocupado, dice a qué hora se libera. */
+export interface WalkInQueueRow {
+  staffId: bigint;
+  displayName: string;
+  entry: QueueEntry;
+}
+
+/**
+ * La fila del walk-in para un servicio (src/domain/booking/walk-in-queue.ts): libres por tiempo
+ * libre, luego ocupados por la hora en que se liberan, y los que no pueden con el motivo.
+ */
+export async function walkInQueueFor(db: Db, input: { locationId: bigint; serviceId: bigint; now: Date }): Promise<WalkInQueueRow[]> {
+  const rules = await locationRules(db, input.locationId);
+  const svc = await activeService(db, input.locationId, input.serviceId);
+  const staff = await activeStaff(db, input.locationId);
+  const offering = new Set((await activeStaff(db, input.locationId, undefined, false, svc.id)).map((s) => s.staffId));
+  const today = businessDate(input.now, rules.timeZone);
+  const from = localMinuteToInstant(today, 0, rules.timeZone);
+  const to = localMinuteToInstant(addDays(today, 1), 0, rules.timeZone);
+  const appts = await db
+    .select({ staffId: appointments.staffId, status: appointments.status, during: appointments.during, expiresAt: appointments.expiresAt })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.locationId, input.locationId),
+        inArray(appointments.status, [...ACTIVE_STATUSES]),
+        // Lo de hoy, más una cita en silla que empezó ayer y sigue sin terminar.
+        sql`${appointments.during} && ${range(new Date(from.getTime() - 24 * 60 * MINUTE_MS), to)}`,
+      ),
+    );
+  const off = await db
+    .select({ staffId: timeOff.staffId, during: timeOff.during })
+    .from(timeOff)
+    .where(and(eq(timeOff.locationId, input.locationId), isNull(timeOff.cancelledAt), sql`${timeOff.during} && ${range(from, to)}`));
+  const entries = walkInQueue({
+    now: input.now,
+    timeZone: rules.timeZone,
+    durationMin: svc.durationMin,
+    bufferMin: svc.bufferMin,
+    guardMin: rules.walkInGuardMin,
+    staff: staff.map((s) => ({ staffId: s.staffId, offersService: offering.has(s.staffId), blocks: s.blocks })),
+    appointments: appts.map((a) => ({
+      staffId: a.staffId,
+      status: a.status as AppointmentStatus,
+      start: a.during.start,
+      end: a.during.end,
+      expiresAt: a.expiresAt,
+    })),
+    timeOff: off.map((t) => ({ staffId: t.staffId, start: t.during.start, end: t.during.end })),
+  });
+  const names = new Map(staff.map((s) => [s.staffId, s.displayName]));
+  return entries.map((entry) => ({ staffId: entry.staffId, displayName: names.get(entry.staffId) ?? "", entry }));
+}
+
+/**
+ * Walk-in: empieza ahora. "Cualquiera" toma al primero de la fila (el que lleva más tiempo libre;
+ * ver walkInQueueFor). Con un barbero elegido, basta que su silla esté libre: la regla de los 60
+ * minutos es para repartir, no un bloqueo. Si nadie puede, dice quién se libera primero.
+ */
 export async function walkIn(
   db: Db,
   input: {
@@ -524,10 +595,30 @@ export async function walkIn(
   if (existing) return replayOf(existing, hash);
   const rules = await locationRules(db, input.locationId);
   const svc = await activeService(db, input.locationId, input.serviceId);
-  const staff = await activeStaff(db, input.locationId, input.staffId === "any" ? undefined : [input.staffId], false, svc.id);
-  if (input.staffId !== "any" && staff.length === 0) {
-    throw new BookingError(await notOfferedMessage(db, input.locationId, input.staffId, false, svc.name));
+  const timeLabel = (at: Date) => formatTime(localMinuteOf(at, rules.timeZone));
+
+  if (input.staffId === "any") {
+    const rows = await walkInQueueFor(db, { locationId: input.locationId, serviceId: svc.id, now });
+    if (!rows.some((r) => r.entry.kind === "free")) {
+      const next = rows.find((r) => r.entry.kind === "busy");
+      throw new SlotTakenError(
+        next && next.entry.kind === "busy" ? `Nadie está libre ahora. ${next.displayName} se libera a las ${timeLabel(next.entry.freeAt)}` : "Nadie está libre ahora",
+      );
+    }
+    return createAppointment(db, {
+      ...input,
+      staffId: "any",
+      start: planWalkIn({ now, durationMin: svc.durationMin, bufferMin: svc.bufferMin, staffIds: [], busy: [] }).start,
+      source: "walk_in",
+      now,
+      requestHash: hash,
+      anyOrder: async (tx) =>
+        (await walkInQueueFor(tx, { locationId: input.locationId, serviceId: svc.id, now })).filter((r) => r.entry.kind === "free").map((r) => r.staffId),
+    });
   }
+
+  const staff = await activeStaff(db, input.locationId, [input.staffId], false, svc.id);
+  if (staff.length === 0) throw new BookingError(await notOfferedMessage(db, input.locationId, input.staffId, false, svc.name));
   const plan = planWalkIn({
     now,
     durationMin: svc.durationMin,
@@ -542,21 +633,9 @@ export async function walkIn(
   });
   if (plan.freeNow.length === 0) {
     const next = plan.nextFree[0];
-    const who = staff.find((s) => s.staffId === next?.staffId)?.displayName;
-    throw new SlotTakenError(
-      next && who
-        ? `${input.staffId === "any" ? "Nadie está libre ahora. " : ""}${who} se libera a las ${formatTime(localMinuteOf(next.at, rules.timeZone))}`
-        : "Nadie está libre ahora",
-    );
+    throw new SlotTakenError(next ? `${staff[0]!.displayName} se libera a las ${timeLabel(next.at)}` : "Nadie está libre ahora");
   }
-  return createAppointment(db, {
-    ...input,
-    staffId: input.staffId === "any" ? "any" : input.staffId,
-    start: plan.start,
-    source: "walk_in",
-    now,
-    requestHash: hash,
-  });
+  return createAppointment(db, { ...input, start: plan.start, source: "walk_in", now, requestHash: hash });
 }
 
 // ─── Cambios de estado y reprogramación ──────────────────────────────────────

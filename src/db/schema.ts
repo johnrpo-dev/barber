@@ -44,6 +44,10 @@ export const locations = pgTable("locations", {
   holdMin: integer("hold_min").notNull().default(10),
   freeCancelHours: integer("free_cancel_hours").notNull().default(3),
   noShowGraceMin: integer("no_show_grace_min").notNull().default(10),
+  /** Walk-in (sprint 7): el barbero con una cita que empieza en menos de estos minutos no recibe walk-ins. */
+  walkInGuardMin: integer("walk_in_guard_min").notNull().default(60),
+  /** Faltas ("No vino") con las que se suspende la reserva en línea del cliente (sprint 7). */
+  noShowLimit: integer("no_show_limit").notNull().default(2),
   // Reserva pública (sprint 3). Apagada hasta que el dueño la active.
   publicBookingEnabled: boolean("public_booking_enabled").notNull().default(false),
   publicPhone: text("public_phone"),
@@ -73,6 +77,8 @@ export const locations = pgTable("locations", {
   createdAt: createdAt(),
 }, (t) => [
   check("locations_commission_base_check", sql`${t.commissionBase} in ('net','gross')`),
+  check("locations_walk_in_guard_check", sql`${t.walkInGuardMin} between 0 and 240`),
+  check("locations_no_show_limit_check", sql`${t.noShowLimit} between 1 and 10`),
   check("locations_max_discount_bps_check", sql`${t.maxDiscountBps} between 0 and 10000`),
   check("locations_tax_id_check", sql`${t.taxId} is null or (length(${t.taxId}) between 1 and 30)`),
   check("locations_receipt_footer_check", sql`${t.receiptFooter} is null or (length(${t.receiptFooter}) between 1 and 200)`),
@@ -386,6 +392,11 @@ export const clients = pgTable(
     email: text("email"),
     /** Primera vez que demostró ser dueño del celular (código correcto). */
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    /**
+     * Desde cuándo vuelven a contar sus faltas: recepción o el dueño le quitaron la suspensión de
+     * la reserva en línea (sprint 7). Las faltas anteriores ya no cuentan.
+     */
+    noShowsClearedAt: timestamp("no_shows_cleared_at", { withTimezone: true }),
     anonymizedAt: timestamp("anonymized_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

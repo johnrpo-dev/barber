@@ -11,6 +11,7 @@ import {
   locationRules,
   rescheduleAppointment,
   walkIn,
+  walkInQueueFor,
 } from "@/db/appointments";
 import { db } from "@/db/client";
 import { findOrCreateClient, searchClients } from "@/db/clients";
@@ -202,6 +203,46 @@ export async function bookAppointment(
   });
   if (result.ok) refresh();
   return result;
+}
+
+export interface WalkInQueueOption {
+  staffId: string;
+  name: string;
+  /** free: puede empezar ya (el primero es a quien le toca); busy: se libera más tarde; excluded: no puede. */
+  kind: "free" | "busy" | "excluded";
+  /** Solo en excluded: por qué no entra (booking_soon se puede pasar por alto eligiéndolo a mano). */
+  reason: string | null;
+  detail: string;
+}
+
+/** La fila del walk-in (quién le toca al cliente sin cita) para un servicio, calculada ahora. */
+export async function loadWalkInQueue(raw: { serviceId: string }): Promise<ActionResult<WalkInQueueOption[]>> {
+  const staff = await requirePermission("appointments.manage.all");
+  return runAction(async () => {
+    const input = z.object({ serviceId: idSchema }).parse(raw);
+    const rules = await locationRules(database(), staff.locationId);
+    const at = (d: Date) => formatTime(localMinuteOf(d, rules.timeZone));
+    const rows = await walkInQueueFor(database(), { locationId: staff.locationId, serviceId: input.serviceId, now: new Date() });
+    return rows.map(({ staffId, displayName, entry }) => {
+      let detail: string;
+      if (entry.kind === "free") detail = `Libre desde las ${at(entry.freeSince)}`;
+      else if (entry.kind === "busy") detail = `Se libera a las ${at(entry.freeAt)}`;
+      else {
+        const r = entry.reason;
+        detail =
+          r.code === "not_offered"
+            ? "No hace este servicio"
+            : r.code === "off_shift"
+              ? "No le alcanza el turno"
+              : r.code === "booking_soon"
+                ? `Tiene cita a las ${at(r.at)}`
+                : r.code === "overdue_in_chair"
+                  ? "En la silla sin marcar Terminar"
+                  : `Ausente hasta las ${at(r.until)}`;
+      }
+      return { staffId: String(staffId), name: displayName, kind: entry.kind, reason: entry.kind === "excluded" ? entry.reason.code : null, detail };
+    });
+  });
 }
 
 const walkInInput = z.object({

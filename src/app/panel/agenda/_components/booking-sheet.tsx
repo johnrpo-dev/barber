@@ -1,11 +1,11 @@
 "use client";
 
 import { Check, ChevronLeft, Clock, Scissors, UserRound, Users, Zap } from "lucide-react";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
 import { parseTime, formatTime } from "@/domain/staff/schedule";
 import { Btn, cx, field, Sheet, useToast } from "../../_components/ui";
-import { bookAppointment, startWalkIn } from "../actions";
+import { bookAppointment, loadWalkInQueue, startWalkIn, type WalkInQueueOption } from "../actions";
 import type { AgendaColumnView, ServiceOption } from "../data";
 import { type ClientChoice, ClientPicker, clientIsReady, toActionClient } from "./client-picker";
 import { longDate, relativeDate, SlotPicker } from "./slot-picker";
@@ -121,12 +121,24 @@ function StaffChoice({
   columns,
   value,
   onChange,
+  queue,
 }: {
   columns: AgendaColumnView[];
   value: string;
   onChange: (id: string) => void;
+  /** Walk-in: la fila por tiempo libre. Ordena a los barberos y dice por qué cada uno puede o no. */
+  queue?: WalkInQueueOption[] | null;
 }) {
-  const options = [{ id: "any", name: "Cualquiera", hint: "El que esté libre" }, ...columns.map((c) => ({ id: c.staffId, name: c.displayName, hint: "" }))];
+  const position = new Map((queue ?? []).map((q, i) => [q.staffId, i]));
+  const staffOptions = columns
+    .map((c) => {
+      const q = queue?.find((x) => x.staffId === c.staffId);
+      return { id: c.staffId, name: c.displayName, hint: q?.detail ?? "", muted: q ? q.kind !== "free" : false };
+    })
+    .sort((a, b) => (position.get(a.id) ?? Infinity) - (position.get(b.id) ?? Infinity));
+  const first = queue?.find((q) => q.kind === "free");
+  const anyHint = !queue ? "El que esté libre" : first ? `Le toca a ${first.name}` : "Nadie está libre ahora";
+  const options = [{ id: "any", name: "Cualquiera", hint: anyHint, muted: false }, ...staffOptions];
   return (
     <RadioGroup aria-label="Barbero" value={value} onChange={onChange} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
       {options.map((o) => (
@@ -151,7 +163,7 @@ function StaffChoice({
             {o.id === "any" ? <Users size={18} /> : initials(o.name)}
           </span>
           <span className="min-w-0">
-            <span className="block truncate font-semibold">{o.name}</span>
+            <span className={cx("block truncate font-semibold", o.muted && "text-tinta/70")}>{o.name}</span>
             {o.hint ? <span className="block text-xs text-tinta/70">{o.hint}</span> : null}
           </span>
         </Radio>
@@ -429,6 +441,21 @@ function WalkInForm({
   const [client, setClient] = useState<ClientChoice>({ kind: "none", name: "" });
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  // La fila del walk-in (regla del dueño: le toca al que lleva más tiempo libre). Se pide de nuevo
+  // al cambiar el servicio y después de un intento fallido; el servidor la recalcula al empezar.
+  const [queue, setQueue] = useState<{ serviceId: string; rows: WalkInQueueOption[] } | null>(null);
+  const [queueTick, setQueueTick] = useState(0);
+  useEffect(() => {
+    if (!serviceId) return;
+    let live = true;
+    void loadWalkInQueue({ serviceId }).then((r) => {
+      if (live && r.ok) setQueue({ serviceId, rows: r.data });
+    });
+    return () => {
+      live = false;
+    };
+  }, [serviceId, queueTick]);
+  const rows = queue && queue.serviceId === serviceId ? queue.rows : null;
 
   function submit() {
     if (!serviceId) return;
@@ -443,6 +470,7 @@ function WalkInForm({
         // Nadie libre: el mensaje dice a qué hora se libera. El servidor reconoce un reintento
         // con la misma clave, así que solo se renueva cuando cambia lo que se pide.
         setBusyMessage(r.error);
+        setQueueTick((t) => t + 1);
       }
     });
   }
@@ -471,7 +499,11 @@ function WalkInForm({
             setStaffId(id);
             setKey(newKey());
           }}
+          queue={rows}
         />
+        {staffId !== "any" && rows?.find((q) => q.staffId === staffId)?.reason === "booking_soon" ? (
+          <p className="text-xs text-tinta/70">Puedes elegirlo igual si el servicio alcanza antes de su cita: la regla de los 60 minutos es para repartir, no un bloqueo.</p>
+        ) : null}
       </section>
       <ClientPicker value={client} onChange={setClient} optional />
       {busyMessage ? (

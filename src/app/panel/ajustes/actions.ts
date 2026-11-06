@@ -58,6 +58,8 @@ const settingsSchema = z.object({
   freeCancelHours: minutes(0, 72, "Las horas para cancelar sin penalidad"),
   noShowGraceMin: minutes(0, 60, "La tolerancia de llegada"),
   maxActivePerClient: minutes(1, 10, "Las citas activas por cliente"),
+  walkInGuardMin: minutes(0, 240, "Los minutos libres antes de una cita para tomar un walk-in"),
+  noShowLimit: minutes(1, 10, "Las faltas para suspender la reserva"),
   // Recibo impreso (no es factura electrónica).
   taxId: optionalText(30, "El NIT o la cédula").refine(
     (v) => v === null || /^[0-9][0-9.\- ]*$/.test(v),
