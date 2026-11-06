@@ -99,8 +99,18 @@ export interface SalesDayView {
   today: string;
   /** Si quien mira puede ver otros días (el dueño). */
   canPickDay: boolean;
-  sales: { publicId: string; numberLabel: string; timeLabel: string; voided: boolean; totalLabel: string; services: string; staff: string }[];
-  /** Cuántas ventas del día siguen pagadas (las anuladas se listan aparte con su sello). */
+  sales: {
+    publicId: string;
+    numberLabel: string;
+    timeLabel: string;
+    voided: boolean;
+    /** Día de la anulación si fue otro día (la reversa va ese día, no en este): "YYYY-MM-DD". */
+    voidedLaterOn: string | null;
+    totalLabel: string;
+    services: string;
+    staff: string;
+  }[];
+  /** Ventas del día que no se anularon ese mismo día (la misma regla del historial). */
   paidCount: number;
 }
 
@@ -121,6 +131,7 @@ export async function loadSalesOfDay(raw: z.input<typeof dayInput>): Promise<Act
       numberLabel: saleNumber(s.publicId),
       timeLabel: timeLabel(s.createdAt, day.timeZone),
       voided: s.status === "voided",
+      voidedLaterOn: s.voidedOn && s.voidedOn !== businessDate ? s.voidedOn : null,
       totalLabel: moneyLabel(s.totalPaid),
       services: s.services.join(", "),
       staff: s.staffNames.join(", "),

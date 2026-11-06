@@ -1,6 +1,8 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { and, eq } from "drizzle-orm";
+import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { addDays, localMinuteToInstant } from "@/domain/booking/clock";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
 import { businessDate } from "@/domain/ledger/business-date";
 import { fromUnits } from "@/domain/money";
@@ -10,13 +12,17 @@ import { cashDeposit, closeBusinessDay, closeCashSession, ledgerCash, openCashSe
 import { postEntry, reverseEntry, trialBalance } from "./ledger";
 import { chairAppointment, key, quickSale, type Shop, setupShop, simpleCheckout, TZ } from "./sales-testing";
 import { checkout } from "./sales";
-import { cashMovements, journalEntries, sales, voidRequests } from "./schema";
+import { cashMovements, journalEntries, paymentMethods, sales, voidRequests } from "./schema";
 import { createTestDb, dbError } from "./testing";
 import type { Db } from "./types";
 import { decideVoid, requestVoid, voidQueue } from "./voids";
+import { salesByDay } from "./history";
+import { isDayClosed } from "./ledger";
+import { cardFees, paymentMix, salesByService, salesByStaff, tipsByStaff } from "./reports";
+import { paidSalesCount, salesOfDay } from "./receipts";
 
 // Anulaciones sobre PostgreSQL real (PGlite): la aprobación es la reversa exacta del asiento,
-// en el día contable de la venta, y deja la cita lista para cobrarse de nuevo (§6 y §8).
+// en el día contable de HOY (decisión del dueño), y deja la cita lista para cobrarse de nuevo (§6 y §8).
 
 let db: Db;
 let client: PGlite;
@@ -158,7 +164,7 @@ describe("aprobar una anulación", () => {
     expect(await ledgerCash(db, shop.locationId)).toBe(0n);
   });
 
-  it("anula una venta de un día anterior: la reversa va en el día de la venta, con su efectivo en el turno de hoy", async () => {
+  it("anula una venta de un día anterior: la reversa va hoy, con su efectivo en el turno de hoy", async () => {
     const shop = await newShop();
     const yesterday = new Date(Date.now() - 86_400_000);
     const ayer = businessDate(yesterday, TZ);
@@ -170,7 +176,7 @@ describe("aprobar una anulación", () => {
     await decide(shop, requestId, true);
     const [voided] = await db.select().from(sales).where(eq(sales.id, saleId));
     const [entry] = await db.select().from(journalEntries).where(eq(journalEntries.id, voided!.voidEntryId!));
-    expect(entry!.businessDate).toBe(ayer);
+    expect(entry!.businessDate).toBe(businessDate(new Date(), TZ));
     expect(await ledgerCash(db, shop.locationId)).toBe(0n);
     const summary = await sessionSummary(db, shop.locationId);
     expect(summary!.byKind.get("reversal")).toBe(-3_000_000n);
@@ -191,13 +197,13 @@ describe("aprobar una anulación", () => {
     expect((await balances(shop))["2380"]).toBe(500_000n);
   });
 
-  it("si el día de la venta está cerrado, pide reabrirlo; reabierto, se aprueba en ese mismo día", async () => {
+  it("con el día de hoy cerrado no se aprueba (la reversa va hoy); reabierto, sí", async () => {
     const shop = await newShop();
     const { saleId } = await quickSale(db, shop, { kind: "card" });
     const day = businessDate(new Date(), TZ);
     await closeBusinessDay(db, { locationId: shop.locationId, businessDate: day, actor: shop.owner });
     const { requestId } = await ask(shop, saleId);
-    await expect(decide(shop, requestId, true)).rejects.toThrow(`El día ${day} de esta venta ya está cerrado. Reábrelo primero y vuelve a aprobar la anulación.`);
+    await expect(decide(shop, requestId, true)).rejects.toThrow(/^El día ya está cerrado/);
     expect((await db.select().from(sales).where(eq(sales.id, saleId)))[0]!.status).toBe("paid");
     await reopenBusinessDay(db, { locationId: shop.locationId, businessDate: day, reason: "Anulación pendiente", actor: shop.owner });
     await expect(decide(shop, requestId, true)).resolves.toMatchObject({ status: "approved" });
@@ -265,4 +271,144 @@ describe("solicitudes y decisiones", () => {
     const { requestId } = await ask(shop, saleId);
     await expect(decide(other, requestId, true)).rejects.toThrow(/^La solicitud no existe/);
   });
+});
+
+// La anulación de una venta de otro día va HOY: el día de la venta queda como se cerró, el efectivo
+// sale de la caja de hoy y los informes cuentan la anulación el día en que se hizo.
+
+const todayDate = () => businessDate(new Date(), TZ);
+const yesterdayDate = () => addDays(todayDate(), -1);
+const yesterdayEvening = () => localMinuteToInstant(yesterdayDate(), 18 * 60, TZ);
+
+async function reversalDay(saleId: bigint) {
+  const [row] = await db
+    .select({ day: journalEntries.businessDate })
+    .from(sales)
+    .innerJoin(journalEntries, and(eq(journalEntries.locationId, sales.locationId), eq(journalEntries.id, sales.voidEntryId)))
+    .where(eq(sales.id, saleId));
+  return row?.day;
+}
+
+/** Neto de una cuenta en el rango, según el libro. */
+async function ledgerNet(shop: Shop, code: string, from: string, to: string) {
+  const rows = await trialBalance(db, { locationId: shop.locationId, from, to });
+  const row = rows.find((r) => r.code === code);
+  return row ? row.credits - row.debits : 0n;
+}
+
+/** Abre la caja "ayer a las 9" (la hora la pone la base; el test la mueve con los triggers apagados). */
+async function openYesterday(shop: Shop) {
+  const opened = await openCashSession(db, { locationId: shop.locationId, counted: cop(0n), idempotencyKey: key("open"), actor: shop.owner, now: yesterdayEvening() });
+  const at = localMinuteToInstant(yesterdayDate(), 9 * 60, TZ).toISOString();
+  await client.exec(`
+    set session_replication_role = replica;
+    update cash_sessions set opened_at = '${at}' where id = ${opened.sessionId};
+    set session_replication_role = origin;
+  `);
+}
+
+describe("anular una venta de otro día", () => {
+  it("de un día ya cerrado en efectivo: se aprueba sin reabrirlo, la reversa va hoy y el efectivo sale de la caja de hoy", async () => {
+    const shop = await newShop();
+    await openYesterday(shop);
+    const { saleId } = await quickSale(db, shop, { kind: "cash", now: yesterdayEvening() });
+    await closeCashSession(db, { locationId: shop.locationId, counted: cop(30_000n), idempotencyKey: key("close"), actor: shop.owner });
+    await closeBusinessDay(db, { locationId: shop.locationId, businessDate: yesterdayDate(), actor: shop.owner });
+    const yesterdayBefore = await salesByDay(db, { locationId: shop.locationId, from: yesterdayDate(), to: yesterdayDate() });
+
+    // Sin la caja de hoy abierta no se devuelve el efectivo.
+    const { requestId } = await ask(shop, saleId);
+    await expect(decide(shop, requestId, true)).rejects.toThrow(/^Abre la caja para devolver el efectivo/);
+    await openCashSession(db, { locationId: shop.locationId, counted: cop(30_000n), idempotencyKey: key("open"), actor: shop.owner });
+    await expect(decide(shop, requestId, true)).resolves.toMatchObject({ status: "approved" });
+
+    expect(await reversalDay(saleId)).toBe(todayDate());
+    expect(await isDayClosed(db, shop.locationId, yesterdayDate())).toBe(true);
+    expect(await ledgerCash(db, shop.locationId)).toBe(0n);
+    const summary = await sessionSummary(db, shop.locationId);
+    expect(summary!.byKind.get("reversal")).toBe(-cop(30_000n).minor);
+    expect(summary!.unexplained).toBe(0n);
+
+    // Ayer queda igual en el historial; hoy muestra la anulación en negativo; el periodo suma cero.
+    const day = (from: string, to: string) => salesByDay(db, { locationId: shop.locationId, from, to });
+    expect(await day(yesterdayDate(), yesterdayDate())).toEqual(yesterdayBefore);
+    expect((await day(todayDate(), todayDate())).total).toMatchObject({ paid: 0, voided: 1, total: -cop(30_000n).minor, cash: -cop(30_000n).minor });
+    expect((await day(yesterdayDate(), todayDate())).total).toMatchObject({ paid: 1, voided: 1, total: 0n, cash: 0n });
+
+    // La lista de ventas de ayer la marca con el día de la anulación.
+    const list = await salesOfDay(db, { locationId: shop.locationId, businessDate: yesterdayDate() });
+    expect(list).toMatchObject([{ status: "voided", voidedOn: todayDate() }]);
+    expect(await paidSalesCount(db, { locationId: shop.locationId, businessDate: yesterdayDate() })).toBe(1);
+  });
+
+  it("los informes de ventas cuentan la anulación el día en que se hizo", async () => {
+    const shop = await newShop();
+    await quickSale(db, shop, { kind: "card", now: yesterdayEvening() });
+    const { saleId } = await quickSale(db, shop, { kind: "card", tip: 2_000n, now: yesterdayEvening() });
+    const { requestId } = await ask(shop, saleId);
+    await decide(shop, requestId, true);
+    const q = (from: string, to: string) => ({ locationId: shop.locationId, from, to });
+    const net = (rows: { net: bigint }[]) => rows.reduce((a, r) => a + r.net, 0n);
+
+    expect(await salesByStaff(db, q(yesterdayDate(), yesterdayDate()))).toMatchObject([{ services: 2, net: cop(60_000n).minor, tips: cop(2_000n).minor }]);
+    expect(await salesByStaff(db, q(todayDate(), todayDate()))).toMatchObject([{ services: -1, net: -cop(30_000n).minor, tips: -cop(2_000n).minor }]);
+    expect(await salesByService(db, q(yesterdayDate(), todayDate()))).toMatchObject([{ services: 1, net: cop(30_000n).minor }]);
+    expect(await paymentMix(db, q(todayDate(), todayDate()))).toMatchObject([{ payments: -1, amount: -cop(32_000n).minor }]);
+    for (const [from, to] of [[yesterdayDate(), yesterdayDate()], [todayDate(), todayDate()], [yesterdayDate(), todayDate()]] as const) {
+      expect(net(await salesByStaff(db, q(from, to)))).toBe(await ledgerNet(shop, ACCOUNTS.serviceIncome.code, from, to));
+    }
+  });
+});
+
+describe("propiedad: los informes de ventas suman lo mismo que el libro en cualquier rango", () => {
+  it("para cualquier mezcla de ventas de ayer y de hoy, anuladas hoy o no, con ayer cerrado o abierto", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(fc.record({ yesterday: fc.boolean(), tip: fc.bigInt({ min: 0n, max: 5_000n }), voided: fc.boolean() }), { minLength: 1, maxLength: 4 }),
+        fc.boolean(),
+        fc.integer({ min: 0, max: 500 }),
+        async (plan, closeYesterday, feeBps) => {
+          const shop = await newShop();
+          // Con costo de datáfono: la reversa también lo devuelve (5305) y el informe lo resta ese día.
+          await db.update(paymentMethods).set({ feeBps }).where(eq(paymentMethods.id, shop.methods.card));
+          const made: { saleId: bigint; voided: boolean }[] = [];
+          for (const p of plan) {
+            const { saleId } = await quickSale(db, shop, { kind: "card", tip: p.tip, now: p.yesterday ? yesterdayEvening() : undefined });
+            made.push({ saleId, voided: p.voided });
+          }
+          if (closeYesterday) await closeBusinessDay(db, { locationId: shop.locationId, businessDate: yesterdayDate(), actor: shop.owner });
+          for (const m of made.filter((x) => x.voided)) {
+            const { requestId } = await ask(shop, m.saleId);
+            await decide(shop, requestId, true);
+            expect(await reversalDay(m.saleId)).toBe(todayDate());
+          }
+          for (const [from, to] of [[yesterdayDate(), yesterdayDate()], [todayDate(), todayDate()], [yesterdayDate(), todayDate()]] as const) {
+            const q = { locationId: shop.locationId, from, to };
+            const byStaff = await salesByStaff(db, q);
+            const byService = await salesByService(db, q);
+            const sum = (rows: { net: bigint }[]) => rows.reduce((a, r) => a + r.net, 0n);
+            const income = await ledgerNet(shop, ACCOUNTS.serviceIncome.code, from, to);
+            expect(sum(byStaff)).toBe(income);
+            expect(sum(byService)).toBe(income);
+            const payments = await paymentMix(db, q);
+            const days = await salesByDay(db, q);
+            const paid = payments.reduce((a, p) => a + p.amount, 0n);
+            expect(days.total.total).toBe(paid);
+            expect(days.total.other).toBe(paid);
+            expect(byStaff.reduce((a, r) => a + r.tips, 0n)).toBe(days.total.tips);
+            const fees = await cardFees(db, q);
+            expect(fees.byMethod.reduce((a, p) => a + p.fees, 0n) - fees.absorbedByTips).toBe(fees.ledgerTotal);
+            expect(payments.reduce((a, p) => a + p.fees, 0n)).toBe(fees.byMethod.reduce((a, p) => a + p.fees, 0n));
+            const tips = await tipsByStaff(db, q);
+            expect(tips.reduce((a, t) => a + t.tips, 0n)).toBe(days.total.tips);
+            expect(tips.reduce((a, t) => a + t.payable, 0n)).toBe(await ledgerNet(shop, "2380", from, to));
+            expect(byStaff.reduce((a, r) => a + r.commission, 0n)).toBe(byService.reduce((a, r) => a + r.commission, 0n));
+          }
+          // Ayer cerrado sigue cerrado: anular no lo reabre.
+          expect(await isDayClosed(db, shop.locationId, yesterdayDate())).toBe(closeYesterday);
+        },
+      ),
+      { numRuns: 10 },
+    );
+  }, 180_000);
 });

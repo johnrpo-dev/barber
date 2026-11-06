@@ -126,6 +126,8 @@ export interface SaleListRow {
   publicId: string;
   createdAt: Date;
   status: "paid" | "voided";
+  /** Día contable de la anulación (la reversa va el día en que se aprueba), o null si sigue vigente. */
+  voidedOn: string | null;
   totalPaid: bigint;
   /** Descripciones de las líneas en orden ("Corte", "Barba"). */
   services: string[];
@@ -133,19 +135,37 @@ export interface SaleListRow {
   staffNames: string[];
 }
 
-/** Cuántas ventas pagadas tiene el día (en SQL: la lista se corta en 200, el conteo no). */
+/**
+ * Cuántas ventas tiene el día (en SQL: la lista se corta en 200, el conteo no), con la regla del
+ * historial (salesByDay.paid): las cobradas ese día que no se anularon ese mismo día. Una venta
+ * anulada después sigue contando en su día; la anulación cuenta el día en que se aprobó.
+ */
 export async function paidSalesCount(db: Db, input: { locationId: bigint; businessDate: string }): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(sales)
-    .where(and(eq(sales.locationId, input.locationId), eq(sales.businessDate, input.businessDate), eq(sales.status, "paid")));
+    .where(
+      and(
+        eq(sales.locationId, input.locationId),
+        eq(sales.businessDate, input.businessDate),
+        sql`not exists (select 1 from journal_entries e
+                         where e.location_id = ${sales.locationId} and e.id = ${sales.voidEntryId} and e.business_date = ${sales.businessDate})`,
+      ),
+    );
   return Number(row?.n ?? 0);
 }
 
 /** Ventas de un día contable de la sede, de la más reciente a la más antigua. */
 export async function salesOfDay(db: Db, input: { locationId: bigint; businessDate: string; limit?: number }): Promise<SaleListRow[]> {
   const rows = await db
-    .select({ id: sales.id, publicId: sales.publicId, createdAt: sales.createdAt, status: sales.status, totalPaid: sales.totalPaid })
+    .select({
+      id: sales.id,
+      publicId: sales.publicId,
+      createdAt: sales.createdAt,
+      status: sales.status,
+      totalPaid: sales.totalPaid,
+      voidedOn: sql<string | null>`(select e.business_date::text from journal_entries e where e.location_id = ${sales.locationId} and e.id = ${sales.voidEntryId})`,
+    })
     .from(sales)
     .where(and(eq(sales.locationId, input.locationId), eq(sales.businessDate, input.businessDate)))
     .orderBy(desc(sales.createdAt), desc(sales.id))
@@ -170,6 +190,7 @@ export async function salesOfDay(db: Db, input: { locationId: bigint; businessDa
     publicId: r.publicId,
     createdAt: r.createdAt,
     status: r.status,
+    voidedOn: r.voidedOn,
     totalPaid: r.totalPaid,
     services: bySale.get(r.id)?.services ?? [],
     staffNames: bySale.get(r.id)?.staffNames ?? [],

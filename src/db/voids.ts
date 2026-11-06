@@ -6,8 +6,8 @@ import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { assertCanApproveVoid, requireReason, VoidError } from "@/domain/sales/void";
 import type { Role } from "@/domain/staff/roles";
 import { recordAudit } from "./audit";
-import { ledgerCash, requireOpenSession, tipsOwed } from "./cash";
-import { isDayClosed, reverseEntry } from "./ledger";
+import { databaseNow, ledgerCash, requireOpenDay, requireOpenSession, tipsOwed } from "./cash";
+import { reverseEntry } from "./ledger";
 import {
   cashMovements,
   commissionSettlementLines,
@@ -25,8 +25,9 @@ import type { Db } from "./types";
 
 // Anulaciones (docs/sprint-4-cobro-caja.md §3 y §6). Recepción solicita (ledger.post); el dueño
 // aprueba o rechaza (ledger.reverse + reautenticación, en la acción). Aprobar registra la reversa
-// exacta del asiento de la venta en su mismo día contable y marca la venta anulada, en una sola
-// transacción SERIALIZABLE.
+// exacta del asiento de la venta en el día contable de HOY (decisión del dueño, 2026-11-05: es cuando
+// sale la plata; el día de la venta queda como se cerró) y marca la venta anulada, en una sola
+// transacción SERIALIZABLE. Los informes de ventas cuentan la anulación en su día (saleEffects).
 
 export async function requestVoid(
   db: Db,
@@ -222,10 +223,10 @@ export async function decideVoid(
     if (!sale) throw new VoidError("La venta no existe");
     if (sale.status !== "paid") throw new VoidError("Esta venta ya está anulada");
     assertCanApproveVoid({ approverUserId: input.approver.userId, approverRole: input.approver.role, chargedBy: sale.createdBy });
-    // La reversa va en el mismo día contable de la venta [alternativa a confirmar: el día actual].
-    if (await isDayClosed(tx, input.locationId, sale.businessDate)) {
-      throw new VoidError(`El día ${sale.businessDate} de esta venta ya está cerrado. Reábrelo primero y vuelve a aprobar la anulación.`);
-    }
+    // La reversa va en el día contable de hoy, con el reloj de la base (el mismo de la caja): la
+    // venta de un día ya cerrado se anula sin reabrirlo, y el efectivo sale de la caja de hoy.
+    const now = input.now ?? (await databaseNow(tx));
+    const voidDay = await requireOpenDay(tx, input.locationId, now, (msg) => new VoidError(msg));
 
     const [cash] = await tx
       .select({ total: sumAsBigint(salePayments.amount) })
@@ -237,7 +238,7 @@ export async function decideVoid(
     // devolución bajaba 1105 por debajo de cero y la apertura siguiente inventaba un sobrante en 5310
     // (C1). La base también lo exige al hacer COMMIT (0011: 1105 >= 0).
     const session =
-      cashInSale > 0n ? await requireOpenSession(tx, input.locationId, "Abre la caja para devolver el efectivo de esta venta", input.now) : undefined;
+      cashInSale > 0n ? await requireOpenSession(tx, input.locationId, "Abre la caja para devolver el efectivo de esta venta", now) : undefined;
     if (session && cashInSale > (await ledgerCash(tx, input.locationId))) {
       throw new VoidError(
         `En la caja no hay ${format(money(cashInSale))} para devolver esta venta en efectivo. La devolución sale de la caja: espera a tener ese efectivo en el turno.`,
@@ -247,7 +248,7 @@ export async function decideVoid(
     const reversal = await reverseEntry(tx, {
       locationId: input.locationId,
       entryId: sale.journalEntryId,
-      businessDate: sale.businessDate,
+      businessDate: voidDay,
       // El memo del libro es inmutable: no lleva el motivo, que es texto libre y puede traer datos del
       // cliente. El motivo queda en la solicitud, donde la supresión lo puede borrar.
       reason: `Anulación de la venta ${sale.publicId}`,
@@ -275,7 +276,10 @@ export async function decideVoid(
       action: "void.approve",
       targetKind: "void_request",
       targetRef: req.id.toString(),
-      summary: `Aprobó la anulación de una venta del ${sale.businessDate}`,
+      summary:
+        voidDay === sale.businessDate
+          ? `Aprobó la anulación de una venta del ${sale.businessDate}`
+          : `Aprobó la anulación de una venta del ${sale.businessDate}; la reversa va en el ${voidDay}`,
     });
     const warning = await voidWarning(tx, input.locationId, sale.id);
     return { status: "approved", warning, created: true };

@@ -2,7 +2,7 @@ import { ChevronLeft, ChevronRight, History, Printer } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { addDays } from "@/domain/booking/clock";
-import { dayLong, plural } from "../_components/dates";
+import { dayLong, dayShort, plural } from "../_components/dates";
 import { card, cx } from "../_components/classes";
 import { PageHeader } from "../_components/ui";
 import { FormError } from "../_manage/controls";
@@ -86,7 +86,9 @@ export default async function VentasPage({ searchParams }: { searchParams: Promi
                 </span>
                 <span className="flex shrink-0 flex-col items-end">
                   <span className={cx("monto font-semibold", s.voided && "text-tinta/50 line-through")}>{s.totalLabel}</span>
-                  {s.voided ? <span className="text-xs font-semibold text-alerta">Anulada</span> : null}
+                  {s.voided ? (
+                    <span className="text-xs font-semibold text-alerta">{s.voidedLaterOn ? `Anulada el ${dayShort(s.voidedLaterOn)}` : "Anulada"}</span>
+                  ) : null}
                 </span>
                 <Printer size={18} className="shrink-0 text-tinta/50" aria-label="Ver e imprimir el recibo" />
               </Link>

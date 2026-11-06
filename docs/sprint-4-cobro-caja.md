@@ -144,8 +144,10 @@ Reglas del asiento de venta:
 | Sobrante al cerrar la caja (`cash_adjustment`) | 1105 | 5310 |
 
 - **Apertura de caja.** El efectivo esperado es el saldo de 1105 en el libro. Si la base contada difiere, se registra un `cash_adjustment` con nota obligatoria.
-- **Anulación.** Es `reverseEntry` del asiento de la venta, el mismo día contable si el día está abierto.
-  - Si el día ya se cerró, el dueño reabre el día. **[Alternativa a confirmar:** registrar la reversa en el día actual.]
+- **Anulación.** Es `reverseEntry` del asiento de la venta, en el **día contable de hoy** (decisión del dueño, 2026-11-05).
+  - Es cuando sale la plata: el efectivo se devuelve de la caja de hoy, y el día de la venta queda como se cerró (no hay que reabrirlo). Hoy tiene que estar abierto.
+  - Los informes de ventas (por persona, por servicio, medios de pago, propinas, costo del datáfono, ventas por día) cuentan cada venta el día en que se cobró y la restan el día en que se anuló (`saleEffects` en `src/db/reports.ts`). Así suman lo mismo que el libro en cualquier rango.
+  - La lista de ventas del día marca "Anulada el …" cuando la anulación fue otro día, y el CSV de ventas trae la columna del día de la anulación.
   - La reversa también deshace la comisión causada y la propina por pagar.
   - Si la propina ya se pagó en efectivo, la anulación no la "devuelve": el pago de propinas es otro asiento, y el sistema avisa al dueño.
 
@@ -452,5 +454,4 @@ Las revisiones de cierre del sprint encontraron fallas en la caja y en la base. 
 - si se usa la cuenta 4175 para descuentos o el ingreso va neto;
 - si la comisión se calcula sobre el precio neto o el bruto;
 - el mapeo de las categorías de gasto (hoy todas van a 5195);
-- si la anulación se registra el día de la venta (como ahora) o el día actual;
 - qué medios de pago usan de verdad.

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { ReportQuery } from "./reports";
+import { type ReportQuery, saleEffects } from "./reports";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
 
@@ -23,30 +23,37 @@ export interface SalesDayRow {
 }
 
 /**
- * Una fila por día contable con ventas, más la del total (la última, con businessDate null). Las
- * anuladas se cuentan aparte y no suman en los montos.
+ * Una fila por día contable con ventas o anulaciones, más la del total (la última, con businessDate
+ * null). Cada venta suma el día en que se cobró y resta el día en que se anuló (saleEffects): un día
+ * ya cerrado no cambia cuando después se anula una de sus ventas. `paid`: ventas cobradas ese día que
+ * no se anularon ese mismo día; `voided`: anulaciones hechas ese día (de ventas de ese día o de antes).
  */
 export async function salesByDay(db: Db, q: ReportQuery): Promise<{ days: SalesDayRow[]; total: SalesDayRow }> {
   const rows = rowsOf<{ business_date: string | null; paid: number; voided: number; total: string; tips: string; cash: string; other: string }>(
     await db.execute(sql`
-      select s.business_date::text as business_date,
-             count(*) filter (where s.status = 'paid')::int as paid,
-             count(*) filter (where s.status = 'voided')::int as voided,
-             coalesce(sum(s.total_paid) filter (where s.status = 'paid'), 0)::text as total,
-             coalesce(sum(s.tips) filter (where s.status = 'paid'), 0)::text as tips,
-             coalesce(sum(p.cash) filter (where s.status = 'paid'), 0)::text as cash,
-             coalesce(sum(p.other) filter (where s.status = 'paid'), 0)::text as other
-        from sales s
+      select f.business_date::text as business_date,
+             count(*) filter (where f.sign = 1 and s.void_day is distinct from s.business_date)::int as paid,
+             count(*) filter (where f.sign = -1)::int as voided,
+             coalesce(sum(f.sign * s.total_paid), 0)::text as total,
+             coalesce(sum(f.sign * s.tips), 0)::text as tips,
+             coalesce(sum(f.sign * coalesce(p.cash, 0)), 0)::text as cash,
+             coalesce(sum(f.sign * coalesce(p.other, 0)), 0)::text as other
+        from ${saleEffects(q)} f
+        join lateral (
+          select x.business_date, x.total_paid, x.tips, ve.business_date as void_day
+            from sales x
+            left join journal_entries ve on ve.location_id = x.location_id and ve.id = x.void_entry_id
+           where x.location_id = f.location_id and x.id = f.sale_id
+        ) s on true
         -- Los pagos de CADA venta del periodo (no de toda la sede): el costo crece con el periodo.
         left join lateral (
           select sum(sp.amount) filter (where sp.kind = 'cash') as cash,
                  sum(sp.amount) filter (where sp.kind <> 'cash') as other
             from sale_payments sp
-           where sp.location_id = s.location_id and sp.sale_id = s.id
+           where sp.location_id = f.location_id and sp.sale_id = f.sale_id
         ) p on true
-       where s.location_id = ${loc(q)} and ${inRange(sql`s.business_date`, q)}
-       group by grouping sets ((s.business_date), ())
-       order by grouping(s.business_date), s.business_date desc
+       group by grouping sets ((f.business_date), ())
+       order by grouping(f.business_date), f.business_date desc
     `),
   );
   const map = (r: (typeof rows)[number]): SalesDayRow => ({
@@ -69,6 +76,8 @@ export interface SaleDetailRow {
   /** Hora local de la sede, "HH:MM". */
   time: string;
   status: "paid" | "voided";
+  /** Día contable de la anulación (el de la reversa), o null si sigue vigente. */
+  voidedOn: string | null;
   services: string;
   staff: string;
   subtotal: bigint;
@@ -88,6 +97,7 @@ export async function salesDetail(db: Db, q: ReportQuery & { limit: number }): P
     business_date: string;
     time: string;
     status: "paid" | "voided";
+    voided_on: string | null;
     services: string | null;
     staff: string | null;
     subtotal: string;
@@ -101,7 +111,8 @@ export async function salesDetail(db: Db, q: ReportQuery & { limit: number }): P
     await db.execute(sql`
       select s.public_id, s.business_date::text as business_date,
              to_char(s.created_at at time zone l.timezone, 'HH24:MI') as time,
-             s.status, s.subtotal::text, s.discount::text, s.tips::text, s.total_paid::text as total,
+             s.status, ve.business_date::text as voided_on,
+             s.subtotal::text, s.discount::text, s.tips::text, s.total_paid::text as total,
              (select string_agg(sl.description, ', ' order by sl.position)
                 from sale_lines sl where sl.location_id = s.location_id and sl.sale_id = s.id) as services,
              (select string_agg(x.name, ', ' order by x.first)
@@ -118,6 +129,7 @@ export async function salesDetail(db: Db, q: ReportQuery & { limit: number }): P
                 from sale_payments sp where sp.location_id = s.location_id and sp.sale_id = s.id) as methods
         from sales s
         join locations l on l.id = s.location_id
+        left join journal_entries ve on ve.location_id = s.location_id and ve.id = s.void_entry_id
        where s.location_id = ${loc(q)} and ${inRange(sql`s.business_date`, q)}
        order by s.business_date, s.created_at, s.id
        limit ${q.limit}
@@ -128,6 +140,7 @@ export async function salesDetail(db: Db, q: ReportQuery & { limit: number }): P
     businessDate: r.business_date,
     time: r.time,
     status: r.status,
+    voidedOn: r.voided_on,
     services: r.services ?? "",
     staff: r.staff ?? "",
     subtotal: BigInt(r.subtotal),

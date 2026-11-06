@@ -139,7 +139,7 @@ export interface OpenedSession {
 }
 
 /** La hora de la base (inicio de la transacción), la misma que usan los triggers. */
-async function databaseNow(db: Db): Promise<Date> {
+export async function databaseNow(db: Db): Promise<Date> {
   const [row] = rowsOf<{ now: Date | string }>(await db.execute(sql`select now() as now`));
   return new Date(row!.now);
 }
@@ -685,7 +685,10 @@ export async function sessionSummary(db: Db, locationId: bigint): Promise<Sessio
         and(
           eq(salePayments.locationId, locationId),
           ne(salePayments.kind, "cash"),
-          eq(sales.status, "paid"),
+          // Vigentes ese día: una venta anulada DESPUÉS (la reversa va el día de la anulación) sigue
+          // contando en su día, como en el libro; la anulada ese mismo día no.
+          sql`not exists (select 1 from journal_entries e
+                           where e.location_id = ${sales.locationId} and e.id = ${sales.voidEntryId} and e.business_date = ${sales.businessDate})`,
           // Las ventas del DÍA del turno (por el índice location_id, business_date; L6): no se cuentan
           // y sirven para cuadrar con el datáfono. Sin cota por la hora de apertura: una venta con
           // tarjeta antes de abrir la caja también es del día. Lo de hoy no se suma a una caja de ayer.

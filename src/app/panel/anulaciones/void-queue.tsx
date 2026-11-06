@@ -232,8 +232,9 @@ function DecideForm({
     <Form onSubmit={onSubmit} validationBehavior="aria" className="flex flex-col gap-4">
       {approve ? (
         <p className="text-sm text-tinta/80">
-          Se registra un asiento de reversa de la venta: se deshacen el ingreso, la comisión y la propina por pagar. Si la propina ya se pagó en efectivo, ese pago no se devuelve. Si la
-          comisión ya se le pagó al barbero en una liquidación, se le descuenta en la próxima.
+          Se registra un asiento de reversa de la venta con fecha de hoy (aunque la venta sea de otro día, que queda como se cerró): se deshacen el ingreso, la comisión y la
+          propina por pagar. Si la propina ya se pagó en efectivo, ese pago no se devuelve. Si la comisión ya se le pagó al barbero en una liquidación, se le descuenta en la
+          próxima.
         </p>
       ) : (
         <p className="text-sm text-tinta/80">La venta queda como está y quien la pidió ve el rechazo con tu nota.</p>

@@ -301,15 +301,17 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
         ]),
       };
     case "sales": {
-      // Una fila por venta, anuladas incluidas (marcadas). Sin datos del cliente.
+      // Una fila por venta, en el día en que se cobró, anuladas incluidas (marcadas con el día de la
+      // anulación: la reversa va ese día). Sin datos del cliente.
       const rows = await salesDetail(tx, { ...q, limit: CSV_MAX_ROWS + 1 });
       return {
-        header: ["Fecha", "Hora", "Número", "Estado", "Servicios", "Atendió", "Servicios (bruto)", "Descuento", "Propina", "Total cobrado", "Efectivo", "Otros medios", "Medios"],
+        header: ["Fecha", "Hora", "Número", "Estado", "Anulada el (día contable)", "Servicios", "Atendió", "Servicios (bruto)", "Descuento", "Propina", "Total cobrado", "Efectivo", "Otros medios", "Medios"],
         rows: rows.map((r) => [
           date(r.businessDate),
           text(r.time),
           text(saleNumber(r.publicId)),
           text(r.status === "paid" ? "Vigente" : "Anulada"),
+          r.voidedOn ? date(r.voidedOn) : text(""),
           text(r.services),
           text(r.staff),
           pesos(r.subtotal),

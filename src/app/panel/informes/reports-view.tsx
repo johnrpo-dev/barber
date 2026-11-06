@@ -162,7 +162,7 @@ export function ReportsView({ initial }: { initial: Report }) {
               {pnl.marginLabel ? <span className="monto text-xs text-tinta/70">Margen {pnl.marginLabel}</span> : null}
             </span>
           </div>
-          <p className="text-xs text-tinta/70">Las propinas no son ingreso del negocio: se le deben al personal. Las anulaciones cuentan en el día de la venta.</p>
+          <p className="text-xs text-tinta/70">Las propinas no son ingreso del negocio: se le deben al personal. Una anulación resta el día en que se aprueba, no el de la venta.</p>
         </Section>
 
         {/* Ventas por barbero */}

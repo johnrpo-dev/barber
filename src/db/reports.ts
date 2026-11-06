@@ -27,6 +27,25 @@ const big = (v: string | null | undefined): bigint => BigInt(v ?? "0");
 const inRange = (column: SQL, q: ReportQuery) => sql`${column} between ${q.from}::date and ${q.to}::date`;
 const loc = (q: { locationId: bigint }) => sql`${q.locationId}::bigint`;
 
+/**
+ * Lo que cada venta aporta a cada día contable del rango: +1 el día en que se cobró (vigente o
+ * anulada después) y −1 el día de su anulación (el de la reversa en el libro). Los informes de
+ * ventas multiplican por `sign`: así suman lo mismo que el libro en CUALQUIER rango, aunque la venta
+ * sea de un día y la anulación de otro. Columnas: location_id, sale_id, business_date, sign.
+ */
+export function saleEffects(q: ReportQuery): SQL {
+  return sql`(
+    select s.location_id, s.id as sale_id, s.business_date, 1 as sign
+      from sales s
+     where s.location_id = ${loc(q)} and ${inRange(sql`s.business_date`, q)}
+    union all
+    select s.location_id, s.id as sale_id, e.business_date, -1 as sign
+      from journal_entries e
+      join sales s on s.location_id = e.location_id and s.void_entry_id = e.id
+     where e.location_id = ${loc(q)} and e.kind = 'reversal' and ${inRange(sql`e.business_date`, q)}
+  )`;
+}
+
 export async function profitAndLoss(db: Db, q: ReportQuery): Promise<{ rows: AccountTotalRow[]; totals: PnlTotals }> {
   const rows = rowsOf<{ code: string | null; name: string | null; type: string | null; debits: string | null; credits: string | null; net: string | null; g_code: number; g_type: number }>(
     await db.execute(sql`
@@ -53,15 +72,20 @@ export async function salesByStaff(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ staff_id: string; name: string; services: string; gross: string; discount: string; net: string; commission: string; tips: string }>(
     await db.execute(sql`
       with lines as (
-        select l.staff_id, count(*) as services, sum(l.unit_price) as gross, sum(l.discount) as discount, sum(l.net) as net, sum(l.commission) as commission
-          from sale_lines l join sales s on s.location_id = l.location_id and s.id = l.sale_id
-         where l.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+        select l.staff_id, sum(f.sign) as services, sum(f.sign * l.unit_price) as gross, sum(f.sign * l.discount) as discount,
+               sum(f.sign * l.net) as net, sum(f.sign * l.commission) as commission
+          from ${saleEffects(q)} f join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
+         where l.location_id = ${loc(q)}
          group by l.staff_id
+        -- Fuera solo lo que se anula en TODAS las columnas (una venta y su anulación en el rango).
+        having sum(f.sign) <> 0 or sum(f.sign * l.unit_price) <> 0 or sum(f.sign * l.discount) <> 0
+            or sum(f.sign * l.net) <> 0 or sum(f.sign * l.commission) <> 0
       ), tips as (
-        select t.staff_id, sum(t.amount) as tips
-          from sale_tips t join sales s on s.location_id = t.location_id and s.id = t.sale_id
-         where t.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+        select t.staff_id, sum(f.sign * t.amount) as tips
+          from ${saleEffects(q)} f join sale_tips t on t.location_id = f.location_id and t.sale_id = f.sale_id
+         where t.location_id = ${loc(q)}
          group by t.staff_id
+        having sum(f.sign * t.amount) <> 0
       )
       select m.id::text as staff_id, m.display_name as name, coalesce(l.services, 0)::text as services,
              coalesce(l.gross, 0)::text as gross, coalesce(l.discount, 0)::text as discount, coalesce(l.net, 0)::text as net,
@@ -88,14 +112,17 @@ export async function salesByStaff(db: Db, q: ReportQuery) {
 export async function salesByService(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ service_id: string; name: string; services: string; gross: string; discount: string; net: string; commission: string; total_net: string }>(
     await db.execute(sql`
-      select sv.id::text as service_id, sv.name, count(*)::text as services, sum(l.unit_price)::text as gross, sum(l.discount)::text as discount,
-             sum(l.net)::text as net, sum(l.commission)::text as commission, sum(sum(l.net)) over ()::text as total_net
-        from sale_lines l
-        join sales s on s.location_id = l.location_id and s.id = l.sale_id
+      select sv.id::text as service_id, sv.name, sum(f.sign)::text as services, sum(f.sign * l.unit_price)::text as gross,
+             sum(f.sign * l.discount)::text as discount, sum(f.sign * l.net)::text as net, sum(f.sign * l.commission)::text as commission,
+             sum(sum(f.sign * l.net)) over ()::text as total_net
+        from ${saleEffects(q)} f
+        join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
         join services sv on sv.location_id = l.location_id and sv.id = l.service_id
-       where l.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+       where l.location_id = ${loc(q)}
        group by sv.id, sv.name
-       order by sum(l.net) desc, sv.name, sv.id
+      having sum(f.sign) <> 0 or sum(f.sign * l.unit_price) <> 0 or sum(f.sign * l.discount) <> 0
+          or sum(f.sign * l.net) <> 0 or sum(f.sign * l.commission) <> 0
+       order by sum(f.sign * l.net) desc, sv.name, sv.id
     `),
   );
   return rows.map((r) => ({
@@ -114,26 +141,28 @@ export async function salesByService(db: Db, q: ReportQuery) {
 export async function paymentMix(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ kind: PaymentKind; label: string; payments: string; amount: string; fees: string; total_amount: string }>(
     await db.execute(sql`
-      select p.kind, p.label, count(*)::text as payments, sum(p.amount)::text as amount, sum(p.fee)::text as fees,
-             sum(sum(p.amount)) over ()::text as total_amount
-        from sale_payments p join sales s on s.location_id = p.location_id and s.id = p.sale_id
-       where p.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+      select p.kind, p.label, sum(f.sign)::text as payments, sum(f.sign * p.amount)::text as amount, sum(f.sign * p.fee)::text as fees,
+             sum(sum(f.sign * p.amount)) over ()::text as total_amount
+        from ${saleEffects(q)} f join sale_payments p on p.location_id = f.location_id and p.sale_id = f.sale_id
+       where p.location_id = ${loc(q)}
        group by p.kind, p.label
-       order by sum(p.amount) desc, p.label
+      having sum(f.sign) <> 0 or sum(f.sign * p.amount) <> 0 or sum(f.sign * p.fee) <> 0
+       order by sum(f.sign * p.amount) desc, p.label
     `),
   );
   return rows.map((r) => ({ kind: r.kind, label: r.label, payments: Number(r.payments), amount: BigInt(r.amount), fees: BigInt(r.fees), totalAmount: BigInt(r.total_amount) }));
 }
 
-/** Causadas por día de la venta; pagadas por día del pago (Caja + liquidaciones vigentes). */
+/** Causadas por día de la venta (menos las anuladas, el día de la anulación); pagadas por día del pago (Caja + liquidaciones vigentes). */
 export async function tipsByStaff(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ staff_id: string; name: string; tips: string; fee_share: string; payable: string; paid_out: string; total_tips: string }>(
     await db.execute(sql`
       with earned as (
-        select t.staff_id, sum(t.amount) as tips, sum(t.fee_share) as fee_share, sum(t.payable) as payable
-          from sale_tips t join sales s on s.location_id = t.location_id and s.id = t.sale_id
-         where t.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+        select t.staff_id, sum(f.sign * t.amount) as tips, sum(f.sign * t.fee_share) as fee_share, sum(f.sign * t.payable) as payable
+          from ${saleEffects(q)} f join sale_tips t on t.location_id = f.location_id and t.sale_id = f.sale_id
+         where t.location_id = ${loc(q)}
          group by t.staff_id
+        having sum(f.sign * t.amount) <> 0 or sum(f.sign * t.fee_share) <> 0 or sum(f.sign * t.payable) <> 0
       ), paid as (
         select staff_id, sum(amount) as paid_out from (
           select m.staff_id, jl.debit - jl.credit as amount
@@ -187,20 +216,21 @@ export async function cardFees(db: Db, q: ReportQuery): Promise<{ ledgerTotal: b
   const ledgerTotal = await accountNet(db, q, "5305");
   const rows = rowsOf<{ label: string; fees: string }>(
     await db.execute(sql`
-      select p.label, sum(p.fee)::text as fees
-        from sale_payments p join sales s on s.location_id = p.location_id and s.id = p.sale_id
-       where p.location_id = ${loc(q)} and s.status = 'paid' and p.fee > 0 and ${inRange(sql`s.business_date`, q)}
+      select p.label, sum(f.sign * p.fee)::text as fees
+        from ${saleEffects(q)} f join sale_payments p on p.location_id = f.location_id and p.sale_id = f.sale_id
+       where p.location_id = ${loc(q)} and p.fee > 0
        group by p.label
-       order by sum(p.fee) desc, p.label
+      having sum(f.sign * p.fee) <> 0
+       order by sum(f.sign * p.fee) desc, p.label
     `),
   );
   // Con "las propinas asumen el datáfono", esta parte del costo sale de 2380 y no llega a 5305:
   // Σ medios − esto = cuenta 5305 (docs/sprint-5-comisiones-informes.md §6).
   const [absorbed] = rowsOf<{ total: string }>(
     await db.execute(sql`
-      select coalesce(sum(t.fee_share), 0)::text as total
-        from sale_tips t join sales s on s.location_id = t.location_id and s.id = t.sale_id
-       where t.location_id = ${loc(q)} and s.status = 'paid' and ${inRange(sql`s.business_date`, q)}
+      select coalesce(sum(f.sign * t.fee_share), 0)::text as total
+        from ${saleEffects(q)} f join sale_tips t on t.location_id = f.location_id and t.sale_id = f.sale_id
+       where t.location_id = ${loc(q)}
     `),
   );
   return { ledgerTotal, byMethod: rows.map((r) => ({ label: r.label, fees: BigInt(r.fees) })), absorbedByTips: BigInt(absorbed!.total) };
@@ -407,9 +437,10 @@ async function incomeOfDay(db: Db, locationId: bigint, day: string): Promise<big
 async function servicesOfDay(db: Db, locationId: bigint, day: string): Promise<number> {
   const [row] = rowsOf<{ n: string }>(
     await db.execute(sql`
-      select count(*)::text as n
-        from sale_lines l join sales s on s.location_id = l.location_id and s.id = l.sale_id
-       where l.location_id = ${locationId}::bigint and s.status = 'paid' and s.business_date = ${day}::date
+      select coalesce(sum(f.sign), 0)::text as n
+        from ${saleEffects({ locationId, from: day, to: day })} f
+        join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
+       where l.location_id = ${locationId}::bigint
     `),
   );
   return Number(row?.n ?? "0");
