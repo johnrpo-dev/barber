@@ -1,6 +1,7 @@
 import { dayAgenda, locationRules } from "@/db/appointments";
 import { listServices } from "@/db/catalog";
 import { db } from "@/db/client";
+import { courtesyAppointmentIds } from "@/db/courtesies";
 import { noShowStandings } from "@/db/no-shows";
 import { recordContactReads } from "@/db/privacy";
 import { presenceToday } from "@/db/staff-presence";
@@ -37,6 +38,8 @@ export interface AgendaAppointmentView {
   source: "staff" | "walk_in" | "online";
   notes: string | null;
   price: string;
+  /** Se dio como cortesía (sprint 8): no se cobra; la hoja muestra "Cortesía" en vez de "Cobrar". */
+  courtesy: boolean;
   /** Cambios de estado que este usuario puede ofrecer ahora (el servidor vuelve a validar). */
   transitions: AppointmentStatus[];
   canReschedule: boolean;
@@ -126,6 +129,12 @@ export async function loadAgenda(
       })
     : new Map();
 
+  const courtesies = await courtesyAppointmentIds(
+    database,
+    staff.locationId,
+    agenda.appointments.filter((a) => a.status === "in_chair" || a.status === "completed").map((a) => a.id),
+  );
+
   const dayStart = localMinuteToInstant(date, 0, rules.timeZone).getTime();
   const isToday = date === businessDate(now, rules.timeZone);
   const presence = isToday ? await presenceToday(database, { locationId: staff.locationId, dayStart: new Date(dayStart) }) : null;
@@ -177,6 +186,7 @@ export async function loadAgenda(
         source: a.source,
         notes: a.notes,
         price: format(a.price),
+        courtesy: courtesies.has(a.id),
         transitions,
         canReschedule: manageAll && (a.status === "pending" || a.status === "confirmed" || a.status === "arrived"),
         noShow: (() => {

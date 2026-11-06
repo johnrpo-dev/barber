@@ -1717,3 +1717,32 @@ export const appointmentCourtesies = pgTable(
     index("appointment_courtesies_location_date_idx").on(t.locationId, t.businessDate),
   ],
 );
+
+// ─── Avisos al dueño (sprint 8, migración 0027) ──────────────────────────────
+// docs/sprint-8-gastos-controles.md §3. El worker barre cada minuto lo que ya existe (anulaciones
+// pedidas, cierres de caja por revisar, días reabiertos y cortesías) y deja aquí UNA fila por evento
+// (UNIQUE location_id, kind, ref_id): repetir el barrido no duplica. Luego manda un correo agrupado
+// por sede a ALERT_EMAIL y marca notified_at. No toca el camino del dinero: ni cash.ts, ni voids.ts,
+// ni triggers en esas tablas. La app solo puede marcar notified_at (y una sola vez: trigger de 0027).
+
+export const OWNER_ALERT_KINDS = ["void_requested", "cash_review", "day_reopened", "courtesy"] as const;
+
+/** Un aviso al dueño: qué pasó (kind) y la fila de origen (ref_id, id interno de su tabla). */
+export const ownerAlerts = pgTable(
+  "owner_alerts",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    kind: text("kind", { enum: OWNER_ALERT_KINDS }).notNull(),
+    /** void_requests.id, cash_sessions.id, day_close_events.id o appointment_courtesies.id según kind. */
+    refId: bigint("ref_id", { mode: "bigint" }).notNull(),
+    createdAt: createdAt(),
+    /** Cuándo salió el correo que lo incluyó. Null: aún no sale (o no hay correo configurado). */
+    notifiedAt: timestamp("notified_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("owner_alerts_ref_key").on(t.locationId, t.kind, t.refId),
+    check("owner_alerts_kind_check", sql`${t.kind} in ('void_requested','cash_review','day_reopened','courtesy')`),
+    index("owner_alerts_pending_idx").on(t.locationId, t.id).where(sql`${t.notifiedAt} is null`),
+  ],
+);

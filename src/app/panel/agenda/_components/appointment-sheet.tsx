@@ -1,6 +1,6 @@
 "use client";
 
-import { Banknote, CalendarClock, LockOpen, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
+import { Banknote, CalendarClock, Gift, LockOpen, Phone, StickyNote, Undo2, UserX, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { Dialog, Heading, Label, Modal, ModalOverlay, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
@@ -75,8 +75,9 @@ export function AppointmentSheet({
             onReschedule={() => setMode("reschedule")}
             onClose={onClose}
             onOptimistic={onOptimistic}
+            courtesy={canCharge && CHARGEABLE.includes(appointment.status) && appointment.courtesy}
             onCharge={
-              canCharge && CHARGEABLE.includes(appointment.status)
+              canCharge && CHARGEABLE.includes(appointment.status) && !appointment.courtesy
                 ? () => {
                     setCheckout({ id: appointment.id, clientName: appointment.clientName });
                     onClose();
@@ -120,12 +121,15 @@ function Detail({
   onClose,
   onOptimistic,
   onCharge,
+  courtesy = false,
 }: {
   appointment: AgendaAppointmentView;
   onReschedule: () => void;
   onClose: () => void;
   onOptimistic?: (id: string, status: AppointmentStatus) => void;
   onCharge?: () => void;
+  /** La cita se dio como cortesía: en lugar de "Cobrar" se muestra "Cortesía" (el cobro la rechaza). */
+  courtesy?: boolean;
 }) {
   const toast = useToast();
   const [pending, startTransition] = useTransition();
@@ -229,6 +233,10 @@ function Detail({
           <Banknote size={22} aria-hidden />
           Cobrar
         </Btn>
+      ) : courtesy ? (
+        <p className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-tinta/10 bg-hueso/40 text-sm font-semibold text-tinta/80">
+          <Gift size={18} aria-hidden /> Cortesía
+        </p>
       ) : null}
 
       {canNext && next ? (

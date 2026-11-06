@@ -15,6 +15,9 @@ import { deliveryContext } from "./scan-notifications";
  * (Ley 1581, retenciones en src/domain/clients/retention.ts), borra los navegadores recordados que
  * dejaron de servir hace más de 30 días y revisa la alerta de cuota.
  * La purga va DESPUÉS de anonimizar: los restos de un cliente recién anonimizado se borran hoy mismo.
+ * Los avisos al dueño (owner_alerts, migración 0027) NO se purgan a propósito: son unas pocas filas al
+ * día, la app no tiene DELETE sobre ellos, y borrar uno que aún cae en la ventana de 2 días del barrido
+ * lo haría renacer y salir en otro correo.
  */
 export async function runMaintenance(
   db: Db,

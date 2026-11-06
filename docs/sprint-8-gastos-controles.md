@@ -31,7 +31,7 @@ Sin migración ni acción nueva.
 - Sin canal: "Sin celular ni correo: no se puede enviar el recibo." y no hay interruptor. Si la configuración de mensajes no está lista, no hay canales: no se ofrece el envío (tampoco se encolaría).
 - `maskEmail` en `src/domain/clients/client.ts`; pruebas de propiedades de `maskEmail` y `maskPhone`. Sin migración ni acción nueva.
 
-## 3. C. Avisos al dueño
+## 3. C. Avisos al dueño (hecho)
 
 - **Tabla `owner_alerts`:** `location_id`, `kind`, `ref_id`, `created_at`, `notified_at` y `UNIQUE (location_id, kind, ref_id)`.
 - **Barrido idempotente del worker cada minuto:** `INSERT … SELECT … ON CONFLICT DO NOTHING` sobre lo que ya existe (`void_requests`, `cash_sessions` por encima del umbral, `day_close_events` de reapertura y cortesías) de los últimos 2 días.
@@ -41,6 +41,21 @@ Sin migración ni acción nueva.
 - **No se avisa la anulación aprobada:** la aprueba el mismo dueño.
 - **Sin correo configurado,** el aviso queda en el registro del servidor y en Inicio, como hoy.
 - **Propiedad:** repetir el barrido no duplica avisos y cada aviso sale en un solo correo.
+
+**Hecho** (migración 0027):
+- **Tabla `owner_alerts`:** `location_id`, `kind` (`void_requested`, `cash_review`, `day_reopened`, `courtesy`, con CHECK), `ref_id` (id de la fila de origen), `created_at` y `notified_at`. `UNIQUE (location_id, kind, ref_id)`. `villa_app` tiene SELECT, INSERT y `UPDATE (notified_at)`; un trigger exige que `notified_at` pase de null a una fecha una sola vez y que nada más cambie. Sin DELETE.
+- **Barrido** (`sweepOwnerAlerts` en `src/db/owner-alerts.ts`, trabajo `owner.alerts` cada minuto): un solo `INSERT … SELECT … ON CONFLICT DO NOTHING` sobre los últimos 2 días.
+  - `void_requested`: solicitud aún pendiente. La aprobada o rechazada no se avisa.
+  - `cash_review`: turno cerrado con `needs_review` u `opening_needs_review` (los marca la base con el umbral de la sede, como "por revisar") y sin revisar. Se avisa siempre, aunque cierre el dueño: el descuadre importa igual.
+  - `day_reopened`: reapertura, manual o al abrir la caja.
+  - `courtesy`: cortesía.
+  - **Lo que hace el dueño no se avisa:** la solicitud de anulación, la reapertura y la cortesía de una cuenta con rol `owner` en esa sede (`staff_members.role`, por `user_id`) no generan aviso. El dueño no necesita un correo de lo que hizo él mismo.
+- **Entrega** (`deliverOwnerAlerts`): por sede, un correo como mucho cada 15 minutos (bandera en `rate_limit_counters`, como `deliverSecurityAlerts`), agrupado por tipo con el enlace de cada grupo (`PUBLIC_BASE_URL` + `/panel/anulaciones`, `/panel/caja` o `/panel/informes`). Cada línea: hora local de la sede, quién (`display_name`), el monto con `format` y, en la caja, faltante o sobrante. Sin motivos, sin la nota de caja, sin clientes. El texto lo arma `src/domain/notifications/owner-alert.ts`.
+- **Solo se marca lo que salió.** Si el envío falla, queda pendiente para la ventana siguiente. Si la anulación se decidió o el turno se revisó entre el barrido y el correo, no se lista y se marca con el correo de la sede (o solo, si no queda más que avisar).
+- **Configuración del correo** (`ownerAlertTransport()` en `src/lib/notify`): solo `RESEND_API_KEY`, `EMAIL_FROM`, `ALERT_EMAIL` y `PUBLIC_BASE_URL`, cada una validada con los esquemas de `src/lib/env.ts` (`publicEnv()`). **No depende de `publicConfig()`:** un control del dinero no se apaga porque falten WhatsApp o Turnstile, que son de la reserva pública. El mismo arreglo se aplicó a `alertSender()`, que entrega los avisos de seguridad (bloqueos de ingreso).
+- **Sin correo** (falta o viene mal alguna de las cuatro): no se marca nada, queda una línea por ventana en el registro con el conteo y los nombres de las variables que faltan (nunca sus valores) e Inicio sigue igual. Anotado en la tabla de seguridad de [arquitectura.md](arquitectura.md), con plan para el sprint 9.
+- **Sin purga:** son unas pocas filas al día, la app no tiene DELETE y borrar un aviso que aún cae en la ventana de 2 días lo haría salir otra vez.
+- **Pruebas:** `src/db/owner-alerts.test.ts`, como `villa_app`: cada tipo genera su aviso, repetir el barrido no duplica, la anulación decidida no se avisa, sin correo no se marca, con correo se marca y no se reenvía, un correo por sede, ventana de 15 minutos, envío fallido, el correo sin motivos ni datos del cliente, los permisos de la tabla, lo que hace el dueño (no se avisa, salvo el descuadre de caja) y la configuración: en producción con Resend, `ALERT_EMAIL` y `PUBLIC_BASE_URL` pero sin WhatsApp ni Turnstile, el aviso al dueño y el de seguridad salen; si falta alguna variable, no sale, no se marca y el registro nombra lo que falta. Propiedad (fast-check): para secuencias arbitrarias de eventos, barridos y entregas (con correo, sin correo o fallando), cada evento origina exactamente un aviso y cada aviso sale en un solo correo.
 
 ## 4. E. Cortesía (hecho)
 
@@ -63,7 +78,8 @@ Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar 
 - **Pantalla:** en "Por cobrar", "Cortesía" al lado de "Cobrar"; en el celular los dos botones bajan a su propia línea. El diálogo muestra la cita, avisa "No se cobra ni genera comisión" y pide el motivo.
 - **Informe:** sección "Cortesías" en Informes (solo `reports.financial`), por barbero, con la cantidad y el precio de lista sumados en SQL (`courtesiesByStaff`), y su CSV (`courtesies`, sin el motivo).
 - **Pruebas:** `src/db/courtesies.test.ts` (ejemplos y una propiedad: en cualquier orden de cortesías y cobros, ninguna cita queda cobrada y con cortesía, manda lo primero que entró, solo las ventas mueven el libro y el informe suma lo mismo que las filas) y los casos de `giveCourtesyAction` en `authorization.test.ts` (matriz de roles, otra sede, evento único, recepción habilitada y tope bajo 100 %).
-- **Pendiente:** el aviso al dueño (§3) aún no barre las cortesías.
+- **Aviso al dueño:** el barrido de §3 incluye las cortesías.
+- **Agenda:** la hoja de la cita ya no ofrece "Cobrar" en una cita con cortesía; muestra "Cortesía" en su lugar (`courtesyAppointmentIds`). El servidor ya la rechazaba.
 
 ## 5. B. Gastos fijos
 

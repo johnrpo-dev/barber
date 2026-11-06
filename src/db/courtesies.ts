@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { businessDate } from "@/domain/ledger/business-date";
 import { format, money } from "@/domain/money";
 import { CheckoutError } from "@/domain/sales/checkout";
@@ -138,4 +138,14 @@ export async function giveCourtesy(db: Db, cmd: CourtesyCommand): Promise<{ cour
     }
     throw err;
   }
+}
+
+/** De estas citas, las que se dieron como cortesía (la agenda no ofrece "Cobrar" en ellas). */
+export async function courtesyAppointmentIds(db: Db, locationId: bigint, appointmentIds: readonly bigint[]): Promise<Set<bigint>> {
+  if (appointmentIds.length === 0) return new Set();
+  const rows = await db
+    .select({ appointmentId: appointmentCourtesies.appointmentId })
+    .from(appointmentCourtesies)
+    .where(and(eq(appointmentCourtesies.locationId, locationId), inArray(appointmentCourtesies.appointmentId, [...appointmentIds])));
+  return new Set(rows.map((r) => r.appointmentId));
 }

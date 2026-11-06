@@ -8,7 +8,7 @@ import { fromUnits } from "@/domain/money";
 import { courtesyReason } from "@/domain/sales/courtesy";
 import { changeStatus, createAppointment } from "./appointments";
 import { appointmentsToCharge, closeBusinessDay } from "./cash";
-import { giveCourtesy } from "./courtesies";
+import { courtesyAppointmentIds, giveCourtesy } from "./courtesies";
 import { courtesiesByStaff } from "./reports";
 import { checkout } from "./sales";
 import { chairAppointment, key, setupShop, simpleCheckout, TZ, type Shop } from "./sales-testing";
@@ -295,4 +295,15 @@ describe("propiedad: cortesías y cobros sobre las mismas citas", () => {
       { numRuns: 15 },
     );
   }, 300_000);
+});
+
+describe("agenda", () => {
+  it("courtesyAppointmentIds marca solo las citas con cortesía de esa sede (la agenda no ofrece Cobrar en ellas)", async () => {
+    const given = await chairAppointment(db, shop);
+    const plain = await chairAppointment(db, shop);
+    await courtesy(shop, given);
+    expect(await courtesyAppointmentIds(db, shop.locationId, [given, plain])).toEqual(new Set([given]));
+    expect(await courtesyAppointmentIds(db, other.locationId, [given, plain])).toEqual(new Set());
+    expect(await courtesyAppointmentIds(db, shop.locationId, [])).toEqual(new Set());
+  });
 });
