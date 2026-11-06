@@ -100,7 +100,15 @@ export function Sheet({
             : cx("md:rounded-2xl md:data-[entering]:animate-pop-in", wide ? "md:max-w-2xl" : "md:max-w-lg"),
         )}
       >
-        <Dialog className="flex max-h-[calc(var(--visual-viewport-height,100vh)*0.92)] flex-col outline-none lg:max-h-[var(--visual-viewport-height,100vh)]">
+        {/* El tope del Dialog debe ser el mismo del Modal (que recorta con overflow-hidden): si el
+            Dialog puede ser más alto, lo que sobra —el pie con el botón final— queda cortado. Solo
+            el panel lateral (drawer) ocupa todo el alto en pantalla ancha. */}
+        <Dialog
+          className={cx(
+            "flex max-h-[calc(var(--visual-viewport-height,100vh)*0.92)] flex-col outline-none",
+            drawer && "lg:h-full lg:max-h-[var(--visual-viewport-height,100vh)]",
+          )}
+        >
           {({ close }) => (
             <>
               <div className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-tinta/15 md:hidden" aria-hidden />

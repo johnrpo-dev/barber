@@ -5,6 +5,7 @@ import { APIError, createAuthMiddleware, getIP, getSessionFromCtx, isAPIError } 
 import { twoFactor as twoFactorPlugin } from "better-auth/plugins/two-factor";
 import { z } from "zod";
 import { db } from "@/db/client";
+import { devLanOrigins } from "@/lib/lan";
 import {
   AccountLockedError,
   clearFailures,
@@ -97,7 +98,10 @@ export const IP_ADDRESS_OPTIONS = { ipAddressHeaders: ["x-forwarded-for"], trust
 
 type HookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
 
-export function createAuth(database: Db, opts: { secret: string; baseURL: string; plugins?: BetterAuthPlugin[] }) {
+export function createAuth(
+  database: Db,
+  opts: { secret: string; baseURL: string; trustedOrigins?: string[]; plugins?: BetterAuthPlugin[] },
+) {
   const knownDeviceCookie = (ctx: HookContext) => ctx.context.createAuthCookie(KNOWN_DEVICE_COOKIE, { maxAge: KNOWN_DEVICE_MAX_AGE_S });
 
   /**
@@ -164,6 +168,7 @@ export function createAuth(database: Db, opts: { secret: string; baseURL: string
     appName: TOTP_ISSUER,
     secret: opts.secret,
     baseURL: opts.baseURL,
+    ...(opts.trustedOrigins?.length ? { trustedOrigins: opts.trustedOrigins } : {}),
     database: drizzleAdapter(database, { provider: "pg", schema: { user, session, account, verification, twoFactor } }),
     emailAndPassword: {
       enabled: true,
@@ -326,7 +331,10 @@ export async function auth(): Promise<Auth> {
     const env = authEnvSchema.parse(process.env);
     // Import dinámico: next-js arrastra next/headers, que no existe en scripts ni tests.
     const { nextCookies } = await import("better-auth/next-js");
-    cached = createAuth(db(), { secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, plugins: [nextCookies()] });
+    // En desarrollo también se confía en las IP de la red local (probar desde el celular); en
+    // producción solo en BETTER_AUTH_URL, que es HTTPS.
+    const trustedOrigins = process.env.NODE_ENV === "production" ? [] : devLanOrigins(env.BETTER_AUTH_URL);
+    cached = createAuth(db(), { secret: env.BETTER_AUTH_SECRET, baseURL: env.BETTER_AUTH_URL, trustedOrigins, plugins: [nextCookies()] });
   }
   return cached;
 }

@@ -19,6 +19,11 @@ function signInMessage(error: AuthError): string {
   if (error.status === 429) {
     return error.code === "ACCOUNT_LOCKED" && error.message ? error.message : "Demasiados intentos. Espera un minuto y vuelve a intentar.";
   }
+  // El rechazo por origen ocurre antes de mirar la cuenta: decirlo no revela nada de ella, y evita
+  // que alguien crea que su contraseña está mal cuando el problema es la dirección abierta.
+  if (error.status === 403 && error.code === "INVALID_ORIGIN") {
+    return "No se puede ingresar desde esta dirección. Abre Villa desde su dirección habitual.";
+  }
   return "Correo o contraseña incorrectos.";
 }
 
