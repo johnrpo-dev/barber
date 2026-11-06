@@ -328,6 +328,28 @@ export async function noShowStats(db: Db, q: ReportQuery & { timeZone: string })
   };
 }
 
+/**
+ * Cortesías del periodo por quien atendió (sprint 8, §4): cuántas y su precio de lista sumado, por
+ * el día contable en que se dieron. No es dinero del libro: lo que el negocio dejó de cobrar.
+ */
+export async function courtesiesByStaff(db: Db, q: ReportQuery) {
+  const rows = rowsOf<{ staff_id: string; name: string; courtesies: string; list_price: string; total_courtesies: string; total_list_price: string }>(
+    await db.execute(sql`
+      select m.id::text as staff_id, m.display_name as name, count(*)::text as courtesies, sum(c.list_price)::text as list_price,
+             sum(count(*)) over ()::text as total_courtesies, sum(sum(c.list_price)) over ()::text as total_list_price
+        from appointment_courtesies c
+        join staff_members m on m.location_id = c.location_id and m.id = c.staff_id
+       where c.location_id = ${loc(q)} and ${inRange(sql`c.business_date`, q)}
+       group by m.id, m.display_name
+       order by sum(c.list_price) desc, m.display_name, m.id
+    `),
+  );
+  return {
+    rows: rows.map((r) => ({ staffId: BigInt(r.staff_id), name: r.name, courtesies: Number(r.courtesies), listPrice: BigInt(r.list_price) })),
+    total: { courtesies: Number(rows[0]?.total_courtesies ?? 0), listPrice: big(rows[0]?.total_list_price) },
+  };
+}
+
 export interface SettlementSummaryRow {
   publicId: string;
   number: bigint;

@@ -183,6 +183,13 @@
       "when": 1793943487788,
       "tag": "0025_client_record",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793946864795,
+      "tag": "0026_courtesies",
+      "breakpoints": true
     }
   ]
 }

@@ -744,7 +744,7 @@ export async function lastClosedSession(db: Db, locationId: bigint) {
 
 /**
  * Citas del día contable que ya se pueden cobrar (en la silla o terminadas, como exige checkout)
- * y no tienen venta vigente: la lista "Por cobrar" de la caja, en orden de hora.
+ * y no tienen venta vigente ni cortesía: la lista "Por cobrar" de la caja, en orden de hora.
  */
 export async function appointmentsToCharge(db: Db, locationId: bigint, day: string) {
   const rows = rowsOf<{ id: string; start: string; status: "in_chair" | "completed"; client: string | null; service: string; staff: string; price: string }>(
@@ -762,6 +762,11 @@ export async function appointmentsToCharge(db: Db, locationId: bigint, day: stri
          and not exists (
            select 1 from sales s
             where s.location_id = a.location_id and s.appointment_id = a.id and s.status = 'paid'
+         )
+         -- Sprint 8: la que se dio como cortesía no se cobra.
+         and not exists (
+           select 1 from appointment_courtesies ac
+            where ac.location_id = a.location_id and ac.appointment_id = a.id
          )
        order by lower(a.during), a.id
     `),

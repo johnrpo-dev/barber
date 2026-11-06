@@ -18,6 +18,7 @@ import { checkoutRulesOf } from "./checkout-settings";
 import { findOrCreateClient } from "./clients";
 import { isDayClosed, postEntry } from "./ledger";
 import {
+  appointmentCourtesies,
   appointments,
   cashMovements,
   clients,
@@ -123,6 +124,14 @@ async function lockAppointment(tx: Db, locationId: bigint, appointmentId: bigint
     .for("update");
   if (!appt) throw new CheckoutError("La cita no existe");
   if (await paidSaleForAppointment(tx, locationId, appt.id)) throw new CheckoutError("Esta cita ya está cobrada");
+  // Sprint 8: una cita que se dio como cortesía no se cobra (ni genera comisión). La cortesía bloquea
+  // la misma cita FOR UPDATE y también corre en SERIALIZABLE: si las dos se cruzan, Postgres aborta
+  // una y, al repetirla, esta lectura ve la cortesía (src/db/courtesies.ts).
+  const [courtesy] = await tx
+    .select({ id: appointmentCourtesies.id })
+    .from(appointmentCourtesies)
+    .where(and(eq(appointmentCourtesies.locationId, locationId), eq(appointmentCourtesies.appointmentId, appt.id)));
+  if (courtesy) throw new CheckoutError("Esta cita se dio como cortesía: no se cobra");
   if (!(CHECKOUT_STATUSES as readonly string[]).includes(appt.status)) {
     throw new CheckoutError("Solo se cobra una cita en silla o terminada");
   }

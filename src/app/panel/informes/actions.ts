@@ -8,6 +8,7 @@ import { cashSessionsInPeriod, salesDetail } from "@/db/history";
 import {
   cardFees,
   cashDifferences,
+  courtesiesByStaff,
   expensesByCategory,
   journalDetail,
   noShowStats,
@@ -79,6 +80,8 @@ export type ReportView = {
     byStaff: { name: string; completed: number; noShow: number; rateLabel: string | null }[];
   };
   settlements: { publicId: string; numberLabel: string; staffName: string; cutoffDate: string; businessDate: string; payoutLabel: string; status: "settled" | "reversed" }[];
+  /** Cortesías por quien atendió: cantidad y precio de lista sumado en SQL (sprint 8, §4). */
+  courtesies: { rows: { staffId: string; name: string; courtesies: number; listPriceLabel: string }[]; total: number; totalListPriceLabel: string };
 };
 
 const periodInput = z.object({ from: dateSchema, to: dateSchema });
@@ -108,6 +111,7 @@ export async function loadReport(raw: z.input<typeof periodInput>): Promise<Acti
       const differences = await cashDifferences(tx, q);
       const noShow = await noShowStats(tx, { ...q, timeZone: day.timeZone });
       const settlements = await settlementsInPeriod(tx, q);
+      const courtesies = await courtesiesByStaff(tx, q);
       const noShowRate = (r: { noShow: number; completed: number }) => share(BigInt(r.noShow), BigInt(r.completed + r.noShow));
       return {
         period: { from: period.from, to: period.to, label: periodLabel(period) },
@@ -201,6 +205,11 @@ export async function loadReport(raw: z.input<typeof periodInput>): Promise<Acti
           payoutLabel: moneyLabel(s.payout),
           status: s.status,
         })),
+        courtesies: {
+          rows: courtesies.rows.map((c) => ({ staffId: c.staffId.toString(), name: c.name, courtesies: c.courtesies, listPriceLabel: moneyLabel(c.listPrice) })),
+          total: courtesies.total.courtesies,
+          totalListPriceLabel: moneyLabel(courtesies.total.listPrice),
+        },
       };
     });
   });
@@ -342,6 +351,12 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
           r.difference === null ? text("") : pesos(r.difference),
           text(!r.flagged ? "" : r.reviewed ? `Revisada${r.reviewedBy ? ` por ${r.reviewedBy}` : ""}` : "Pendiente de revisión"),
         ]),
+      };
+    case "courtesies":
+      return {
+        // Sin el motivo: es texto libre y puede nombrar al cliente.
+        header: ["Persona", "Cortesías", "Precio de lista"],
+        rows: (await courtesiesByStaff(tx, q)).rows.map((r) => [text(r.name), count(r.courtesies), pesos(r.listPrice)]),
       };
   }
 }

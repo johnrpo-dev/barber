@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarX, CheckCircle2, EyeOff, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarX, CheckCircle2, EyeOff, Gift, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
@@ -20,6 +20,7 @@ import {
   cashDepositAction,
   closeCashSessionAction,
   closeDayAction,
+  giveCourtesyAction,
   loadCashView,
   markCashSessionReviewedAction,
   openCashSessionAction,
@@ -37,6 +38,7 @@ type OkData<R> = R extends { ok: true; data: infer D } ? D : never;
 export type CashView = OkData<Awaited<ReturnType<typeof loadCashView>>>;
 type Session = NonNullable<CashView["session"]>;
 type DaySale = CashView["daySales"][number];
+type ToCharge = CashView["toCharge"][number];
 
 const big = (s: string) => (/^-?\d+$/.test(s) ? BigInt(s) : 0n);
 const fmt = (minor: bigint) => format(money(minor));
@@ -55,6 +57,7 @@ const MOVEMENT_LABEL: Record<Session["movements"][number]["kind"], string> = {
 type SheetState =
   | { kind: "open" | "close" | "expense" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
   | { kind: "void"; sale: DaySale }
+  | { kind: "courtesy"; appointment: ToCharge }
   | null;
 
 /** Clave de idempotencia de un formulario: se conserva ante un fallo de red y se renueva tras una respuesta. */
@@ -215,7 +218,7 @@ export function CashBoard({ initial }: { initial: CashView }) {
         ) : (
           <ul className={cx(card, "divide-y divide-tinta/10")} role="list">
             {view.toCharge.map((a) => (
-              <li key={a.appointmentId} className="flex items-center gap-3 px-4 py-3">
+              <li key={a.appointmentId} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
                 <span className="monto w-12 shrink-0 text-sm text-tinta/70">{a.timeLabel}</span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold">{a.clientName ?? "Sin nombre"}</p>
@@ -224,9 +227,17 @@ export function CashBoard({ initial }: { initial: CashView }) {
                   </p>
                 </div>
                 <span className="monto hidden shrink-0 font-semibold min-[400px]:inline">{a.priceLabel}</span>
-                <Btn size="sm" className="h-11 shrink-0" onPress={() => setCharging({ id: a.appointmentId, clientName: a.clientName })} isDisabled={view.dayClosed}>
-                  Cobrar<span className="sr-only"> a {a.clientName ?? "la cita"} de las {a.timeLabel}</span>
-                </Btn>
+                {/* Con "Cortesía", en el celular los dos botones bajan a su propia línea (360 px no da para ambos al lado del nombre). */}
+                <div className={cx("flex shrink-0 gap-2", view.canCourtesy && "max-[479px]:w-full max-[479px]:justify-end")}>
+                  {view.canCourtesy ? (
+                    <Btn variant="secondary" size="sm" className="h-11" onPress={() => setSheet({ kind: "courtesy", appointment: a })} isDisabled={view.dayClosed}>
+                      <Gift size={16} aria-hidden /> Cortesía<span className="sr-only"> para {a.clientName ?? "la cita"} de las {a.timeLabel}</span>
+                    </Btn>
+                  ) : null}
+                  <Btn size="sm" className="h-11" onPress={() => setCharging({ id: a.appointmentId, clientName: a.clientName })} isDisabled={view.dayClosed}>
+                    Cobrar<span className="sr-only"> a {a.clientName ?? "la cita"} de las {a.timeLabel}</span>
+                  </Btn>
+                </div>
               </li>
             ))}
           </ul>
@@ -560,6 +571,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
       </Sheet>
       <Sheet isOpen={sheet?.kind === "void"} onOpenChange={(o) => !o && closeSheet()} title="Solicitar anulación" description="El dueño revisa la solicitud y la aprueba o la rechaza.">
         {sheet?.kind === "void" ? <VoidRequestForm sale={sheet.sale} onDone={done} onCancel={closeSheet} /> : null}
+      </Sheet>
+      <Sheet isOpen={sheet?.kind === "courtesy"} onOpenChange={(o) => !o && closeSheet()} title="Dar como cortesía" description="La cita sale de Por cobrar y queda en el informe de cortesías.">
+        {sheet?.kind === "courtesy" ? <CourtesyForm appointment={sheet.appointment} onDone={done} onCancel={closeSheet} /> : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "closeDay"} onOpenChange={(o) => !o && closeSheet()} title="¿Cerrar el día?">
         <CloseDayForm businessDate={view.businessDate} isToday onDone={done} onCancel={closeSheet} />
@@ -1168,6 +1182,60 @@ function VoidRequestForm({ sale, onDone, onCancel }: { sale: DaySale; onDone: (m
       <FormError message={error} />
       <Actions pending={pending} onCancel={onCancel}>
         Enviar solicitud
+      </Actions>
+    </Form>
+  );
+}
+
+// ─── Cortesía (sprint 8, §4) ─────────────────────────────────────────────────
+
+function CourtesyForm({ appointment, onDone, onCancel }: { appointment: ToCharge; onDone: (m: string) => void; onCancel: () => void }) {
+  const invalid = useFieldErrors<"reason">();
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    const clean = reason.replace(/\s+/g, " ").trim();
+    if (!invalid.check(e.currentTarget, clean.length < 3 ? { reason: "Explica el motivo (al menos 3 letras)." } : {})) return;
+    setPending(true);
+    // Sin clave de idempotencia: la cortesía es una por cita y repetirla devuelve la misma.
+    const r = await callAction(() => giveCourtesyAction({ appointmentId: appointment.appointmentId, reason: clean }));
+    setPending(false);
+    if (r.ok) return onDone("Cortesía registrada");
+    setError(r.error);
+  }
+
+  return (
+    <Form onSubmit={onSubmit} validationBehavior="aria" className="flex flex-col gap-4">
+      <dl className="grid grid-cols-2 gap-3 rounded-xl border border-tinta/10 bg-hueso/40 p-4 text-sm">
+        <div>
+          <dt className="text-xs text-tinta/70">Cliente</dt>
+          <dd className="font-semibold">{appointment.clientName ?? "Sin nombre"}</dd>
+        </div>
+        <div>
+          <dt className="text-xs text-tinta/70">Precio de lista</dt>
+          <dd className="monto font-semibold">{appointment.priceLabel}</dd>
+        </div>
+        <div className="col-span-2">
+          <dt className="text-xs text-tinta/70">Servicio</dt>
+          <dd>
+            {appointment.serviceName} · {appointment.staffName} · <span className="monto">{appointment.timeLabel}</span>
+          </dd>
+        </div>
+      </dl>
+      <p className="flex items-start gap-2 rounded-xl border border-cuero/30 bg-cuero/5 p-3 text-sm">
+        <Gift size={18} className="mt-0.5 shrink-0 text-cuero" aria-hidden />
+        <span>
+          <strong>No se cobra ni genera comisión.</strong> Después no se podrá cobrar esta cita.
+        </span>
+      </p>
+      <NoteField name="reason" label="Motivo" value={reason} onChange={(v) => (setReason(v), invalid.clear("reason"))} error={invalid.errors.reason} isRequired />
+      <FormError message={error} />
+      <Actions pending={pending} onCancel={onCancel}>
+        <Gift size={18} aria-hidden /> Dar cortesía
       </Actions>
     </Form>
   );

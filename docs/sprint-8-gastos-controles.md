@@ -24,6 +24,13 @@ Sin migración ni acción nueva.
 - Si el cliente es nuevo y su número se tecleó en el walk-in, se muestra el número completo formateado, para leérselo.
 - `maskEmail` nuevo en `src/domain/clients/client.ts`. Propiedad: nunca muestra más que el primer carácter del usuario y el dominio.
 
+**Hecho.**
+
+- `preferredChannel` pasó a `src/domain/notifications/channel.ts` (puro; `src/db/notifications.ts` lo reexporta) y `receiptDestination` arma desde ahí el canal y el dato a mostrar. El envío y la hoja usan la misma regla; una prueba de propiedades lo comprueba.
+- `loadCheckout` trae el destino del cliente de la cita (`appointmentReceiptDestination`). En el walk-in, el cliente existente lo trae de la búsqueda (`findClients` → `receiptTo`, con `receiptDestinationsOf`). Para el cliente nuevo, la hoja lo calcula con el celular tecleado y los canales activos (`receiptChannels()`), y lo muestra completo.
+- Sin canal: "Sin celular ni correo: no se puede enviar el recibo." y no hay interruptor. Si la configuración de mensajes no está lista, no hay canales: no se ofrece el envío (tampoco se encolaría).
+- `maskEmail` en `src/domain/clients/client.ts`; pruebas de propiedades de `maskEmail` y `maskPhone`. Sin migración ni acción nueva.
+
 ## 3. C. Avisos al dueño
 
 - **Tabla `owner_alerts`:** `location_id`, `kind`, `ref_id`, `created_at`, `notified_at` y `UNIQUE (location_id, kind, ref_id)`.
@@ -35,7 +42,7 @@ Sin migración ni acción nueva.
 - **Sin correo configurado,** el aviso queda en el registro del servidor y en Inicio, como hoy.
 - **Propiedad:** repetir el barrido no duplica avisos y cada aviso sale en un solo correo.
 
-## 4. E. Cortesía
+## 4. E. Cortesía (hecho)
 
 Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar `sales_assert_totals`, la anulación y los triggers del registro operativo. Es mucho riesgo para algo que no mueve un peso. Por eso la cortesía es un registro aparte:
 
@@ -45,6 +52,18 @@ Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar 
 - **Quién la da:** quien puede dar descuentos, y solo si el tope de descuento de la sede es 100 %. Queda en la bitácora (`appointment.courtesy`) y genera un aviso al dueño (§3).
 - **Informes:** "Cortesías" por barbero, con el precio de lista sumado en SQL.
 - **Pantalla:** un botón "Cortesía" en la fila de "Por cobrar" de Caja, no en la hoja de cobro.
+
+**Hecho** (migración 0026):
+- **Tabla `appointment_courtesies`:** `location_id`, `appointment_id` (FK compuesta a la cita), `staff_id` de quien atendió (FK compuesta), `list_price` en centavos de pesos enteros (el precio de la cita, que es lo que habría cobrado el cobro), `reason` (de 3 a 300 caracteres, una línea: la base lo vuelve a exigir), `business_date` (día contable local), `created_by` y `created_at`. `UNIQUE (location_id, appointment_id)`. Solo SELECT e INSERT para `villa_app` (el default de `app_apply_grants`).
+- **Regla** (`giveCourtesy` en `src/db/courtesies.ts`): una transacción SERIALIZABLE con la cita bloqueada `FOR UPDATE`. Solo una cita en la silla o terminada, sin venta pagada; se rechazan la cancelada, el "No vino" y la que aún no pasa a la silla. Como el cobro, una cita en la silla queda terminada y no se da en un día cerrado. La idempotencia es el `UNIQUE`: repetir devuelve la misma cortesía, sin otra fila ni otro evento. Sin asiento, sin comisión, sin movimiento de caja.
+- **El cobro** (`lockAppointment` en `src/db/sales.ts`) rechaza una cita con cortesía: "Esta cita se dio como cortesía: no se cobra". Los triggers contables no cambiaron.
+- **"Por cobrar"** (`appointmentsToCharge`) ya no muestra las citas con cortesía.
+- **Quién:** la acción `giveCourtesyAction` (Caja) exige `ledger.post` y `canDiscount` (si no, va a "sin permiso"); el dominio (`src/domain/sales/courtesy.ts`) exige además el tope de descuento de la sede en 100 %. Con el tope menor, Caja no muestra el botón y el servidor la rechaza con un mensaje.
+- **Bitácora:** `appointment.courtesy` (finanzas) en la misma transacción. Lleva el servicio, quien atendió y el precio de lista; no el cliente ni el motivo (texto libre).
+- **Pantalla:** en "Por cobrar", "Cortesía" al lado de "Cobrar"; en el celular los dos botones bajan a su propia línea. El diálogo muestra la cita, avisa "No se cobra ni genera comisión" y pide el motivo.
+- **Informe:** sección "Cortesías" en Informes (solo `reports.financial`), por barbero, con la cantidad y el precio de lista sumados en SQL (`courtesiesByStaff`), y su CSV (`courtesies`, sin el motivo).
+- **Pruebas:** `src/db/courtesies.test.ts` (ejemplos y una propiedad: en cualquier orden de cortesías y cobros, ninguna cita queda cobrada y con cortesía, manda lo primero que entró, solo las ventas mueven el libro y el informe suma lo mismo que las filas) y los casos de `giveCourtesyAction` en `authorization.test.ts` (matriz de roles, otra sede, evento único, recepción habilitada y tope bajo 100 %).
+- **Pendiente:** el aviso al dueño (§3) aún no barre las cortesías.
 
 ## 5. B. Gastos fijos
 

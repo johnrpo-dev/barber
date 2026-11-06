@@ -1672,3 +1672,48 @@ export const auditEvents = pgTable(
     index("audit_events_location_occurred_idx").on(t.locationId, t.occurredAt),
   ],
 );
+
+// ─── Cortesías (sprint 8, migración 0026) ────────────────────────────────────
+// docs/sprint-8-gastos-controles.md §4. Una cita atendida que el negocio regala NO es una venta de $0:
+// no hay asiento, ni comisión, ni medio de pago. Es este registro aparte, solo-inserción para la app
+// (app_apply_grants le da SELECT e INSERT, sin UPDATE ni DELETE). Una cita tiene a lo sumo una
+// cortesía; quién la da, que no tenga venta y su estado los valida src/db/courtesies.ts con la cita
+// bloqueada FOR UPDATE, y el cobro (src/db/sales.ts) rechaza una cita con cortesía.
+
+/** Cortesía de una cita: el precio de lista congelado (el de la cita) y el motivo. */
+export const appointmentCourtesies = pgTable(
+  "appointment_courtesies",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    appointmentId: bigint("appointment_id", { mode: "bigint" }).notNull(),
+    /** Quien atendió la cita (el profesional de la cita): el informe agrupa por esta persona. */
+    staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
+    /** Precio de lista congelado, en centavos (pesos enteros): lo que se habría cobrado. */
+    listPrice: bigint("list_price", { mode: "bigint" }).notNull(),
+    reason: text("reason").notNull(),
+    /** Día contable local de la sede en que se dio la cortesía. */
+    businessDate: date("business_date", { mode: "string" }).notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("appointment_courtesies_appointment_key").on(t.locationId, t.appointmentId),
+    foreignKey({
+      name: "appointment_courtesies_appointment_fk",
+      columns: [t.locationId, t.appointmentId],
+      foreignColumns: [appointments.locationId, appointments.id],
+    }),
+    foreignKey({
+      name: "appointment_courtesies_staff_fk",
+      columns: [t.locationId, t.staffId],
+      foreignColumns: [staffMembers.locationId, staffMembers.id],
+    }),
+    check("appointment_courtesies_list_price_check", sql`${t.listPrice} >= 0 and ${wholePesos(t.listPrice)}`),
+    check(
+      "appointment_courtesies_reason_check",
+      sql`char_length(${t.reason}) between 3 and 300 and ${t.reason} = btrim(${t.reason}) and ${t.reason} !~ '[[:cntrl:]]'`,
+    ),
+    index("appointment_courtesies_location_date_idx").on(t.locationId, t.businessDate),
+  ],
+);

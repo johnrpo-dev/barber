@@ -20,6 +20,8 @@ export const AUDIT_ACTIONS = [
   "settlement.reverse",
   "advance.create",
   "advance.reverse",
+  // Sprint 8: una cita atendida que el negocio regala (sin venta, sin asiento y sin comisión).
+  "appointment.courtesy",
   // Configuración
   "service.create",
   "service.update",
@@ -75,6 +77,7 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "settlement.reverse": "finanzas",
   "advance.create": "finanzas",
   "advance.reverse": "finanzas",
+  "appointment.courtesy": "finanzas",
   "service.create": "configuracion",
   "service.update": "configuracion",
   "service.active": "configuracion",
@@ -115,6 +118,7 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "settlement.reverse": "Revirtió una liquidación",
   "advance.create": "Dio un anticipo",
   "advance.reverse": "Revirtió un anticipo",
+  "appointment.courtesy": "Dio una cita como cortesía",
   "service.create": "Creó un servicio",
   "service.update": "Cambió un servicio",
   "service.active": "Activó o retiró un servicio",

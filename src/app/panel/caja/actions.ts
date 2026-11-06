@@ -15,7 +15,9 @@ import {
   reopenBusinessDay,
   today,
 } from "@/db/cash";
+import { checkoutRulesOf } from "@/db/checkout-settings";
 import { db } from "@/db/client";
+import { giveCourtesy } from "@/db/courtesies";
 import { cashSessionsInPeriod } from "@/db/history";
 import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
@@ -24,7 +26,8 @@ import { money, sum } from "@/domain/money";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
 import { formatDateLabel } from "@/domain/booking/public-labels";
 import { CashError, sessionIsFromEarlierDay } from "@/domain/sales/cash";
-import { can } from "@/domain/staff/roles";
+import { canGiveCourtesy } from "@/domain/sales/courtesy";
+import { can, canDiscount } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, atLabel, minorText, moneyLabel, signedLabel } from "@/lib/labels";
@@ -113,6 +116,11 @@ export interface CashView {
   /** Día anterior con movimientos y sin cerrar (cierre tardío o se olvidó): se cierra desde Caja. */
   pendingDay: null | { date: string; label: string };
   toCharge: { appointmentId: string; timeLabel: string; clientName: string | null; serviceName: string; staffName: string; priceLabel: string; inChair: boolean }[];
+  /**
+   * Dar una cita de "Por cobrar" como cortesía (sprint 8, §4): quien puede dar descuentos y solo si el
+   * tope de descuento de la sede es 100 %. El servidor lo vuelve a exigir al darla.
+   */
+  canCourtesy: boolean;
   daySales: {
     saleId: string;
     /** Para abrir el recibo (/panel/ventas/<publicId>). */
@@ -140,6 +148,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
   return runAction(async () => {
     // Todo en UNA transacción REPEATABLE READ de solo lectura (L3): una sola foto del libro.
     const { day, summary, closed, owed, categories, sales, ledger, flagged, toCharge, pendingDay, reopened } = await cashViewData(database(), staff.locationId);
+    const rules = await checkoutRulesOf(database(), staff.locationId);
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -240,6 +249,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
         priceLabel: moneyLabel(a.price),
         inChair: a.status === "in_chair",
       })),
+      canCourtesy: canGiveCourtesy(staff.role, rules),
       daySales: sales.map((s) => ({
         saleId: s.saleId.toString(),
         publicId: s.publicId,
@@ -397,6 +407,36 @@ export async function cashDepositAction(raw: z.input<typeof depositInput>): Prom
     });
     refresh();
     return { movementId: movementId.toString() };
+  });
+}
+
+// ─── Cortesía (sprint 8, §4) ─────────────────────────────────────────────────
+
+const courtesyInput = z.object({
+  appointmentId: idSchema,
+  // El dominio lo deja en una línea y exige de 3 a 300 caracteres; aquí solo se acota la entrada.
+  reason: z.string().max(1000, "El motivo es muy largo"),
+});
+
+/**
+ * Una cita de "Por cobrar" que el negocio regala: sin venta, sin asiento y sin comisión. Quien puede
+ * dar descuentos (dueño; recepción si la sede lo habilita) y solo con el tope de descuento en 100 %.
+ * Repetir devuelve la misma cortesía (una por cita).
+ */
+export async function giveCourtesyAction(raw: z.input<typeof courtesyInput>): Promise<ActionResult<{ created: boolean }>> {
+  const staff = await requirePermission("ledger.post");
+  // Como el gasto de banco: un permiso que depende de la regla de la sede se decide antes de actuar.
+  if (!canDiscount(staff.role, await checkoutRulesOf(database(), staff.locationId))) redirect("/panel?sin-permiso=1");
+  return runAction(async () => {
+    const input = courtesyInput.parse(raw);
+    const { created } = await giveCourtesy(database(), {
+      locationId: staff.locationId,
+      appointmentId: input.appointmentId,
+      reason: input.reason,
+      actor: { userId: staff.userId, role: staff.role, staffId: staff.staffId },
+    });
+    refresh();
+    return { created };
   });
 }
 

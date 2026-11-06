@@ -316,6 +316,18 @@ export function ReportsView({ initial }: { initial: Report }) {
             empty="No hubo liquidaciones en el periodo."
           />
         </Section>
+
+        {/* Cortesías */}
+        <Section id="courtesies" title="Cortesías" action={exportBtn("courtesies")}>
+          <DataTable
+            caption="Cortesías por barbero"
+            cols={[{ label: "Barbero" }, { label: "Cortesías", numeric: true }, { label: "Precio de lista", numeric: true }]}
+            rows={r.courtesies.rows.map((c) => ({ key: c.staffId, cells: [c.name, String(c.courtesies), c.listPriceLabel] }))}
+            foot={{ label: `Total (${plural(r.courtesies.total, "cortesía", "cortesías")})`, value: r.courtesies.totalListPriceLabel, col: 2 }}
+            empty="No hubo cortesías en el periodo."
+          />
+          <p className="text-xs text-tinta/70">Citas atendidas que no se cobraron: no son ingreso ni generan comisión. El precio de lista es lo que se habría cobrado.</p>
+        </Section>
       </div>
 
       {/* Totales fijos abajo */}

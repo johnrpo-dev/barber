@@ -95,10 +95,14 @@ const AUDIT_STUB = `create table audit_events (id bigint generated always as ide
  */
 const LATER_COLUMNS_STUB = `alter table locations add column tax_id text, add column receipt_footer text, add column walk_in_guard_min integer not null default 60, add column no_show_limit integer not null default 2, add column booking_requires_code boolean not null default false; alter table clients add column no_shows_cleared_at timestamptz`;
 const DROP_LATER_COLUMNS = `alter table locations drop column tax_id, drop column receipt_footer, drop column walk_in_guard_min, drop column no_show_limit, drop column booking_requires_code; alter table clients drop column no_shows_cleared_at`;
-/** staff_services (0019): las funciones de hoy asignan servicios al crear personas y servicios. */
+/**
+ * staff_services (0019): las funciones de hoy asignan servicios al crear personas y servicios.
+ * appointment_courtesies (0026): el cobro de hoy rechaza una cita con cortesía.
+ */
 const LATER_TABLES_STUB = `create table staff_services (location_id bigint not null, staff_id bigint not null, service_id bigint not null,
-  created_at timestamptz not null default now(), primary key (location_id, staff_id, service_id))`;
-const DROP_LATER_TABLES = `drop table staff_services`;
+  created_at timestamptz not null default now(), primary key (location_id, staff_id, service_id));
+  create table appointment_courtesies (id bigint generated always as identity primary key, location_id bigint not null, appointment_id bigint not null)`;
+const DROP_LATER_TABLES = `drop table staff_services; drop table appointment_courtesies`;
 
 describe("saldos sobre datos de antes de 0013", () => {
   it("las ventas, la anulación y el pago de propinas viejos quedan pendientes e iguales a 2335 y 2380", { timeout: 180_000 }, async () => {

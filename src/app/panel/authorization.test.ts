@@ -261,6 +261,15 @@ async function drawerWithCash(tip = 0n): Promise<void> {
   await seedSale({ kind: "cash", tip });
 }
 
+/** Cortesías (sprint 8): el tope de descuento de la sede en 100 % y si recepción puede dar descuentos. */
+async function courtesyRules(locationId: bigint, opts: { maxDiscountBps?: number; receptionCanDiscount?: boolean } = {}): Promise<void> {
+  await client.query(`update locations set max_discount_bps = $2, reception_can_discount = $3 where id = $1`, [
+    String(locationId),
+    opts.maxDiscountBps ?? 10_000,
+    opts.receptionCanDiscount ?? false,
+  ]);
+}
+
 // ─── Comisiones: estado de partida para cada intento ────────────────────────
 
 /** La entrada de una liquidación por banco de lo pendiente del barbero de la sede A. */
@@ -448,7 +457,8 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select coalesce(string_agg(id || ':' || label || ':' || fee_bps || ':' || active, ',' order by id), '')
          from payment_methods where ${loc}::bigint is null or location_id = ${loc}) as payment_methods,
       (select coalesce(string_agg(id || ':' || name || ':' || account_code || ':' || active, ',' order by id), '')
-         from expense_categories where ${loc}::bigint is null or location_id = ${loc}) as expense_categories
+         from expense_categories where ${loc}::bigint is null or location_id = ${loc}) as expense_categories,
+      (select count(*) from appointment_courtesies where ${loc}::bigint is null or location_id = ${loc}) as courtesies
   `);
   return JSON.stringify(rows);
 }
@@ -1132,6 +1142,18 @@ const CASES: Case[] = [
     },
   },
   {
+    // Sprint 8: quien puede dar descuentos y solo con el tope en 100 %. Recepción, solo si la sede lo
+    // habilita (por defecto no): se prueba aparte en "cortesías".
+    name: "caja · dar una cita como cortesía",
+    action: "giveCourtesyAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      await courtesyRules(A.location);
+      const appointmentId = await chairAppointment();
+      return () => caja.giveCourtesyAction({ appointmentId: String(appointmentId), reason: "Cumpleaños del cliente" });
+    },
+  },
+  {
     name: "anulaciones · ver la cola",
     action: "loadVoidQueue",
     allowed: ["owner", "reception"],
@@ -1393,6 +1415,15 @@ describe("barbero frente a la cita de otro barbero", () => {
 // ─── Aislamiento entre sedes (IDOR) ──────────────────────────────────────────
 
 const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
+  {
+    name: "dar como cortesía una cita de esta sede",
+    prepare: async () => {
+      await courtesyRules(A.location);
+      await courtesyRules(B.location);
+      const appointmentId = await chairAppointment();
+      return () => caja.giveCourtesyAction({ appointmentId: String(appointmentId), reason: "Intruso" });
+    },
+  },
   {
     name: "ver la ficha de un cliente",
     prepare: async () => {
@@ -2576,6 +2607,7 @@ const AUDITED: Record<string, AuditAction> = {
   reverseSettlementAction: "settlement.reverse",
   giveAdvanceAction: "advance.create",
   reverseAdvanceAction: "advance.reverse",
+  giveCourtesyAction: "appointment.courtesy",
   createServiceAction: "service.create",
   updateServiceAction: "service.update",
   setServiceActiveAction: "service.active",
@@ -2672,5 +2704,53 @@ describe("cada acción de escritura deja exactamente un evento", () => {
     const second = await auditoria.loadAuditLog({ before: first.data.nextCursor! });
     if (!second.ok) throw new Error(second.error);
     expect(BigInt(second.data.events[0]!.id)).toBeLessThan(BigInt(first.data.nextCursor!));
+  });
+});
+
+// ─── Cortesías (sprint 8, docs/sprint-8-gastos-controles.md §4) ──────────────
+
+describe("cortesías", () => {
+  it("recepción la da solo si la sede la deja dar descuentos; con el tope bajo 100 % nadie, y la caja no ofrece el botón", async () => {
+    await courtesyRules(A.location, { receptionCanDiscount: true });
+    const id = await chairAppointment();
+    await signInAs(A.users.reception);
+    const view = await caja.loadCashView();
+    expect(view.ok && view.data.canCourtesy).toBe(true);
+    expect(await caja.giveCourtesyAction({ appointmentId: String(id), reason: "Cliente afectado por la espera" })).toMatchObject({ ok: true, data: { created: true } });
+    // Repetir devuelve la misma.
+    expect(await caja.giveCourtesyAction({ appointmentId: String(id), reason: "Otra vez" })).toMatchObject({ ok: true, data: { created: false } });
+    const after = await caja.loadCashView();
+    expect(after.ok && after.data.toCharge.some((a) => a.appointmentId === String(id))).toBe(false);
+
+    await courtesyRules(A.location, { maxDiscountBps: 3_000, receptionCanDiscount: true });
+    const other = await chairAppointment();
+    await signInAs(A.users.owner);
+    const capped = await caja.loadCashView();
+    expect(capped.ok && capped.data.canCourtesy).toBe(false);
+    const before = await fingerprint();
+    const refused = await caja.giveCourtesyAction({ appointmentId: String(other), reason: "Cumpleaños" });
+    expect(refused).toMatchObject({ ok: false });
+    expect(!refused.ok && refused.error).toMatch(/tope de descuento/);
+    expect(await fingerprint()).toBe(before);
+    await courtesyRules(A.location);
+  });
+
+  it("la que se dio como cortesía no se cobra", async () => {
+    await courtesyRules(A.location);
+    const id = await chairAppointment();
+    await signInAs(A.users.owner);
+    expect(await caja.giveCourtesyAction({ appointmentId: String(id), reason: "Cortesía de la casa" })).toMatchObject({ ok: true });
+    await expect(
+      checkout(db, {
+        locationId: A.location,
+        appointmentId: id,
+        extras: [],
+        discounts: [],
+        tips: [],
+        payments: [{ methodId: A.methods.card, amount: money(await servicePrice()) }],
+        idempotencyKey: `seed-sale-${uniq()}`,
+        actor: SEED_ACTOR(),
+      }),
+    ).rejects.toThrow(/cortesía/);
   });
 });
