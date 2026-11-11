@@ -143,7 +143,7 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
 
 ## Decisiones del dueño (antes de construir)
 
-1. **IVA de los productos.** Si Villa es responsable de IVA, la venta de productos lleva 19 % (cuenta 2408). Esto cambia el asiento de la venta, así que hay que saberlo antes de la fase C. Hasta que el contador lo confirme, el precio se toma como total y todo va a 4135.
+1. **IVA de los productos. Resuelta: Villa no es responsable de IVA** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT. El precio es el total y la venta va completa a 4135, sin cuenta 2408. Si algún día pasa a ser responsable, la venta lleva 19 % y cambia su asiento.
 2. **Códigos 1435 y 6135**: que los valide el contador.
 3. **¿Recepción puede registrar compras de contado?** Es el mismo riesgo que ya se acepta con los gastos de caja.
 4. **Día del conteo:** el último día del mes al cierre, o el primero antes de abrir.

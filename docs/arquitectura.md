@@ -110,8 +110,9 @@ Medido en esta máquina: con `number` y truncado, 463 combinaciones precio × po
 - **Sumas en SQL:** `SUM()` de una columna `bigint` devuelve `numeric`, que el driver entrega como texto. Toda suma se lee con `sumAsBigint()` (`src/db/sql.ts`) y nunca con `Number()`.
 - **Serialización:** `JSON.stringify` no acepta `bigint`. En las respuestas JSON los montos viajan como texto de centavos, por ejemplo `"2500000"`, y se reconstruyen con `BigInt()`.
 
+**Decidido:** Villa **no es responsable de IVA** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT. Los cobros van completos a ingresos y los gastos por su total: no hay línea de IVA ni IVA descontable. La regla de redondeo de la tabla queda para el día en que lo sea.
+
 **Pendiente de confirmar con el dueño y el contador:**
-- si Villa es responsable de IVA;
 - quién absorbe el costo del datáfono;
 - si la comisión se calcula antes o después del descuento.
 

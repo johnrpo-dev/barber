@@ -134,4 +134,4 @@ Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar 
 1. **¿Algún proveedor les fía?** Mientras no responda, no hay cuentas por pagar (parte A aplazada).
 2. **¿Los avisos le llegan por correo o por WhatsApp?** Correo a `ALERT_EMAIL`, agrupado cada 15 minutos. WhatsApp necesita una plantilla aprobada y cuesta por mensaje.
 3. **¿Quién da cortesías y se le paga comisión al barbero?** Quien puede dar descuentos con tope de 100 %, y sin comisión.
-4. **¿El contador confirma si Villa es responsable de IVA?** Sigue abierta desde el sprint 6. No bloquea este sprint.
+4. **¿Villa es responsable de IVA?** Resuelta: **no** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT.

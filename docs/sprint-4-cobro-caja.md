@@ -24,7 +24,7 @@ Decisiones de diseño del sprint 4. Se apoya en el modelo contable del sprint 1 
 
 - Liquidación de comisiones y reportes del dueño: sprint 5.
 - Productos e inventario: fase 2.
-- IVA: queda pendiente **[confirmar si Villa es responsable de IVA]**. El modelo deja espacio para una línea de IVA, pero el sprint 4 no la genera.
+- IVA: Villa **no es responsable de IVA** (decisión del dueño, 2026-11-11; ver [sprint-6-productos-inventario.md](sprint-6-productos-inventario.md)). El modelo deja espacio para una línea de IVA, pero no se genera.
 - Factura electrónica DIAN.
 
 **Requisito previo:** el endurecimiento del sprint 4 debe estar terminado:
