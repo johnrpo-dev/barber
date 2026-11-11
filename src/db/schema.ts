@@ -866,6 +866,32 @@ export const workerHeartbeats = pgTable(
   (t) => [check("worker_heartbeats_name_check", sql`${t.name} ~ '^[a-z][a-z0-9.-]{0,39}$'`)],
 );
 
+// Resultados de los respaldos (sprint 9, migración 0031). Los escriben los scripts del VPS como
+// postgres (deploy/backup: villa-backup.sh y villa-restore-test.sh al salir bien, villa-alert.sh al
+// fallar); Inicio del dueño los lee (src/db/backup-runs.ts). Infraestructura, como worker_heartbeats:
+// sin location_id (un backup es de toda la base). Solo-inserción para todos, y villa_app solo LEE: si
+// la app quedara comprometida, no podría fingir un respaldo que no se hizo. Sin datos personales.
+export const BACKUP_RUN_KINDS = ["backup", "restore_test"] as const;
+export const backupRuns = pgTable(
+  "backup_runs",
+  {
+    id: id(),
+    kind: text("kind", { enum: BACKUP_RUN_KINDS }).notNull(),
+    ok: boolean("ok").notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Tamaño del archivo cifrado, si salió bien. */
+    sizeBytes: bigint("size_bytes", { mode: "bigint" }),
+    /** Nota corta del script (la unidad que falló, el nombre del archivo). Nunca datos ni secretos. */
+    detail: text("detail"),
+  },
+  (t) => [
+    check("backup_runs_kind_check", sql`${t.kind} in ('backup','restore_test')`),
+    check("backup_runs_size_check", sql`${t.sizeBytes} is null or ${t.sizeBytes} >= 0`),
+    check("backup_runs_detail_check", sql`${t.detail} is null or length(${t.detail}) <= 200`),
+    index("backup_runs_kind_finished_idx").on(t.kind, t.finishedAt),
+  ],
+);
+
 // ─── Cobro, caja y gastos (sprint 4) ─────────────────────────────────────────
 // Ver docs/sprint-4-cobro-caja.md §2. Dinero en bigint (centavos) con CHECK >= 0; FK compuestas
 // con location_id. Las garantías (solo-inserción, una venta pagada solo pasa a anulada, una caja

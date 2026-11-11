@@ -6,6 +6,10 @@ Description=Villa: aviso de falla en %i
 
 [Service]
 Type=oneshot
+# postgres: registra la falla en backup_runs por el socket local (peer), como villa-backup.service.
+# Solo usa logger, curl y psql; backup.env lo lee systemd como root antes de cambiar de usuario.
+User=postgres
+Group=postgres
 ExecStart=/usr/local/sbin/villa-alert.sh %i
 EnvironmentFile=-/etc/villa/backup.env
 NoNewPrivileges=true

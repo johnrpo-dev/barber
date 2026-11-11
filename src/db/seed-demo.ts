@@ -15,7 +15,8 @@ import { describeError } from "@/lib/log";
 import { createService } from "./catalog";
 import { db } from "./client";
 import { locationSettings, setStaffBookableOnline, updateLocationSettings } from "./locations";
-import { locations, services, staffMembers, user } from "./schema";
+import { backupRuns, locations, services, staffMembers, user } from "./schema";
+import { seedDemoHostMode, seedDemoMode } from "./seed-demo-guard";
 import { addStaffMember, createStaffUser, setStaffActive, setStaffServices, setWeeklySchedule, staffServiceIds } from "./staff";
 import type { Db } from "./types";
 
@@ -140,32 +141,14 @@ const DEMO_ACCOUNTS: readonly { email: string; name: string; role: Exclude<Role,
   { email: "barbero@villa.test", name: "Barbero de prueba", role: "barber" },
 ];
 
-/**
- * tsx no fija NODE_ENV: con el .env de producción, mirar solo NODE_ENV no protege. Se exige una base
- * local (localhost, 127.0.0.1, ::1) o la opción explícita ALLOW_SEED_DEMO=1. Nunca imprime la URL.
- */
-/** true si la base es local; false si solo pasó por ALLOW_SEED_DEMO=1. */
-function assertDevDatabase(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("seed-demo es solo para desarrollo: no se ejecuta con NODE_ENV=production");
-  }
-  let host = "";
-  try {
-    host = new URL(process.env.DATABASE_URL ?? "").hostname;
-  } catch {
-    // Sin URL válida: no es una base local reconocible.
-  }
-  const local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(host);
-  if (!local && process.env.ALLOW_SEED_DEMO !== "1") {
-    throw new Error("seed-demo solo corre contra una base local. Si de verdad es una base de pruebas, usa ALLOW_SEED_DEMO=1.");
-  }
-  return local;
-}
-
 async function main() {
-  const localDatabase = assertDevDatabase();
+  // tsx no fija NODE_ENV: con el .env de producción, mirar solo NODE_ENV no protege. Host local o
+  // ALLOW_SEED_DEMO=1, y además la base no puede tener respaldos registrados (src/db/seed-demo-guard.ts).
+  const hostMode = seedDemoHostMode(process.env);
   const client = db();
   const d = client as unknown as Db;
+  const anyBackup = await client.select({ id: backupRuns.id }).from(backupRuns).limit(1);
+  const localDatabase = seedDemoMode(hostMode, { hasBackups: anyBackup.length > 0 }, { ALLOW_SEED_DEMO: process.env.ALLOW_SEED_DEMO }) === "local";
 
   const [location] = await client.select({ id: locations.id }).from(locations).where(eq(locations.name, LOCATION_NAME));
   if (!location) throw new Error(`No existe la sede "${LOCATION_NAME}". Ejecuta primero: npm run db:seed`);

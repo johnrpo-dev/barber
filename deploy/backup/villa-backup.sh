@@ -119,6 +119,15 @@ done
 
 size="$(du -h "$dump" | cut -f1)"
 echo "villa-backup: ok ${stamp} (${size}) → ${RCLONE_REMOTE}"
+
+# 7. Lo deja en la base para Inicio del dueño ("Último respaldo: hoy 3:10", migración 0031). Si no
+#    se puede registrar, el backup igual salió: no se marca como falla. Inicio lo verá como "hace más
+#    de un día" mañana, y eso ya es una señal. Variables de psql por stdin (no se interpolan en -c).
+psql -X -q --no-password -d "$VILLA_DB" -v ON_ERROR_STOP=1 \
+  -v bytes="$(stat -c %s "$dump")" -v detail="$(basename "$dump")" <<'SQL' \
+  || echo "villa-backup: el backup salió, pero no pude registrarlo en backup_runs" >&2
+INSERT INTO backup_runs (kind, ok, size_bytes, detail) VALUES ('backup', true, :'bytes'::bigint, left(:'detail', 200));
+SQL
 if [[ -n "${HEALTHCHECK_URL:-}" ]]; then
   curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL" >/dev/null || echo "villa-backup: no pude avisar a HEALTHCHECK_URL" >&2
 fi

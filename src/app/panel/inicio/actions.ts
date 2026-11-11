@@ -1,5 +1,6 @@
 "use server";
 
+import { backupStatus } from "@/db/backup-runs";
 import { db } from "@/db/client";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import { dashboardData } from "@/db/reports";
@@ -11,7 +12,9 @@ import { can } from "@/domain/staff/roles";
 import { changeLabel, rateBps } from "@/domain/reports/rates";
 import { type ActionResult, runAction } from "@/lib/action";
 import { absLabel, atLabel, minorText, moneyLabel } from "@/lib/labels";
+import { allowsDevFallbacks } from "@/lib/public-readiness";
 import { requirePermission } from "@/lib/session";
+import { type BackupLine, backupLines } from "./backup-view";
 
 // Tablero del dueño (docs/sprint-5-comisiones-informes.md §7). Una sola foto de solo lectura.
 
@@ -35,6 +38,8 @@ export type DashboardView = {
   }[];
   /** Recibos o avisos de la sede en cola y el worker sin latir hace más de 5 minutos (migración 0030). */
   deliveryStalled: boolean;
+  /** Último respaldo y última prueba de restauración (migración 0031). Vacío en desarrollo sin backups. */
+  backups: BackupLine[];
   owed: { staffId: string; name: string; commissionLabel: string; tipsLabel: string; receivableLabel: string; netMinor: string; netLabel: string }[];
   upcoming: { atLabel: string; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 };
@@ -56,6 +61,14 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
     const recurring = await dueRecurringExpenses(db() as unknown as Db, { locationId: staff.locationId });
     const overdue = recurring.items.reduce((n, x) => n + x.due.filter((p) => p.status === "overdue").length, 0);
     const delivery = await deliveryStatus(db() as unknown as Db, staff.locationId);
+    const now = new Date();
+    const backups = backupLines(await backupStatus(db() as unknown as Db, now), {
+      timeZone: d.timeZone,
+      today: d.businessDate,
+      now,
+      // Falla cerrado: solo en desarrollo o tests se calla que no haya ningún respaldo.
+      production: !allowsDevFallbacks(),
+    });
     // Conteo a ciegas: el esperado de un turno abierto solo lo ve quien revisa la caja.
     const expected = can(staff.role, "cash.review") ? d.cash.expected : null;
     const alerts: DashboardView["alerts"] = [];
@@ -149,6 +162,7 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
       },
       alerts,
       deliveryStalled: delivery.stalled,
+      backups,
       owed: d.owed.map((b) => {
         const net = estimatedPayout({
           commission: money(b.pendingCommission),

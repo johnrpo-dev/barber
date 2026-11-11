@@ -147,6 +147,7 @@ unset PGPW
 - `read -rs` no muestra la contraseña ni la guarda en el historial.
 - La variable que pones en la línea manda sobre la del `.env` de tu computador.
 - `seed-demo` crea también las cuentas `recepcion@villa.test` y `barbero@villa.test`, y muestra su contraseña **una sola vez**: guárdala para probar el panel como cada rol.
+- `seed-demo` se niega con una base que tiene respaldos registrados (así reconoce producción aunque el túnel sea por `localhost`). En pruebas no hay respaldos, así que corre. Si algún día los configuras aquí, necesitarás `ALLOW_SEED_DEMO=1`, y entonces no crea cuentas de prueba.
 - Si una contraseña tiene caracteres como `@`, `/` o `:`, genera otra con `openssl rand -hex 24` (sin símbolos) para no tener que codificarla en la URL.
 
 Cierra el túnel (Ctrl+C) al terminar.

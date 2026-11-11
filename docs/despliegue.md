@@ -379,6 +379,7 @@ sudo -u postgres rclone --config /etc/villa/rclone.conf delete b2:villa-backups-
 - **Destinos en el bucket:** `daily/` todos los días, `weekly/` los domingos, `monthly/` el día 1 y `erasures/` todos los días. Cada uno lleva su `.sha256`.
 - **En el VPS** quedan solo los 2 últimos, también cifrados.
 - **Si falla,** `villa-alert@` deja un error en el journal y llama a `ALERT_WEBHOOK_URL` si la configuraste.
+- **En Inicio del dueño** (sprint 9, migración 0031): cada corrida queda en la tabla `backup_runs` (buena o mala, con la hora y el tamaño; sin datos ni rutas). `villa-backup.sh` y `villa-restore-test.sh` registran la buena y `villa-alert@` la mala, todos como `postgres` por el socket local (por eso `villa-alert@.service` corre como `postgres`). Inicio dice "Último respaldo: hoy a las 03:10", o avisa si el último falló o si no hay uno bueno en más de 26 horas (40 días para la prueba de restauración). La app solo lee esa tabla: no puede registrar un respaldo que no se hizo. Si la base está caída al fallar el backup, la falla no se registra, pero Inicio lo nota igual al día siguiente porque no habrá uno bueno reciente.
 - **Recomendado:** un ping de vida en `HEALTHCHECK_URL` (healthchecks.io, gratis). Si un día no llega, te avisan, aunque el VPS esté caído.
 
 **Custodia de las llaves: la decisión que tienes que tomar.** La prueba de restauración automática (§9) necesita la llave **privada** en el VPS, en `/etc/villa/backup-identity.txt` (`0400 postgres:postgres`).

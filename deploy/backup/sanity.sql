@@ -103,6 +103,11 @@ BEGIN
       RAISE EXCEPTION 'cordura: villa_app puede editar o borrar %', t;
     END IF;
   END LOOP;
+  -- Respaldos (0031): la app solo los lee; si pudiera insertar, podría fingir uno que no se hizo.
+  IF to_regclass('public.backup_runs') IS NOT NULL
+     AND has_table_privilege('villa_app', 'public.backup_runs', 'INSERT') THEN
+    RAISE EXCEPTION 'cordura: villa_app puede registrar respaldos en backup_runs';
+  END IF;
   IF to_regnamespace('pgboss') IS NOT NULL
      AND (has_schema_privilege('villa_app', 'pgboss', 'USAGE') OR has_schema_privilege('villa_app', 'pgboss', 'CREATE')) THEN
     RAISE EXCEPTION 'cordura: villa_app alcanza el esquema pgboss';

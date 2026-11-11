@@ -28,6 +28,12 @@ started="$(date +%s)"
 elapsed="$(( $(date +%s) - started ))"
 echo "villa-restore-test: OK en ${elapsed}s"
 
+# Para Inicio del dueño (migración 0031): en la base de verdad, no en la temporal que se borra.
+psql -X -q --no-password -d "${VILLA_DB:-villa}" -v ON_ERROR_STOP=1 -v detail="OK en ${elapsed}s" <<'SQL' \
+  || echo "villa-restore-test: la prueba salió bien, pero no pude registrarla en backup_runs" >&2
+INSERT INTO backup_runs (kind, ok, detail) VALUES ('restore_test', true, left(:'detail', 200));
+SQL
+
 if [[ -n "${RESTORE_HEALTHCHECK_URL:-}" ]]; then
   curl -fsS -m 10 --retry 3 "$RESTORE_HEALTHCHECK_URL" >/dev/null || echo "villa-restore-test: no pude avisar a RESTORE_HEALTHCHECK_URL" >&2
 fi

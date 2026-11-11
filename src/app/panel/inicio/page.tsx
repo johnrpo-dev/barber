@@ -37,6 +37,9 @@ export default async function InicioPage() {
     );
   }
   const d = result.data;
+  // Respaldos (migración 0031): las fallas van como aviso arriba; lo que está bien, en una línea tenue abajo.
+  const backupAlerts = d.backups.filter((b) => b.tone === "alert");
+  const backupOk = d.backups.filter((b) => b.tone === "ok");
 
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-4 pb-28 pt-6 md:px-8 md:py-10">
@@ -93,7 +96,13 @@ export default async function InicioPage() {
         </h2>
         {/* Recibos y avisos en cola con el worker sin latir (migración 0030). */}
         {d.deliveryStalled ? <DeliveryStoppedNotice /> : null}
-        {d.alerts.length === 0 && d.deliveryStalled ? null : d.alerts.length === 0 ? (
+        {backupAlerts.map((b) => (
+          <p key={b.kind} role="status" className="flex items-start gap-3 rounded-xl border border-alerta/30 bg-alerta/5 px-4 py-3 text-sm">
+            <TriangleAlert size={18} className="mt-0.5 shrink-0 text-alerta" aria-hidden />
+            <span className="min-w-0 flex-1 font-semibold text-tinta">{b.text}</span>
+          </p>
+        ))}
+        {d.alerts.length === 0 && (d.deliveryStalled || backupAlerts.length > 0) ? null : d.alerts.length === 0 ? (
           <p className={`${card} flex items-center gap-3 px-4 py-3 text-sm text-tinta/80`}>
             <CheckCircle2 size={18} className="shrink-0 text-botella" aria-hidden /> Todo en orden: nada pendiente por revisar.
           </p>
@@ -116,6 +125,16 @@ export default async function InicioPage() {
             ))}
           </ul>
         )}
+        {backupOk.length > 0 ? (
+          <ul className="flex flex-col gap-1 text-xs text-tinta/70 sm:flex-row sm:flex-wrap sm:gap-x-5">
+            {backupOk.map((b) => (
+              <li key={b.kind} className="flex items-center gap-1.5">
+                <CheckCircle2 size={14} className="shrink-0 text-botella" aria-hidden />
+                <span className="monto">{b.text}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
