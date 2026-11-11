@@ -22,7 +22,7 @@ El correo (Resend) es opcional en pruebas. Sin él, los avisos solo van por What
 
 Sigue [despliegue.md](despliegue.md) §1, §2 y §3 tal cual: usuario administrador, SSH solo con llave, firewall (22, 80 y 443), Node 24, PostgreSQL 18 y los tres roles de la base.
 
-**La copia de root va en un tag.** `install-kit.sh` se niega si no lo está. En §3 de la guía grande cambia `v1.0.0` por el tag de pruebas (`v0.7.0`).
+**La copia de root va en un tag.** `install-kit.sh` se niega si no lo está. En §3 de la guía grande cambia `v1.0.0` por el tag de pruebas (`v0.8.0`).
 
 **El repositorio es privado.** Hace falta una *deploy key* de solo lectura. `deploy-release.sh` clona como el usuario `villa`, así que la llave vive en su casa. Créala **después** de `adduser … villa` (§3 de la guía grande) y **antes** de la copia de root:
 
@@ -45,7 +45,7 @@ sudo git -c core.sshCommand="ssh -i /var/lib/villa/.ssh/id_ed25519 -o UserKnownH
 sudo git -C /root/villa-kit config core.sshCommand "ssh -i /var/lib/villa/.ssh/id_ed25519 -o UserKnownHostsFile=/var/lib/villa/.ssh/known_hosts"
 ```
 
-Lo demás de §3 sigue igual (`fetch --tags`, `checkout --detach v0.7.0`, `install-kit.sh`).
+Lo demás de §3 sigue igual (`fetch --tags`, `checkout --detach v0.8.0`, `install-kit.sh`).
 
 ## 2. Secretos
 
@@ -112,7 +112,7 @@ Así Google no indexa el ambiente de pruebas bajo el dominio de NailsLu. Luego `
 Sigue [despliegue.md](despliegue.md) §5 y §6 con el tag de pruebas:
 
 ```bash
-sudo SKIP_BACKUP=1 /usr/local/sbin/deploy-release.sh v0.7.0
+sudo SKIP_BACKUP=1 /usr/local/sbin/deploy-release.sh v0.8.0
 ```
 
 En pruebas no configuramos los backups (§8 de la guía grande), así que **cada** publicación lleva `SKIP_BACKUP=1`. Los datos son de prueba; en producción esto no se hace nunca.
@@ -160,11 +160,41 @@ Cierra el túnel (Ctrl+C) al terminar.
 - Agenda: walk-in, "Salió / Llegó", marcar "No vino" dos veces y desbloquear.
 - Cobro, caja, recibo y cierre del día.
 - El panel como recepción y como barbero, con las cuentas de prueba.
+- Los respaldos en Inicio del dueño (abajo).
+
+### Respaldos en Inicio (desde v0.8.0)
+
+En pruebas no hay bucket, así que un respaldo de verdad no puede salir. Igual se prueba lo que ve el dueño. **Hazlo después de cargar `seed-demo` (§6):** con un respaldo anotado, `seed-demo` ya no corre en esta base (así reconoce producción), y las anotaciones no se pueden borrar.
+
+1. **La falla.** Fuerza el respaldo. Sin `/etc/villa/backup.env`, la unidad falla y `villa-alert@` anota la falla en la base:
+
+   ```bash
+   sudo systemctl start villa-backup.service; systemctl status villa-alert@villa-backup.service.service --no-pager | head -5
+   sudo -u postgres psql -d villa -c "SELECT kind, ok, finished_at, detail FROM backup_runs ORDER BY id"
+   ```
+
+   Debe salir una fila `backup | f | … | villa-backup.service`. En Inicio, como dueño: "El respaldo de hoy a las … falló. No hay ninguno bueno registrado."
+
+2. **Uno bueno.** Anótalo a mano, como lo haría `villa-backup.sh` al terminar:
+
+   ```bash
+   sudo -u postgres psql -d villa -c "INSERT INTO backup_runs (kind, ok, detail) VALUES ('backup', true, 'prueba manual')"
+   ```
+
+   Inicio pasa a "Último respaldo: hoy a las …" en gris, con el chulo verde.
+
+3. **Que la app no pueda fingirlo.** Esto debe fallar con `permission denied`:
+
+   ```bash
+   sudo -u postgres psql -d villa -c "SET ROLE villa_app; INSERT INTO backup_runs (kind, ok) VALUES ('backup', true)"
+   ```
+
+Si después necesitas volver a correr `seed-demo` aquí, usa `ALLOW_SEED_DEMO=1`: carga catálogo y equipo, sin crear cuentas de prueba (las que ya creó siguen).
 
 ## 8. Publicar cambios
 
 ```bash
-sudo SKIP_BACKUP=1 /usr/local/sbin/deploy-release.sh v0.7.1
+sudo SKIP_BACKUP=1 /usr/local/sbin/deploy-release.sh v0.8.1
 ```
 
 Con cada tag nuevo que publique Claude. Si cambió algo en `deploy/`, actualiza antes la copia de root (§7 de la guía grande).
