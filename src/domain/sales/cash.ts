@@ -34,6 +34,8 @@ const RESERVED_EXPENSE_ACCOUNTS: ReadonlySet<string> = new Set([
   ACCOUNTS.commissionExpense.code,
   ACCOUNTS.cardFees.code,
   ACCOUNTS.cashDifferences.code,
+  // Costo de ventas (sprint 6): solo el ajuste del conteo de inventario lo mueve.
+  ACCOUNTS.costOfGoodsSold.code,
 ]);
 
 /** ¿Puede una categoría de gasto apuntar a esta cuenta? Solo cuentas de gasto sin flujo propio. */

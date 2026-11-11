@@ -139,7 +139,7 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_kind_check",
-      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal','staff_advance')`,
+      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal','staff_advance','inventory_purchase','inventory_count')`,
     ),
     check("journal_entries_reversal_check", sql`(${t.kind} = 'reversal') = (${t.reversesEntryId} is not null)`),
     index("journal_entries_location_date_idx").on(t.locationId, t.businessDate),
@@ -1200,7 +1200,9 @@ export const cashMovements = pgTable(
     id: id(),
     locationId: locationId(),
     cashSessionId: bigint("cash_session_id", { mode: "bigint" }).notNull(),
-    kind: text("kind", { enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal", "commission_payout", "staff_advance"] }).notNull(),
+    kind: text("kind", {
+      enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal", "commission_payout", "staff_advance", "inventory_purchase"],
+    }).notNull(),
     journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
     /** Pago de propinas, liquidación o anticipo: a quién. */
     staffId: bigint("staff_id", { mode: "bigint" }),
@@ -1231,7 +1233,7 @@ export const cashMovements = pgTable(
     }),
     check(
       "cash_movements_kind_check",
-      sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal','commission_payout','staff_advance')`,
+      sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal','commission_payout','staff_advance','inventory_purchase')`,
     ),
     check(
       "cash_movements_staff_check",
@@ -1879,5 +1881,140 @@ export const recurringExpenseRuns = pgTable(
         or (${t.outcome} = 'skipped' and ${t.expenseId} is null and ${t.skipReason} is not null
             and char_length(${t.skipReason}) between 3 and 300 and ${t.skipReason} = btrim(${t.skipReason}) and ${t.skipReason} !~ '[[:cntrl:]]')`,
     ),
+  ],
+);
+
+// ─── Productos e inventario periódico (sprint 6, migración 0032) ─────────────
+// docs/sprint-6-productos-inventario.md. Las compras suben 1435; una vez al mes se cuentan las unidades,
+// se valoran al costo de la última compra y un único asiento de ajuste lleva 1435 al valor contado
+// contra 6135. Garantías en la base (0032): solo los documentos de inventario (y sus reversas) mueven
+// 1435 y 6135; cada documento tiene su asiento exacto; documentos y líneas son solo-inserción.
+
+/** Catálogo de productos. Se edita (solo las columnas editables: grant de 0032), no se borra. */
+export const products = pgTable(
+  "products",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    /** Identificador hacia afuera (como services.public_id): el id interno no sale de la app. */
+    publicId: uuid("public_id").notNull().defaultRandom().unique(),
+    name: text("name").notNull(),
+    /** Referencia opcional (del proveedor o del negocio). */
+    sku: text("sku"),
+    /** Precio de venta en centavos (pesos enteros). */
+    price: amount("price").notNull(),
+    /** Comisión de quien vende, en puntos básicos (0 por defecto). */
+    commissionBps: integer("commission_bps").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("products_location_id_id_key").on(t.locationId, t.id),
+    uniqueIndex("products_location_name_key").on(t.locationId, sql`lower(${t.name})`),
+    uniqueIndex("products_location_sku_key").on(t.locationId, sql`lower(${t.sku})`).where(sql`${t.sku} is not null`),
+    check(
+      "products_name_check",
+      sql`char_length(${t.name}) between 2 and 80 and ${t.name} = btrim(${t.name}) and ${t.name} !~ '[[:cntrl:]]'`,
+    ),
+    check(
+      "products_sku_check",
+      sql`${t.sku} is null or (char_length(${t.sku}) between 1 and 40 and ${t.sku} = btrim(${t.sku}) and ${t.sku} !~ '[[:cntrl:]]')`,
+    ),
+    check("products_price_check", sql`${t.price} >= 0 and ${wholePesos(t.price)} and ${t.price} <= 10000000000000`),
+    check("products_commission_check", sql`${t.commissionBps} between 0 and 10000`),
+  ],
+);
+
+/**
+ * Documento de inventario: una compra (con su asiento Dr 1435 / Cr 1105, 1110 o 3105) o un conteo (con
+ * su asiento de ajuste contra 6135, o sin asiento si el libro ya valía lo contado). Solo-inserción.
+ */
+export const inventoryDocuments = pgTable(
+  "inventory_documents",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    kind: text("kind", { enum: ["purchase", "count"] }).notNull(),
+    /** De dónde salió el dinero de una compra; null en un conteo. owner = carga inicial (3105). */
+    paidFrom: text("paid_from", { enum: ["cash", "bank", "owner"] }),
+    /** Día contable local de la sede. */
+    businessDate: date("business_date", { mode: "string" }).notNull(),
+    /** Null solo en un conteo sin ajuste. */
+    journalEntryId: bigint("journal_entry_id", { mode: "bigint" }),
+    /** El turno de caja de una compra pagada de la caja. */
+    cashSessionId: bigint("cash_session_id", { mode: "bigint" }),
+    /** Compra: su costo total. Conteo: el valor contado (la suma de sus líneas). */
+    total: amount("total").notNull(),
+    /** Nota corta opcional; sin datos personales. */
+    note: text("note"),
+    createdBy: text("created_by").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("inventory_documents_location_id_id_key").on(t.locationId, t.id),
+    unique("inventory_documents_idempotency_key").on(t.locationId, t.idempotencyKey),
+    unique("inventory_documents_journal_entry_key").on(t.journalEntryId),
+    foreignKey({
+      name: "inventory_documents_journal_entry_fk",
+      columns: [t.locationId, t.journalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    foreignKey({
+      name: "inventory_documents_session_fk",
+      columns: [t.locationId, t.cashSessionId],
+      foreignColumns: [cashSessions.locationId, cashSessions.id],
+    }),
+    check("inventory_documents_kind_check", sql`${t.kind} in ('purchase','count')`),
+    check(
+      "inventory_documents_paid_from_check",
+      sql`(${t.paidFrom} is null or ${t.paidFrom} in ('cash','bank','owner'))
+        and (${t.kind} = 'purchase') = (${t.paidFrom} is not null)
+        and (coalesce(${t.paidFrom}, '') = 'cash') = (${t.cashSessionId} is not null)`,
+    ),
+    check("inventory_documents_entry_check", sql`${t.kind} = 'count' or ${t.journalEntryId} is not null`),
+    check(
+      "inventory_documents_total_check",
+      sql`${t.total} >= 0 and ${t.total} <= 10000000000000 and (${t.kind} = 'count' or (${t.total} > 0 and ${wholePesos(t.total)}))`,
+    ),
+    check(
+      "inventory_documents_note_check",
+      sql`${t.note} is null or (char_length(${t.note}) between 1 and 200 and ${t.note} = btrim(${t.note}) and ${t.note} !~ '[[:cntrl:]]')`,
+    ),
+    check("inventory_documents_request_hash_check", hexCheck(t.requestHash)),
+    index("inventory_documents_location_date_idx").on(t.locationId, t.businessDate),
+  ],
+);
+
+/** Línea de un documento: unidades y costo total de la línea (compra) o su valor (conteo). Solo-inserción. */
+export const inventoryDocumentLines = pgTable(
+  "inventory_document_lines",
+  {
+    id: id(),
+    locationId: locationId(),
+    documentId: bigint("document_id", { mode: "bigint" }).notNull(),
+    productId: bigint("product_id", { mode: "bigint" }).notNull(),
+    /** Compra: > 0 (lo exige el trigger de 0032). Conteo: ≥ 0. */
+    quantity: integer("quantity").notNull(),
+    /** Compra: costo total de la línea en pesos enteros. Conteo: unidades × costo unitario (centavos). */
+    amount: amount("amount").notNull(),
+  },
+  (t) => [
+    unique("inventory_document_lines_product_key").on(t.documentId, t.productId),
+    foreignKey({
+      name: "inventory_document_lines_document_fk",
+      columns: [t.locationId, t.documentId],
+      foreignColumns: [inventoryDocuments.locationId, inventoryDocuments.id],
+    }),
+    foreignKey({
+      name: "inventory_document_lines_product_fk",
+      columns: [t.locationId, t.productId],
+      foreignColumns: [products.locationId, products.id],
+    }),
+    check("inventory_document_lines_quantity_check", sql`${t.quantity} between 0 and 100000`),
+    check("inventory_document_lines_amount_check", sql`${t.amount} >= 0 and ${t.amount} <= 10000000000000`),
+    index("inventory_document_lines_product_idx").on(t.locationId, t.productId, t.documentId),
   ],
 );

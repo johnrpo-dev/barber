@@ -68,6 +68,15 @@ describe("permisos por rol", () => {
     }
   });
 
+  it("inventario (sprint 6): el catálogo, el banco y los conteos son del dueño; recepción solo compra de la caja", () => {
+    expect(can("owner", "inventory.manage")).toBe(true);
+    expect(can("reception", "inventory.manage")).toBe(false);
+    expect(can("barber", "inventory.manage")).toBe(false);
+    expect(can("owner", "inventory.purchase")).toBe(true);
+    expect(can("reception", "inventory.purchase")).toBe(true);
+    expect(can("barber", "inventory.purchase")).toBe(false);
+  });
+
   it("ficha del cliente (sprint 7): dueño y recepción; el barbero no", () => {
     expect(can("owner", "clients.manage")).toBe(true);
     expect(can("reception", "clients.manage")).toBe(true);

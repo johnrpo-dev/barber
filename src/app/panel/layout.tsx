@@ -40,6 +40,7 @@ export default async function PanelLayout({ children }: { children: React.ReactN
     items.push({ href: "/panel/bloqueos", label: "Bloqueos", icon: "bloqueos" });
   }
   if (can(role, "services.manage")) items.push({ href: "/panel/servicios", label: "Servicios", icon: "servicios", more: true });
+  if (can(role, "inventory.manage")) items.push({ href: "/panel/productos", label: "Productos", icon: "productos", more: true });
   if (can(role, "staff.manage")) items.push({ href: "/panel/personal", label: "Personal", icon: "personal", more: true });
   // Gastos fijos (sprint 8): las plantillas son del dueño; recepción registra los de caja desde Caja.
   if (can(role, "settings.manage")) items.push({ href: "/panel/gastos-fijos", label: "Gastos fijos", icon: "gastos-fijos", short: "Fijos", more: true });

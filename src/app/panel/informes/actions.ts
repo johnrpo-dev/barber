@@ -233,6 +233,8 @@ const ENTRY_KIND_LABELS: Record<EntryKind, string> = {
   owner_withdrawal: "Retiro del dueño",
   reversal: "Reversa",
   staff_advance: "Anticipo",
+  inventory_purchase: "Compra de mercancía",
+  inventory_count: "Conteo de inventario",
 };
 
 const text = (v: string | null): CsvCell => ({ text: v ?? "" });

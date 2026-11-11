@@ -615,7 +615,7 @@ export async function reopenBusinessDay(
 
 // ─── Lecturas para la pantalla de caja ───────────────────────────────────────
 
-export type MovementKind = "sale" | "expense" | "tip_payout" | "cash_deposit" | "reversal" | "commission_payout" | "staff_advance";
+export type MovementKind = "sale" | "expense" | "tip_payout" | "cash_deposit" | "reversal" | "commission_payout" | "staff_advance" | "inventory_purchase";
 
 export interface SessionSummary {
   id: bigint;

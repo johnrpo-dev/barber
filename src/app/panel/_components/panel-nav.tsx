@@ -13,6 +13,7 @@ import {
   House,
   LogOut,
   type LucideIcon,
+  Package,
   Receipt,
   ReceiptText,
   Scissors,
@@ -39,6 +40,7 @@ export type NavIcon =
   | "mi-dia"
   | "bloqueos"
   | "servicios"
+  | "productos"
   | "personal"
   | "ajustes"
   | "caja"
@@ -69,6 +71,7 @@ const ICONS: Record<NavIcon, LucideIcon> = {
   "mi-dia": Sun,
   bloqueos: CalendarOff,
   servicios: Scissors,
+  productos: Package,
   personal: Users,
   ajustes: Settings,
   caja: Wallet,

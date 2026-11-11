@@ -60,9 +60,12 @@ describe("migración 0013 sobre datos de antes", () => {
     await migrate(drizzle({ client, schema }) as never, { migrationsFolder });
 
     const accounts = await client.query<{ code: string; name: string; type: string }>(`select code, name, type from accounts where location_id = $1 order by code`, [id]);
+    // Se migra hasta la última: 0032 (inventario) también agrega 1435 y 6135 a las sedes de antes.
     expect(accounts.rows).toEqual([
       { code: "1105", name: "Caja (efectivo)", type: "asset" },
       { code: "1365", name: "Cuentas por cobrar a trabajadores (anticipos)", type: "asset" },
+      { code: "1435", name: "Inventario de mercancía", type: "asset" },
+      { code: "6135", name: "Costo de los productos vendidos", type: "expense" },
     ]);
 
     const noPath = await client.query<{ proname: string }>(

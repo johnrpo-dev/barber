@@ -62,6 +62,16 @@ export function percentOf(amount: Money, basisPoints: bigint, step: bigint = CEN
   return money(divRoundHalfUp(amount.minor * basisPoints, 10_000n * step) * step, amount.currency);
 }
 
+/**
+ * amount × num / den, redondeado half-up (simétrico) UNA sola vez al centavo: sin redondeo
+ * intermedio. Sirve para valorar unidades a un costo unitario que no es entero (inventario,
+ * sprint 6): 3 unidades de una compra de 7 por $10.000 → round(1.000.000 × 3 / 7) centavos.
+ */
+export function mulDiv(amount: Money, num: bigint, den: bigint): Money {
+  if (den === 0n) throw new Error("mulDiv: el divisor no puede ser cero");
+  return money(divRoundHalfUp(amount.minor * num, den), amount.currency);
+}
+
 /** Trunca hacia cero al paso pedido: 1.500.050 centavos con PESO → 1.500.000; −1.550 → −1.500. */
 export function truncateTo(amount: Money, step: bigint): Money {
   if (step <= 0n) throw new Error("El paso de truncamiento debe ser positivo");

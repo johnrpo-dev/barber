@@ -15,6 +15,7 @@ import { rememberClientDevice } from "@/db/client-devices";
 import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
+import { createProduct } from "@/db/products";
 import { saveRecurringExpense } from "@/db/recurring-expenses";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user, workerHeartbeats } from "@/db/schema";
 import { addStaffMember, createStaffUser, setWeeklySchedule } from "@/db/staff";
@@ -115,6 +116,7 @@ const clientes = await import("./clientes/actions");
 const ventas = await import("./ventas/actions");
 const panelRoot = await import("./actions");
 const gastosFijos = await import("./gastos-fijos/actions");
+const productos = await import("./productos/actions");
 
 const TZ = "America/Bogota";
 const PASSWORD = "clave-de-prueba-123"; // valor de prueba, solo existe en esta base en memoria
@@ -310,6 +312,19 @@ const recurringDraft = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+// ─── Productos e inventario (sprint 6): estado de partida para cada intento ──
+
+/** Un producto activo nuevo (por defecto de la sede A), con su id como texto. */
+async function seedProduct(locationId: bigint = A.location): Promise<string> {
+  const p = await createProduct(db, { locationId, draft: { name: `Producto ${uniq()}`, sku: null, price: fromUnits(30_000n), commissionBps: 0 } });
+  return p.id.toString();
+}
+
+const productDraft = (over: Record<string, unknown> = {}) => ({ name: `Cera ${uniq()}`, priceUnits: "30000", commission: "0", active: true, ...over });
+
+/** Una compra de una línea con ese producto (unidades y costo en texto, como la interfaz). */
+const purchaseLines = (productId: string, amountUnits = "5000") => [{ productId, quantity: "2", amountUnits }];
+
 // ─── Comisiones: estado de partida para cada intento ────────────────────────
 
 /** La entrada de una liquidación por banco de lo pendiente del barbero de la sede A. */
@@ -502,7 +517,11 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select coalesce(string_agg(id || ':' || name || ':' || category_id || ':' || estimated_amount || ':' || pay_mode || ':' || day_of_month
                 || ':' || interval_months || ':' || start_month || ':' || active, ',' order by id), '')
          from recurring_expenses where ${loc}::bigint is null or location_id = ${loc}) as recurring_expenses,
-      (select count(*) from recurring_expense_runs where ${loc}::bigint is null or location_id = ${loc}) as recurring_runs
+      (select count(*) from recurring_expense_runs where ${loc}::bigint is null or location_id = ${loc}) as recurring_runs,
+      (select coalesce(string_agg(id || ':' || name || ':' || coalesce(sku, '-') || ':' || price || ':' || commission_bps || ':' || active, ',' order by id), '')
+         from products where ${loc}::bigint is null or location_id = ${loc}) as products,
+      (select count(*) from inventory_documents where ${loc}::bigint is null or location_id = ${loc}) as inventory_documents,
+      (select count(*) from inventory_document_lines where ${loc}::bigint is null or location_id = ${loc}) as inventory_lines
   `);
   return JSON.stringify(rows);
 }
@@ -1446,6 +1465,58 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "productos · crear un producto",
+    action: "createProductAction",
+    allowed: ["owner"],
+    prepare: async () => () => productos.createProductAction(productDraft()),
+  },
+  {
+    name: "productos · editar un producto",
+    action: "updateProductAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.updateProductAction(productDraft({ productId, sku: `REF-${uniq()}`, priceUnits: "32000", commission: "10" }));
+    },
+  },
+  {
+    name: "productos · retirar un producto",
+    action: "setProductActiveAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.setProductActiveAction({ productId, active: false });
+    },
+  },
+  {
+    name: "productos · compra pagada del banco",
+    action: "recordPurchaseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId, "80000"), idempotencyKey: `compra-${uniq()}` });
+    },
+  },
+  {
+    name: "productos · carga inicial del inventario",
+    action: "recordPurchaseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.recordPurchaseAction({ paidFrom: "owner", lines: purchaseLines(productId, "120000"), idempotencyKey: `carga-${uniq()}` });
+    },
+  },
+  {
+    name: "caja · compra de mercancía pagada de la caja",
+    action: "recordCashPurchaseAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      await drawerWithCash();
+      const productId = await seedProduct();
+      return () => caja.recordCashPurchaseAction({ lines: purchaseLines(productId), note: "Proveedor del barrio", idempotencyKey: `compra-caja-${uniq()}` });
+    },
+  },
+  {
     name: "tablero del dueño",
     action: "loadDashboard",
     allowed: ["owner"],
@@ -1508,6 +1579,27 @@ describe("barbero frente a la cita de otro barbero", () => {
 // ─── Aislamiento entre sedes (IDOR) ──────────────────────────────────────────
 
 const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
+  {
+    name: "editar un producto de esta sede",
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.updateProductAction(productDraft({ productId, name: "Hackeado", priceUnits: "1" }));
+    },
+  },
+  {
+    name: "retirar un producto de esta sede",
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.setProductActiveAction({ productId, active: false });
+    },
+  },
+  {
+    name: "comprar con un producto de esta sede",
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `intruso-${uniq()}` });
+    },
+  },
   {
     name: "registrar un gasto fijo de esta sede",
     prepare: async () => {
@@ -1902,7 +1994,12 @@ describe("acciones críticas con una sesión vieja", () => {
     await signInAs(A.users.owner, { stale: true });
     await drawerWithCash();
     const price = String(31_000 + Number(uniq()));
+    const productId = await seedProduct();
     const attempts = [
+      () => productos.createProductAction(productDraft()),
+      () => productos.updateProductAction(productDraft({ productId, priceUnits: price })),
+      () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `compra-${uniq()}` }),
+      () => productos.recordPurchaseAction({ paidFrom: "owner", lines: purchaseLines(productId), idempotencyKey: `carga-${uniq()}` }),
       () => ajustes.savePaymentMethodAction({ id: String(A.methods.card), kind: "card", label: `Tarjeta ${uniq()}`, feeBps: "150", active: true }),
       () => ajustes.saveExpenseCategoryAction({ id: String(A.category), name: `Categoría ${uniq()}`, accountCode: "5195", active: true }),
       () => ajustes.updateCheckoutRulesAction({ commissionBase: "gross", maxDiscountBps: "500", receptionCanDiscount: true, tipsBearCardFees: true }),
@@ -2378,6 +2475,7 @@ const STAFF_MODULES: Record<string, Record<string, unknown>> = {
   "panel/cobro/actions.ts": cobro,
   "panel/caja/actions.ts": caja,
   "panel/gastos-fijos/actions.ts": gastosFijos,
+  "panel/productos/actions.ts": productos,
   "panel/anulaciones/actions.ts": anulaciones,
   "panel/ventas/actions.ts": ventas,
   "cuenta/actions.ts": cuenta,
@@ -2733,6 +2831,11 @@ const AUDITED: Record<string, AuditAction> = {
   createServiceAction: "service.create",
   updateServiceAction: "service.update",
   setServiceActiveAction: "service.active",
+  createProductAction: "product.create",
+  updateProductAction: "product.update",
+  setProductActiveAction: "product.active",
+  recordPurchaseAction: "inventory.purchase",
+  recordCashPurchaseAction: "inventory.purchase",
   updateBookingSettingsAction: "settings.booking",
   updateCheckoutRulesAction: "settings.checkout_rules",
   savePaymentMethodAction: "payment_method.save",
@@ -2826,6 +2929,33 @@ describe("cada acción de escritura deja exactamente un evento", () => {
     const second = await auditoria.loadAuditLog({ before: first.data.nextCursor! });
     if (!second.ok) throw new Error(second.error);
     expect(BigInt(second.data.events[0]!.id)).toBeLessThan(BigInt(first.data.nextCursor!));
+  });
+});
+
+// ─── Compras de mercancía (sprint 6) ─────────────────────────────────────────
+
+describe("compra de mercancía desde la caja", () => {
+  it("recepción ve los productos activos y compra de la caja; no puede pagar del banco ni sin caja abierta", async () => {
+    const productId = await seedProduct();
+    await signInAs(A.users.reception);
+    const view = await caja.loadCashView();
+    expect(view.ok && view.data.canPurchase).toBe(true);
+    expect(view.ok && view.data.products.some((p) => p.id === productId)).toBe(true);
+
+    // La acción de Productos (banco o carga inicial) es solo del dueño.
+    const before = await fingerprint();
+    await expect(productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `banco-${uniq()}` })).rejects.toMatchObject({
+      url: "/panel?sin-permiso=1",
+    });
+    expect(await fingerprint()).toBe(before);
+
+    // Sin caja abierta, la compra de caja no pasa y no deja rastro.
+    await cashDrawer(false);
+    const closed = await fingerprint();
+    const refused = await caja.recordCashPurchaseAction({ lines: purchaseLines(productId), idempotencyKey: `sin-caja-${uniq()}` });
+    expect(refused).toMatchObject({ ok: false });
+    expect(!refused.ok && refused.error).toMatch(/Abre la caja/);
+    expect(await fingerprint()).toBe(closed);
   });
 });
 

@@ -38,6 +38,8 @@ export const PERMISSIONS = [
   "cash.review", // ver el esperado durante el turno y revisar cierres con diferencia (conteo a ciegas)
   "commissions.settle", // liquidar comisiones, revertir liquidaciones, dar y revertir anticipos
   "audit.view", // ver la bitácora de auditoría
+  "inventory.manage", // catálogo de productos, compras por banco, carga inicial y conteos: solo el dueño
+  "inventory.purchase", // compras de mercancía pagadas de la caja (con la caja abierta): dueño y recepción
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -52,6 +54,8 @@ const GRANTS: Record<Role, ReadonlySet<Permission>> = {
     "clients.view.contact",
     "clients.manage",
     "time_off.manage.all",
+    // Decisión del dueño (sprint 6): recepción registra compras de contado, como los gastos de caja.
+    "inventory.purchase",
   ]),
   barber: new Set<Permission>(["commissions.view.own", "appointments.manage.own", "time_off.manage.own"]),
 };

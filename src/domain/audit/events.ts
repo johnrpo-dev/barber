@@ -25,6 +25,9 @@ export const AUDIT_ACTIONS = [
   // Sprint 8: gastos fijos. Registrar un periodo (el gasto normal deja además su expense.add) u omitirlo.
   "recurring_expense.register",
   "recurring_expense.skip",
+  // Sprint 6: compra de mercancía (de la caja, del banco o carga inicial) y conteo de inventario.
+  "inventory.purchase",
+  "inventory.count",
   // Configuración
   "service.create",
   "service.update",
@@ -35,6 +38,10 @@ export const AUDIT_ACTIONS = [
   "expense_category.save",
   "staff.bookable",
   "recurring_expense.save",
+  // Sprint 6: catálogo de productos.
+  "product.create",
+  "product.update",
+  "product.active",
   // Personal
   "staff.create",
   "staff.update",
@@ -84,6 +91,8 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "appointment.courtesy": "finanzas",
   "recurring_expense.register": "finanzas",
   "recurring_expense.skip": "finanzas",
+  "inventory.purchase": "finanzas",
+  "inventory.count": "finanzas",
   "service.create": "configuracion",
   "service.update": "configuracion",
   "service.active": "configuracion",
@@ -93,6 +102,9 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "expense_category.save": "configuracion",
   "staff.bookable": "configuracion",
   "recurring_expense.save": "configuracion",
+  "product.create": "configuracion",
+  "product.update": "configuracion",
+  "product.active": "configuracion",
   "staff.create": "personal",
   "staff.update": "personal",
   "staff.password_reset": "personal",
@@ -128,6 +140,8 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "appointment.courtesy": "Dio una cita como cortesía",
   "recurring_expense.register": "Registró un gasto fijo",
   "recurring_expense.skip": "Omitió un gasto fijo",
+  "inventory.purchase": "Registró una compra de mercancía",
+  "inventory.count": "Registró un conteo de inventario",
   "service.create": "Creó un servicio",
   "service.update": "Cambió un servicio",
   "service.active": "Activó o retiró un servicio",
@@ -137,6 +151,9 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "expense_category.save": "Guardó una categoría de gasto",
   "staff.bookable": "Cambió quién aparece en la reserva en línea",
   "recurring_expense.save": "Guardó un gasto fijo",
+  "product.create": "Creó un producto",
+  "product.update": "Cambió un producto",
+  "product.active": "Activó o retiró un producto",
   "staff.create": "Agregó a alguien del personal",
   "staff.update": "Cambió los datos de alguien del personal",
   "staff.password_reset": "Reinició una contraseña",
@@ -210,6 +227,7 @@ export const AUDIT_FIELDS = {
   ],
   staff: ["displayName", "role", "active", "bookableOnline"],
   recurringExpense: ["name", "category", "estimatedAmount", "payMode", "dayOfMonth", "intervalMonths", "startMonth", "active"],
+  product: ["name", "sku", "price", "commissionBps", "active"],
 } as const satisfies Record<string, readonly string[]>;
 
 /** Campos que son dinero (texto de centavos) o puntos básicos: el visor los formatea. */
@@ -254,4 +272,5 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   dayOfMonth: "Día de pago",
   intervalMonths: "Cada cuántos meses",
   startMonth: "Mes de inicio",
+  sku: "Referencia",
 };

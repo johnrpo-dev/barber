@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { add, allocate, format, fromUnits, money, PESO, percentOf, subtract, sum } from "./money";
+import { add, allocate, format, fromUnits, money, mulDiv, PESO, percentOf, subtract, sum } from "./money";
 
 describe("money", () => {
   it("suma sin errores de punto flotante", () => {
@@ -56,6 +56,41 @@ describe("money", () => {
     fc.assert(
       fc.property(fc.bigInt(), fc.bigInt(), (a, b) => {
         expect(add(subtract(money(a), money(b)), money(b)).minor).toBe(a);
+      }),
+    );
+  });
+});
+
+describe("mulDiv (inventario, sprint 6)", () => {
+  it("valora unidades a un costo unitario no entero redondeando una sola vez", () => {
+    // 7 unidades por $10.000: 3 valen 1.000.000 × 3 / 7 = 428.571,43 → 428.571 centavos.
+    expect(mulDiv(fromUnits(10_000n), 3n, 7n).minor).toBe(428_571n);
+    // 1 × 5 / 2 = 2,5 → 3 (half-up); con signo, simétrico.
+    expect(mulDiv(money(1n), 5n, 2n).minor).toBe(3n);
+    expect(mulDiv(money(-1n), 5n, 2n).minor).toBe(-3n);
+    expect(mulDiv(fromUnits(10_000n), 7n, 7n)).toEqual(fromUnits(10_000n));
+    expect(mulDiv(fromUnits(10_000n), 0n, 7n).minor).toBe(0n);
+    expect(() => mulDiv(money(1n), 1n, 0n)).toThrow(/cero/);
+  });
+
+  it("el error es de a lo sumo medio centavo y half-up: nunca crea ni pierde más", () => {
+    fc.assert(
+      fc.property(fc.bigInt({ min: 0n, max: 10n ** 13n }), fc.bigInt({ min: 0n, max: 1_000_000n }), fc.bigInt({ min: 1n, max: 1_000_000n }), (a, n, d) => {
+        const r = mulDiv(money(a), n, d).minor;
+        // |r·d − a·n| ≤ d/2, y en el empate exacto se va hacia arriba.
+        const diff = r * d - a * n;
+        expect(2n * (diff < 0n ? -diff : diff) <= d).toBe(true);
+        if (2n * diff === -d) throw new Error("un empate se redondeó hacia abajo");
+        // Multiplicar por d/d no cambia nada.
+        expect(mulDiv(money(a), d, d).minor).toBe(a);
+      }),
+    );
+  });
+
+  it("es monótono en las unidades: más unidades nunca valen menos", () => {
+    fc.assert(
+      fc.property(fc.bigInt({ min: 0n, max: 10n ** 12n }), fc.bigInt({ min: 0n, max: 10_000n }), fc.bigInt({ min: 1n, max: 10_000n }), (a, n, d) => {
+        expect(mulDiv(money(a), n + 1n, d).minor >= mulDiv(money(a), n, d).minor).toBe(true);
       }),
     );
   });

@@ -15,7 +15,8 @@ import { describeError } from "@/lib/log";
 import { createService } from "./catalog";
 import { db } from "./client";
 import { locationSettings, setStaffBookableOnline, updateLocationSettings } from "./locations";
-import { backupRuns, locations, services, staffMembers, user } from "./schema";
+import { createProduct } from "./products";
+import { backupRuns, locations, products, services, staffMembers, user } from "./schema";
 import { seedDemoHostMode, seedDemoMode } from "./seed-demo-guard";
 import { addStaffMember, createStaffUser, setStaffActive, setStaffServices, setWeeklySchedule, staffServiceIds } from "./staff";
 import type { Db } from "./types";
@@ -39,6 +40,14 @@ const SERVICES = [
   { name: "Barba con vapor", durationMin: 35, bufferMin: 5, priceUnits: 20_000n, commissionBps: 5000 },
   { name: "Barba sencilla", durationMin: 30, bufferMin: 5, priceUnits: 15_000n, commissionBps: 5000 },
   { name: "Barba sencilla con marcada", durationMin: 40, bufferMin: 5, priceUnits: 17_000n, commissionBps: 5000 },
+] as const;
+
+/** Productos de ejemplo (sprint 6): sin compras ni existencias; esas las registra el dueño. */
+const PRODUCTS = [
+  { name: "Cera para peinar", priceUnits: 35_000n },
+  { name: "Aceite para barba", priceUnits: 40_000n },
+  { name: "Shampoo para barba", priceUnits: 30_000n },
+  { name: "Bálsamo para barba", priceUnits: 38_000n },
 ] as const;
 
 const ADDRESS = "Calle 9Sur #53-71, Medellín";
@@ -168,6 +177,19 @@ async function main() {
       draft: { name: s.name, durationMin: s.durationMin, bufferMin: s.bufferMin, price: fromUnits(s.priceUnits), commissionBps: s.commissionBps },
     });
     console.log(`Servicio "${s.name}": creado.`);
+  }
+
+  for (const p of PRODUCTS) {
+    const [found] = await client
+      .select({ id: products.id })
+      .from(products)
+      .where(and(eq(products.locationId, locationId), sql`lower(${products.name}) = lower(${p.name})`));
+    if (found) {
+      console.log(`Producto "${p.name}": ya existe.`);
+      continue;
+    }
+    await createProduct(d, { locationId, draft: { name: p.name, sku: null, price: fromUnits(p.priceUnits), commissionBps: 0 } });
+    console.log(`Producto "${p.name}": creado.`);
   }
 
   const catalog = await client.select({ id: services.id, name: services.name }).from(services).where(eq(services.locationId, locationId));

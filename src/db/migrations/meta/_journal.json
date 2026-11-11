@@ -225,6 +225,13 @@
       "when": 1794407576613,
       "tag": "0031_backup_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794410618695,
+      "tag": "0032_inventory",
+      "breakpoints": true
     }
   ]
 }

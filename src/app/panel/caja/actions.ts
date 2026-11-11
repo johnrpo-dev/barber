@@ -21,10 +21,12 @@ import { giveCourtesy } from "@/db/courtesies";
 import { cashSessionsInPeriod } from "@/db/history";
 import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
+import { recordPurchase } from "@/db/inventory";
+import { listProducts } from "@/db/products";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import type { Db } from "@/db/types";
 import { deliveryStatus } from "@/db/worker-heartbeat";
-import { money, sum } from "@/domain/money";
+import { format, money, sum } from "@/domain/money";
 import { historyPeriod, type HistoryPeriodView } from "@/domain/reports/period";
 import { formatDateLabel } from "@/domain/booking/public-labels";
 import { CashError, sessionIsFromEarlierDay } from "@/domain/sales/cash";
@@ -35,6 +37,7 @@ import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-sche
 import { absLabel, atLabel, minorText, moneyLabel, signedLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 import { dueItems, type RecurringDueItem, sortDue } from "../gastos-fijos/view";
+import { cashPurchaseInput } from "../productos/purchase-schema";
 
 // Caja (docs/sprint-4-cobro-caja.md §4 y §9). El esperado sale SIEMPRE de SQL (saldo de 1105);
 // la sede y el día contable salen de la sesión y de la base, nunca del navegador.
@@ -77,7 +80,7 @@ export interface CashView {
     byMethod: { label: string; totalLabel: string }[];
     movements: {
       at: string;
-      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal" | "commission_payout" | "staff_advance";
+      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal" | "commission_payout" | "staff_advance" | "inventory_purchase";
       description: string;
       /** null en el conteo a ciegas: sumados con la base darían el esperado. */
       amountLabel: string | null;
@@ -114,6 +117,12 @@ export interface CashView {
    */
   recurringDue: RecurringDueItem[];
   canBankExpense: boolean;
+  /**
+   * Compra de mercancía pagada de la caja (sprint 6): inventory.purchase (dueño y recepción). Los
+   * productos activos de la sede, solo para quien puede comprar; vacío para los demás.
+   */
+  canPurchase: boolean;
+  products: { id: string; name: string }[];
   canCloseDay: boolean;
   canReopenDay: boolean;
   /** Abrir la caja aunque hoy esté cerrado (lo reabre en la misma operación): recepción y dueño. */
@@ -150,6 +159,7 @@ export interface CashView {
 const BREAKDOWN: { kinds: MovementKind[]; label: string; sign: "+" | "-" }[] = [
   { kinds: ["sale"], label: "Ventas en efectivo (neto de cambio)", sign: "+" },
   { kinds: ["expense"], label: "Gastos de caja", sign: "-" },
+  { kinds: ["inventory_purchase"], label: "Compras de mercancía", sign: "-" },
   { kinds: ["tip_payout"], label: "Propinas pagadas en efectivo", sign: "-" },
   { kinds: ["commission_payout", "staff_advance"], label: "Pagos al personal (liquidaciones y anticipos)", sign: "-" },
   { kinds: ["cash_deposit"], label: "Consignaciones", sign: "-" },
@@ -164,6 +174,8 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
     const rules = await checkoutRulesOf(database(), staff.locationId);
     const recurring = await dueRecurringExpenses(database(), { locationId: staff.locationId, payMode: "cash" });
     const delivery = await deliveryStatus(database(), staff.locationId);
+    const canPurchase = can(staff.role, "inventory.purchase");
+    const products = canPurchase ? await listProducts(database(), { locationId: staff.locationId, activeOnly: true }) : [];
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -251,6 +263,8 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       categories: categories.map((c) => ({ id: c.id.toString(), name: c.name })),
       recurringDue: sortDue(dueItems(recurring.items)),
       canBankExpense: can(staff.role, "expenses.bank"),
+      canPurchase,
+      products: products.map((p) => ({ id: p.id.toString(), name: p.name })),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
       canReopenToday: can(staff.role, "day.reopen.today"),
@@ -389,6 +403,28 @@ export async function addExpenseAction(raw: z.input<typeof expenseInput>): Promi
     });
     refresh();
     return { expenseId: expenseId.toString() };
+  });
+}
+
+/**
+ * Compra de mercancía pagada de la caja (sprint 6): recepción y dueño (inventory.purchase). Varias
+ * líneas (producto, unidades, costo total de la línea). Exige la caja de hoy abierta y el efectivo
+ * suficiente, como un gasto de caja; queda como movimiento del turno.
+ */
+export async function recordCashPurchaseAction(raw: z.input<typeof cashPurchaseInput>): Promise<ActionResult<{ documentId: string; totalLabel: string }>> {
+  const staff = await requirePermission("inventory.purchase");
+  return runAction(async () => {
+    const input = cashPurchaseInput.parse(raw);
+    const { documentId, total } = await recordPurchase(database(), {
+      locationId: staff.locationId,
+      paidFrom: "cash",
+      lines: input.lines,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    return { documentId: documentId.toString(), totalLabel: format(total) };
   });
 }
 

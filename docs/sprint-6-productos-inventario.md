@@ -111,12 +111,20 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
 
 ## Fases
 
-1. **A, base y dominio:**
-   - cuentas y tipos de asiento;
-   - `domain/inventory/*` (valoración del conteo y asiento de ajuste, con fast-check);
-   - migración de tablas y garantías;
-   - `db/products.ts` y `db/inventory.ts`.
-2. **B, catálogo y compras:** `panel/productos` (acciones en la matriz de permisos), compras desde caja, seed.
+1. **A, base y dominio (hecho):**
+   - cuentas 1435 y 6135 y tipos de asiento `inventory_purchase` e `inventory_count` (y `cash_movements.kind = 'inventory_purchase'`);
+   - `domain/inventory/*` (valoración del conteo y asiento de ajuste, con fast-check) y `mulDiv` en `money.ts`;
+   - migración **0032** de tablas y garantías:
+     - la línea de asiento en 1435 o 6135 solo pasa si el asiento es de inventario o la reversa de uno, y uno de inventario no toca otras cuentas;
+     - al COMMIT, cada asiento de inventario tiene su documento; el total del documento es la suma de sus líneas; la compra mueve exactamente su total (y si es de caja, es un movimiento de su turno); y tras un conteo, 1435 de la sede es exactamente lo contado;
+     - documentos y líneas solo-inserción; productos sin DELETE y con UPDATE solo en las columnas editables;
+     - `app_apply_grants` = la de 0031 más el UPDATE por columnas sobre `products`;
+   - `db/products.ts` y `db/inventory.ts`: `recordPurchase` (SERIALIZABLE, clave de idempotencia ligada al contenido, caja abierta y efectivo suficiente si es de caja, día abierto, candado de inventario por sede) y `recordCount` (solo el dueño; candado por sede; saldo de 1435 en SQL; exige contar todo producto activo o con compras). Permisos `inventory.manage` (dueño) e `inventory.purchase` (dueño y recepción).
+2. **B, catálogo y compras (hecho):**
+   - `/panel/productos` (solo `inventory.manage`): crear, editar, retirar; compra del banco o carga inicial con reautenticación; saldo de 1435 según el libro y costo de la última compra por producto;
+   - Caja: "Compra de mercancía" (recepción y dueño), varias líneas, sale del efectivo del turno y aparece en el desglose del esperado;
+   - acciones en `authorization.test.ts` (matriz, IDOR, reautenticación y bitácora); productos de ejemplo en `seed-demo`.
+   - La pantalla del conteo queda para la fase D (la función ya existe y está probada).
 3. **C, vender:**
    - migración de `sale_lines` y `sales_assert_totals`;
    - `checkout`, anulación, hoja de cobro, recibos;

@@ -22,6 +22,10 @@ export const ENTRY_KINDS = [
   "owner_withdrawal",
   "reversal",
   "staff_advance",
+  // Inventario periódico (sprint 6): compra de mercancía y ajuste del conteo. Son los únicos tipos
+  // (con sus reversas) que pueden mover 1435 y 6135 (trigger de la migración 0032).
+  "inventory_purchase",
+  "inventory_count",
 ] as const;
 
 export type EntryKind = (typeof ENTRY_KINDS)[number];

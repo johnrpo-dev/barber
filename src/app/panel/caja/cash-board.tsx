@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarClock, CalendarX, CheckCircle2, EyeOff, Gift, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, CalendarCheck, CalendarClock, CalendarX, CheckCircle2, EyeOff, Gift, HandCoins, Landmark, Lock, LockOpen, Receipt, ShieldAlert, TriangleAlert, Undo2, Wallet, Plus, Printer, Banknote, PackagePlus } from "lucide-react";
 import Link from "next/link";
 import { type FormEvent, type ReactNode, useCallback, useRef, useState } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextArea, TextField } from "react-aria-components";
@@ -28,8 +28,10 @@ import {
   markCashSessionReviewedAction,
   openCashSessionAction,
   payTipsAction,
+  recordCashPurchaseAction,
   reopenDayAction,
 } from "./actions";
+import { PurchaseForm } from "../productos/purchase-form";
 
 // Caja (docs/sprint-4-cobro-caja.md §4 y §7). Es la pantalla de cobro de recepción: arriba "Nuevo
 // cobro" y "Por cobrar" (citas en la silla o terminadas, sin venta), luego los cobros de hoy con su
@@ -55,10 +57,11 @@ const MOVEMENT_LABEL: Record<Session["movements"][number]["kind"], string> = {
   reversal: "Reversa",
   commission_payout: "Liquidación",
   staff_advance: "Anticipo",
+  inventory_purchase: "Compra de mercancía",
 };
 
 type SheetState =
-  | { kind: "open" | "close" | "expense" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
+  | { kind: "open" | "close" | "expense" | "purchase" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
   | { kind: "void"; sale: DaySale }
   | { kind: "courtesy"; appointment: ToCharge }
   | { kind: "recurring"; item: RecurringDueItem }
@@ -431,7 +434,12 @@ export function CashBoard({ initial }: { initial: CashView }) {
             <Btn variant="secondary" onPress={() => setSheet({ kind: "deposit" })} isDisabled={view.dayClosed || !!stale}>
               <Landmark size={18} aria-hidden /> Consignar
             </Btn>
-            <Btn onPress={startClose}>
+            {view.canPurchase ? (
+              <Btn variant="secondary" onPress={() => setSheet({ kind: "purchase" })} isDisabled={!cashOk || view.products.length === 0}>
+                <PackagePlus size={18} aria-hidden /> Compra de mercancía
+              </Btn>
+            ) : null}
+            <Btn onPress={startClose} className={view.canPurchase ? "col-span-2" : undefined}>
               <Lock size={18} aria-hidden /> Cerrar caja
             </Btn>
           </div>
@@ -599,6 +607,23 @@ export function CashBoard({ initial }: { initial: CashView }) {
       </Sheet>
       <Sheet isOpen={sheet?.kind === "expense"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto">
         <ExpenseForm view={view} onDone={done} onCancel={closeSheet} />
+      </Sheet>
+      <Sheet
+        isOpen={sheet?.kind === "purchase"}
+        onOpenChange={(o) => !o && closeSheet()}
+        title="Compra de mercancía"
+        description="Producto, unidades y lo que costó cada línea. Sale del efectivo de la caja."
+      >
+        {sheet?.kind === "purchase" ? (
+          <PurchaseForm
+            products={view.products}
+            paidFromOptions={["cash"]}
+            submit={({ lines, note, idempotencyKey }) => recordCashPurchaseAction({ lines, note, idempotencyKey })}
+            onDone={done}
+            onCancel={closeSheet}
+            isCashShort={cashShort}
+          />
+        ) : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "recurring"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto fijo" description="Queda como un gasto de caja normal.">
         {sheet?.kind === "recurring" ? <RecurringRegisterForm item={sheet.item} cashOk={cashOk} onDone={done} onCancel={closeSheet} /> : null}

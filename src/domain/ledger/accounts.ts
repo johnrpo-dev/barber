@@ -17,6 +17,9 @@ export const ACCOUNTS = {
   bank: { code: "1110", name: "Bancos y billeteras (tarjeta, transferencia)", type: "asset" },
   // Anticipos a barberos y lo que quedan debiendo tras una liquidación (sprint 5) [confirmar código con el contador: 1365 o 1330].
   staffReceivable: { code: "1365", name: "Cuentas por cobrar a trabajadores (anticipos)", type: "asset" },
+  // Inventario periódico (sprint 6, docs/sprint-6-productos-inventario.md). Solo lo mueven los documentos
+  // de inventario (compra y conteo): lo exige un trigger sobre journal_lines (migración 0032).
+  inventory: { code: "1435", name: "Inventario de mercancía", type: "asset" },
   commissionsPayable: { code: "2335", name: "Comisiones por pagar a barberos", type: "liability" },
   tipsPayable: { code: "2380", name: "Propinas por pagar a barberos", type: "liability" },
   ownerEquity: { code: "3105", name: "Capital del dueño", type: "equity" },
@@ -26,6 +29,8 @@ export const ACCOUNTS = {
   generalExpense: { code: "5195", name: "Gastos generales", type: "expense" },
   cardFees: { code: "5305", name: "Comisiones de datáfono y pasarelas", type: "expense" },
   cashDifferences: { code: "5310", name: "Diferencias y redondeos de caja", type: "expense" },
+  // Costo de lo vendido más lo que se perdió: solo lo mueve el ajuste del conteo (sprint 6).
+  costOfGoodsSold: { code: "6135", name: "Costo de los productos vendidos", type: "expense" },
 } as const satisfies Record<string, AccountDefinition>;
 
 export type AccountKey = keyof typeof ACCOUNTS;
