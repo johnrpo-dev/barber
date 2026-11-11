@@ -1,6 +1,6 @@
 # Sprint 6: venta de productos con inventario periódico (diseño)
 
-Todavía no está implementado. Antes de construirlo hay que cerrar las **decisiones del dueño** del final.
+Las **decisiones del dueño** del final quedaron cerradas el 2026-11-11; se construye por fases (abajo).
 
 ## Cambio de rumbo: periódico en vez de kardex
 
@@ -141,9 +141,9 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
 - Insumos que consumen los servicios (siguen como gasto).
 - IVA y factura electrónica.
 
-## Decisiones del dueño (antes de construir)
+## Decisiones del dueño (cerradas el 2026-11-11)
 
 1. **IVA de los productos. Resuelta: Villa no es responsable de IVA** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT. El precio es el total y la venta va completa a 4135, sin cuenta 2408. Si algún día pasa a ser responsable, la venta lleva 19 % y cambia su asiento.
-2. **Códigos 1435 y 6135**: que los valide el contador.
-3. **¿Recepción puede registrar compras de contado?** Es el mismo riesgo que ya se acepta con los gastos de caja.
-4. **Día del conteo:** el último día del mes al cierre, o el primero antes de abrir.
+2. **Códigos 1435 y 6135**: se usan los del PUC (1435 mercancías no fabricadas por la empresa, 6135 costo de ventas del comercio). Que el contador los valide; cambiarlos después es renombrar la cuenta, no mover asientos.
+3. **¿Recepción puede registrar compras de contado?** **Sí**, como los gastos de caja: con la caja abierta y su movimiento. Las compras por banco, la carga inicial, el catálogo y los conteos siguen siendo solo del dueño (`inventory.manage`).
+4. **Día del conteo:** **el último día del mes, después de la última venta.** El ajuste queda en ese mes y el informe mensual sale completo. El sistema no lo impide otro día (el dueño puede contar cuando quiera), pero Inicio lo recuerda el último día del mes.
