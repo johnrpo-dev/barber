@@ -3,7 +3,7 @@
 import { Landmark, PackagePlus, Plus, Trash2, Wallet } from "lucide-react";
 import { type FormEvent, useCallback, useRef, useState } from "react";
 import { Form, Input, Label, Radio, RadioGroup, TextField } from "react-aria-components";
-import { format, fromUnits, sum } from "@/domain/money";
+import { format, fromUnits, type Money, money, mulDiv, sum } from "@/domain/money";
 import type { ActionResult } from "@/lib/action";
 import { callAction, MoneyField, newKey, onlyDigits, unitsOf } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
@@ -33,6 +33,38 @@ interface Line {
 
 const emptyLine = (): Line => ({ key: newKey(), productId: null, quantity: "1", amount: "" });
 
+export interface PurchaseProduct {
+  id: string;
+  name: string;
+  /** Precio de venta en centavos (texto): si el costo por unidad lo supera, se pide confirmar. */
+  priceMinor: string;
+}
+
+interface HighCost {
+  name: string;
+  unitCost: Money;
+  price: Money;
+}
+
+/**
+ * Líneas cuyo costo por unidad supera el precio de venta: casi siempre un error de dedo (un cero de
+ * más, o el costo por unidad escrito como total). Una compra registrada no se borra, así que se avisa
+ * antes. Solo es un aviso: comprar caro a veces es real (un producto en promoción), y se puede confirmar.
+ */
+export function highCostLines(lines: readonly Line[], products: readonly PurchaseProduct[]): HighCost[] {
+  const byId = new Map(products.map((p) => [p.id, p]));
+  return lines.flatMap((l) => {
+    const product = l.productId ? byId.get(l.productId) : undefined;
+    const quantity = unitsOf(l.quantity);
+    if (!product || quantity === 0n || l.amount === "" || !/^\d+$/.test(product.priceMinor)) return [];
+    const amount = fromUnits(unitsOf(l.amount));
+    const price = money(BigInt(product.priceMinor));
+    // Exacto, sin redondeo: costo total > precio × unidades. El costo por unidad es solo para mostrarlo.
+    if (amount.minor <= mulDiv(price, quantity, 1n).minor) return [];
+    return [{ name: product.name, unitCost: mulDiv(amount, 1n, quantity), price }];
+  });
+}
+
 /** Clave de idempotencia del formulario: se conserva ante un fallo de red y se renueva tras una respuesta. */
 function useKeyedAction() {
   const key = useRef(newKey());
@@ -56,7 +88,7 @@ export function PurchaseForm({
   onCancel,
   isCashShort,
 }: {
-  products: { id: string; name: string }[];
+  products: PurchaseProduct[];
   /** "cash" (Caja) o ["bank", "owner"] (Productos). */
   paidFromOptions: readonly PurchasePaidFrom[];
   submit: (payload: PurchasePayload) => Promise<ActionResult<{ totalLabel: string }>>;
@@ -77,6 +109,11 @@ export function PurchaseForm({
 
   const total = sum(lines.map((l) => fromUnits(unitsOf(l.amount))));
   const chosen = new Set(lines.map((l) => l.productId).filter((id): id is string => id !== null));
+  const highCost = highCostLines(lines, products);
+  // Huella de lo que se advirtió: si cambian las líneas caras, se vuelve a pedir confirmación.
+  const highCostSig = highCost.map((h) => `${h.name}:${h.unitCost.minor}`).join("|");
+  const [confirmedSig, setConfirmedSig] = useState<string | null>(null);
+  const needsConfirm = highCost.length > 0 && confirmedSig !== highCostSig;
 
   function update(key: string, patch: Partial<Line>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -100,6 +137,12 @@ export function PurchaseForm({
     setLineErrors(errors);
     if (Object.keys(errors).length > 0) return;
     if (total.minor <= 0n) return setError("El total de la compra debe ser mayor que cero.");
+    if (needsConfirm) {
+      // Primer intento con un costo por unidad mayor que el precio de venta: se muestra el aviso y el
+      // botón pasa a "Sí, registrar". El segundo intento, con las mismas líneas, registra.
+      setConfirmedSig(highCostSig);
+      return;
+    }
     setPending(true);
     const payload = {
       paidFrom,
@@ -212,13 +255,28 @@ export function PurchaseForm({
         <span className="monto text-lg font-semibold">{format(total)}</span>
       </div>
 
+      {highCost.length > 0 && !needsConfirm ? (
+        <div role="alert" className="flex flex-col gap-1 rounded-xl border border-alerta/30 bg-alerta/5 px-4 py-3 text-sm">
+          <p className="font-semibold">Revisa el costo antes de registrar: la compra no se puede borrar.</p>
+          <ul className="flex flex-col gap-0.5">
+            {highCost.map((h) => (
+              <li key={h.name}>
+                {h.name}: cuesta <span className="monto font-semibold">{format(h.unitCost)}</span> por unidad y se vende a{" "}
+                <span className="monto">{format(h.price)}</span>.
+              </li>
+            ))}
+          </ul>
+          <p className="text-tinta/80">El costo es el TOTAL de la línea (todas las unidades). Si está bien, confirma.</p>
+        </div>
+      ) : null}
+
       <FormError message={error} />
       <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
         <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
           Cancelar
         </Btn>
         <Btn type="submit" isPending={pending}>
-          <PackagePlus size={18} aria-hidden /> Registrar compra
+          <PackagePlus size={18} aria-hidden /> {highCost.length > 0 && !needsConfirm ? "Sí, registrar compra" : "Registrar compra"}
         </Btn>
       </SheetFooter>
       {reauth.dialog}

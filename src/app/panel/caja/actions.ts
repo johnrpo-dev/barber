@@ -122,7 +122,8 @@ export interface CashView {
    * productos activos de la sede, solo para quien puede comprar; vacío para los demás.
    */
   canPurchase: boolean;
-  products: { id: string; name: string }[];
+  /** Activos, con su precio de venta (centavos, texto) para avisar si el costo por unidad lo supera. */
+  products: { id: string; name: string; priceMinor: string }[];
   canCloseDay: boolean;
   canReopenDay: boolean;
   /** Abrir la caja aunque hoy esté cerrado (lo reabre en la misma operación): recepción y dueño. */
@@ -264,7 +265,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       recurringDue: sortDue(dueItems(recurring.items)),
       canBankExpense: can(staff.role, "expenses.bank"),
       canPurchase,
-      products: products.map((p) => ({ id: p.id.toString(), name: p.name })),
+      products: products.map((p) => ({ id: p.id.toString(), name: p.name, priceMinor: p.price.minor.toString() })),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
       canReopenToday: can(staff.role, "day.reopen.today"),

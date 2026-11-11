@@ -131,7 +131,7 @@ export function ProductsManager({ products, inventoryLabel }: { products: Produc
       >
         {editing?.mode === "purchase" ? (
           <PurchaseForm
-            products={active.map((p) => ({ id: p.id, name: p.name }))}
+            products={active.map((p) => ({ id: p.id, name: p.name, priceMinor: p.priceMinor }))}
             paidFromOptions={["bank", "owner"]}
             submit={({ paidFrom, lines, note, idempotencyKey }) =>
               recordPurchaseAction({ paidFrom: paidFrom === "cash" ? "bank" : paidFrom, lines, note, idempotencyKey })

@@ -443,6 +443,9 @@ export function CashBoard({ initial }: { initial: CashView }) {
               <Lock size={18} aria-hidden /> Cerrar caja
             </Btn>
           </div>
+          {view.canPurchase && cashOk && view.products.length === 0 ? (
+            <p className="text-xs text-tinta/80">Para registrar compras de mercancía, el dueño primero crea los productos en Productos.</p>
+          ) : null}
         </section>
       ) : (
         <section aria-labelledby="turno" className={cx(card, "flex flex-col gap-4 p-5")}>
