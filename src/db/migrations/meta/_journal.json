@@ -246,6 +246,13 @@
       "when": 1794452963675,
       "tag": "0034_sale_lines_products",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794461078634,
+      "tag": "0035_inventory_locks",
+      "breakpoints": true
     }
   ]
 }

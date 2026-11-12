@@ -18,6 +18,11 @@ export type PurchasePaidFrom = (typeof PAID_FROM)[number];
 
 /** Líneas por documento y unidades por línea: topes sanos para una barbería. */
 export const MAX_LINES = 60;
+/**
+ * Productos por sede (activos y retirados: no se borran). Por debajo de las líneas de un conteo
+ * (MAX_LINES × 10), para que el conteo completo siempre quepa.
+ */
+export const MAX_PRODUCTS = 500;
 export const MAX_QUANTITY = 100_000;
 
 export const PAID_FROM_LABELS: Record<PurchasePaidFrom, string> = {

@@ -32,7 +32,7 @@ export type DashboardView = {
   }[];
   cash: { open: boolean; openedAtLabel: string | null; openedBy: string | null; expectedLabel: string | null };
   alerts: {
-    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies" | "inventory_count";
+    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies" | "inventory_count" | "cash_purchases";
     count: number;
     label: string;
     href: string;
@@ -112,6 +112,18 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
     // a quien puede contar (inventory.manage); el enlace abre Productos.
     if (can(staff.role, "inventory.manage") && (await countDueToday(db() as unknown as Db, staff.locationId, now))) {
       alerts.push({ kind: "inventory_count", count: 1, label: "Hoy es el último día del mes: toca contar el inventario", href: "/panel/productos" });
+    }
+    // Compras de mercancía pagadas de la caja por otra persona (auditoría del sprint 6, M-2): el
+    // efectivo salió como inventario y no se ve como gasto; el dueño las revisa en Productos.
+    if (can(staff.role, "inventory.manage") && d.recentCashPurchases.count > 0) {
+      const n = d.recentCashPurchases.count;
+      const total = moneyLabel(d.recentCashPurchases.total);
+      alerts.push({
+        kind: "cash_purchases",
+        count: n,
+        label: n === 1 ? `Una compra de mercancía de la caja en los últimos 7 días (${total})` : `${n} compras de mercancía de la caja en los últimos 7 días (${total})`,
+        href: "/panel/productos#compras-recientes",
+      });
     }
     if (d.yesterdayUnclosed) alerts.push({ kind: "day_unclosed", count: 1, label: "Ayer no se cerró el día", href: "/panel/caja" });
     if (d.todayAutoReopen) {

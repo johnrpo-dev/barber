@@ -1,6 +1,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { fromUnits } from "@/domain/money";
+import { recordCount, recordPurchase } from "./inventory";
+import { createProduct } from "./products";
+import { key, setupShop } from "./sales-testing";
 import { createTestDb, dbError } from "./testing";
 
 // deploy/backup/sanity.sql revisa un backup restaurado. Se corre aquí sobre una base con todas las
@@ -41,6 +45,28 @@ describe("sanity.sql (prueba de restauración)", () => {
     await t.client.exec(`GRANT TEMPORARY ON DATABASE ${await currentDb()} TO villa_app`);
     expect(await dbError(t.client.exec(sanity))).toMatch(/tablas temporales/);
     await t.client.exec(`REVOKE TEMPORARY ON DATABASE ${await currentDb()} FROM villa_app`);
+  });
+
+  it("inventario: pasa con compras, una anulación y un conteo; se queja si 1435 no cuadra con los documentos", { timeout: 60_000 }, async () => {
+    const shop = await setupShop(t.db, "Cordura inventario");
+    const cera = (await createProduct(t.db, { locationId: shop.locationId, draft: { name: "Cera", sku: null, price: fromUnits(30_000n), commissionBps: 0 } })).id;
+    const buy = (pesos: bigint) =>
+      recordPurchase(t.db, { locationId: shop.locationId, paidFrom: "bank", lines: [{ productId: cera, quantity: 4, amount: fromUnits(pesos) }], idempotencyKey: key("s"), actor: shop.owner });
+    await buy(40_000n);
+    await recordCount(t.db, { locationId: shop.locationId, lines: [{ productId: cera, quantity: 3 }], idempotencyKey: key("c"), actor: shop.owner });
+    await buy(20_000n);
+    await t.client.exec(sanity);
+
+    // Un documento que desaparece (restauración parcial o un borrado saltándose los triggers): 1435
+    // ya no es el último conteo + las compras.
+    await t.client.exec(`SET session_replication_role = replica`);
+    await t.client.query(
+      `delete from inventory_document_lines where location_id = $1 and document_id = (select max(id) from inventory_documents where location_id = $1)`,
+      [shop.locationId.toString()],
+    );
+    await t.client.query(`delete from inventory_documents where id = (select max(id) from inventory_documents where location_id = $1)`, [shop.locationId.toString()]);
+    await t.client.exec(`SET session_replication_role = origin`);
+    expect(await dbError(t.client.exec(sanity))).toMatch(/inventario \(1435\) no cuadra/);
   });
 
   async function currentDb(): Promise<string> {

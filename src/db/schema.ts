@@ -2034,3 +2034,18 @@ export const inventoryDocumentLines = pgTable(
     index("inventory_document_lines_product_idx").on(t.locationId, t.productId, t.documentId),
   ],
 );
+
+/**
+ * Candado de inventario por sede (0035, auditoría del sprint 6). Compra, conteo y anulación de una
+ * compra ACTUALIZAN la fila de su sede al empezar. Un candado consultivo no basta en SERIALIZABLE: la
+ * foto de datos se toma en la primera sentencia, antes de esperar el candado, y la segunda operación
+ * leería el inventario sin la primera. Al actualizar una fila que otra transacción confirmó después de
+ * esa foto, Postgres aborta con 40001 y serializable() repite con datos frescos. La app solo cambia
+ * `version`; no hay DELETE.
+ */
+export const inventoryLocks = pgTable("inventory_locks", {
+  locationId: bigint("location_id", { mode: "bigint" })
+    .primaryKey()
+    .references(() => locations.id),
+  version: bigint("version", { mode: "bigint" }).notNull().default(sql`0`),
+});

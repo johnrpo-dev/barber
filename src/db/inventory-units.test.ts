@@ -2,10 +2,13 @@ import type { PGlite } from "@electric-sql/pglite";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
+import { MAX_LINES, MAX_PRODUCTS } from "@/domain/inventory/periodic";
+import { InventoryError } from "@/domain/inventory/product";
 import { fromUnits, type Money } from "@/domain/money";
 import { openCashSession } from "./cash";
 import { countDueToday, countReport, countSheet, recentCounts, recordCount, recordPurchase, reversePurchase } from "./inventory";
 import { accountBalance } from "./ledger";
+import { dashboardData } from "./reports";
 import { createProduct } from "./products";
 import { checkout } from "./sales";
 import { key, type Shop, setupShop } from "./sales-testing";
@@ -208,5 +211,37 @@ describe("unidades esperadas contra contadas", () => {
     expect(await countDueToday(db, shop.locationId, monthEnd)).toBe(true);
     await recordCount(db, { locationId: shop.locationId, lines: [{ productId: cera, quantity: 0 }], idempotencyKey: key("u-due"), actor: shop.owner, now: monthEnd });
     expect(await countDueToday(db, shop.locationId, monthEnd)).toBe(false);
+  });
+
+  it("Inicio cuenta las compras de caja vigentes de otras personas en 7 días (no las del dueño ni las anuladas)", async () => {
+    const shop = await setupShop(db, "Unidades compras de caja");
+    await openCashSession(db, { locationId: shop.locationId, counted: cop(0n), idempotencyKey: key("open"), actor: shop.owner });
+    const cera = await product(shop, "Cera");
+    // Como en producción: el dueño es una persona con usuario (setupShop no los enlaza).
+    await client.query(`insert into "user" (id, name, email) values ($1, 'Dueño', $2)`, [shop.owner.userId, `${shop.owner.userId}@prueba.test`]);
+    await client.query(`update staff_members set user_id = $1 where id = $2`, [shop.owner.userId, shop.owner.staffId.toString()]);
+    // Efectivo para comprar: una venta de mostrador.
+    await sell(shop, cera, 5);
+    const cashBuy = (actor: Shop["owner"] | Shop["reception"], pesos: bigint) =>
+      recordPurchase(db, { locationId: shop.locationId, paidFrom: "cash", lines: [{ productId: cera, quantity: 1, amount: cop(pesos) }], idempotencyKey: key("u-cash"), actor });
+    expect((await dashboardData(db, { locationId: shop.locationId })).recentCashPurchases).toEqual({ count: 0, total: 0n });
+    await cashBuy(shop.reception, 20_000n);
+    const reversed = await cashBuy(shop.reception, 7_000n);
+    await reversePurchase(db, { locationId: shop.locationId, documentId: reversed.documentId, actor: shop.owner });
+    await cashBuy(shop.owner, 9_000n);
+    await buy(shop, cera, 3); // del banco: no es de la caja
+    expect((await dashboardData(db, { locationId: shop.locationId })).recentCashPurchases).toEqual({ count: 1, total: cop(20_000n).minor });
+  });
+
+  it("una sede tiene a lo sumo MAX_PRODUCTS productos: el conteo completo siempre cabe", async () => {
+    const shop = await setupShop(db, "Unidades tope");
+    await client.query(
+      `insert into products (location_id, name, price, commission_bps) select $1, 'Producto ' || g, 1000000, 0 from generate_series(1, ${MAX_PRODUCTS - 1}) g`,
+      [shop.locationId.toString()],
+    );
+    await product(shop, "El último que cabe");
+    await expect(product(shop, "Uno de más")).rejects.toThrow(InventoryError);
+    expect(MAX_PRODUCTS).toBeLessThanOrEqual(MAX_LINES * 10);
+    expect((await countSheet(db, shop.locationId)).rows).toHaveLength(MAX_PRODUCTS);
   });
 });

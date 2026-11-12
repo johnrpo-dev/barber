@@ -43,11 +43,16 @@ function cleanNote(note: string | null | undefined): string | null {
 
 /**
  * Candado de inventario por sede (se suelta al terminar la transacción): no hay dos conteos a la vez
- * ni un conteo mezclado con una compra a medio registrar. Un candado y no FOR UPDATE: villa_app no
- * tiene UPDATE sobre accounts.
+ * ni un conteo mezclado con una compra a medio registrar. Es un UPDATE de la fila de la sede en
+ * inventory_locks (0035), no un candado consultivo: en SERIALIZABLE la foto se toma antes de esperar,
+ * y solo el UPDATE de una fila que otra transacción ya cambió garantiza el 40001 que hace repetir con
+ * datos frescos (auditoría del sprint 6, M-1). Se llama antes de leer saldos o últimas compras.
  */
 async function lockInventory(tx: Db, locationId: bigint): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('villa:inventory:' || ${locationId}::bigint::text, 0))`);
+  await tx.execute(sql`
+    insert into inventory_locks (location_id, version) values (${locationId}::bigint, 1)
+    on conflict (location_id) do update set version = inventory_locks.version + 1
+  `);
 }
 
 /** Los productos pedidos existen en la sede (y, si se pide, están activos). */

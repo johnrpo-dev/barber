@@ -1,5 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { AuditValue } from "@/domain/audit/events";
+import { MAX_PRODUCTS } from "@/domain/inventory/periodic";
 import { assertValidProduct, cleanProductDraft, InventoryError, type ProductDraft } from "@/domain/inventory/product";
 import { money, type Money } from "@/domain/money";
 import { inventoryDocumentLines, inventoryDocuments, products } from "./schema";
@@ -50,6 +51,10 @@ function duplicate(err: unknown): never {
 }
 
 export async function createProduct(db: Db, input: { locationId: bigint; draft: ProductDraft; active?: boolean }): Promise<Product> {
+  // Los productos no se borran y el conteo exige contarlos (activos o con movimientos): con un tope
+  // por debajo de las líneas que acepta un conteo, el conteo mensual nunca se bloquea (auditoría B-2).
+  const [existing] = await db.select({ n: sql<number>`count(*)::int` }).from(products).where(eq(products.locationId, input.locationId));
+  if ((existing?.n ?? 0) >= MAX_PRODUCTS) throw new InventoryError(`Una sede tiene a lo sumo ${MAX_PRODUCTS} productos; retira y reutiliza los que ya no vendes`);
   const [row] = await db
     .insert(products)
     .values({ locationId: input.locationId, ...values(input.draft), active: input.active ?? true })

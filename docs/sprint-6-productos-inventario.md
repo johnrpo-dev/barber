@@ -162,7 +162,14 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
      - Inicio muestra la alerta "Hoy es el último día del mes: toca contar el inventario" a quien tiene `inventory.manage`.
      - Productos muestra "Contar ahora".
    - `recordCountAction` en `authorization.test.ts`: matriz (solo el dueño), IDOR (contar con productos de otra sede), sesión vieja y bitácora `inventory.count`.
-5. **E, cierre:** chequeo de cordura del backup (1435 solo con documentos de inventario), documentación y auditoría de seguridad.
+5. **E, cierre (hecho, migración 0035):**
+   - `deploy/backup/sanity.sql`: ninguna línea de 1435 o 6135 fuera de asientos de inventario (o la reversa de una compra); 1435 de cada sede = último conteo + compras vigentes posteriores; triggers de 0032 a 0034 presentes; `villa_app` sin UPDATE ni DELETE en documentos de inventario.
+   - Auditoría de seguridad (solo lectura) de todo el sprint: sin hallazgos críticos ni altos. Correcciones:
+     - **M-1:** el candado de inventario es ahora el UPDATE de una fila por sede (`inventory_locks`), porque en SERIALIZABLE la foto se toma antes de esperar un candado consultivo. Prueba determinista en `concurrency.pg.test.ts`.
+     - **M-2:** Inicio avisa al dueño de las compras de caja de otras personas en 7 días.
+     - **B-2:** a lo sumo 500 productos por sede.
+     - El resto queda en la tabla "Seguridad: estado y plan" de [arquitectura.md](arquitectura.md).
+   - La regla "banco y carga inicial solo el dueño" sigue en TypeScript, no en la base (`created_by` no trae el rol). Revisada en la auditoría y aceptada.
 
 **Pruebas clave (propiedades):**
 

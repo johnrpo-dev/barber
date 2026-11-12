@@ -8,8 +8,10 @@ import { ACCOUNTS } from "@/domain/ledger/accounts";
 import { businessDate } from "@/domain/ledger/business-date";
 import { fromUnits } from "@/domain/money";
 import { closeBusinessDay, closeCashSession, ledgerCash, openCashSession, payTips } from "./cash";
+import { recordCount, recordPurchase, recordPurchaseTx } from "./inventory";
 import { commissionBalances, previewSettlement, reverseSettlement, type SettlementOptions, settleCommissions } from "./commissions";
 import { postEntry, trialBalance } from "./ledger";
+import { createProduct } from "./products";
 import { checkout } from "./sales";
 import { chairAppointment, key, quickSale, type Shop, setupShop, simpleCheckout, TZ } from "./sales-testing";
 import * as schema from "./schema";
@@ -233,5 +235,68 @@ describe.skipIf(!url)("concurrencia en PostgreSQL real (TEST_PG_URL)", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(rejectedMessage(results.find((r) => r.status === "rejected")!)).toMatch(/revertida/);
     await expectInvariants(shop);
+  });
+
+  // ─── Inventario (sprint 6, auditoría M-1): la foto del conteo no puede ser anterior a una compra ───
+
+  it("un conteo que espera a una compra la ve: repite con datos frescos y 1435 queda en lo contado", { timeout: 60_000 }, async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    const cera = (await createProduct(a, { locationId: shop.locationId, draft: { name: "Cera", sku: null, price: cop(30_000n), commissionBps: 0 } })).id;
+    const buy = (pesos: bigint) => ({
+      locationId: shop.locationId,
+      paidFrom: "bank" as const,
+      lines: [{ productId: cera, quantity: 5, amount: cop(pesos) }],
+      idempotencyKey: key("compra"),
+      actor: shop.owner,
+    });
+    await recordPurchase(a, buy(50_000n));
+
+    // La compra queda abierta con el candado tomado; el conteo arranca (toma su foto) y espera.
+    let counting: Promise<Awaited<ReturnType<typeof recordCount>>> | null = null;
+    await a.transaction(
+      async (tx) => {
+        await recordPurchaseTx(tx as unknown as Db, buy(80_000n));
+        counting = recordCount(b, { locationId: shop.locationId, lines: [{ productId: cera, quantity: 7 }], idempotencyKey: key("conteo"), actor: shop.owner });
+        counting.catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      },
+      { isolationLevel: "serializable" },
+    );
+    const count = await counting!;
+    // El conteo vio las dos compras ($130.000) y valoró al costo de la última ($16.000 c/u).
+    expect(count.bookBalance).toEqual(cop(130_000n));
+    expect(count.total).toEqual(cop(112_000n));
+    expect(count.adjustment).toEqual(cop(18_000n));
+    const rows = await trialBalance(a, { locationId: shop.locationId });
+    const net = (code: string) => {
+      const r = rows.find((x) => x.code === code);
+      return r ? r.debits - r.credits : 0n;
+    };
+    expect(net(ACCOUNTS.inventory.code)).toBe(cop(112_000n).minor);
+    expect(net(ACCOUNTS.costOfGoodsSold.code)).toBe(cop(18_000n).minor);
+  });
+
+  it("una compra y un conteo a la vez, repetidos: 1435 siempre es el último conteo más las compras posteriores", { timeout: 120_000 }, async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    const cera = (await createProduct(a, { locationId: shop.locationId, draft: { name: "Cera", sku: null, price: cop(30_000n), commissionBps: 0 } })).id;
+    for (let i = 0; i < 8; i++) {
+      await Promise.allSettled([
+        recordPurchase(a, {
+          locationId: shop.locationId,
+          paidFrom: "bank",
+          lines: [{ productId: cera, quantity: 2, amount: cop(10_000n + BigInt(i) * 1_000n) }],
+          idempotencyKey: key("compra"),
+          actor: shop.owner,
+        }),
+        recordCount(b, { locationId: shop.locationId, lines: [{ productId: cera, quantity: i }], idempotencyKey: key("conteo"), actor: shop.owner }),
+      ]);
+      const [check] = await sqlA<{ book: string; expected: string }[]>`
+        select coalesce((select sum(l.debit - l.credit) from journal_lines l join accounts ac on ac.location_id = l.location_id and ac.id = l.account_id
+                          where l.location_id = ${shop.locationId.toString()} and ac.code = '1435'), 0)::text as book,
+               (coalesce((select c.total from inventory_documents c where c.location_id = ${shop.locationId.toString()} and c.kind = 'count' order by c.id desc limit 1), 0)
+                + coalesce((select sum(d.total) from inventory_documents d where d.location_id = ${shop.locationId.toString()} and d.kind = 'purchase'
+                             and d.id > coalesce((select max(c.id) from inventory_documents c where c.location_id = ${shop.locationId.toString()} and c.kind = 'count'), 0)), 0))::text as expected`;
+      expect(check!.book).toBe(check!.expected);
+    }
   });
 });
