@@ -6,14 +6,15 @@ import { InventoryError, MAX_AMOUNT_MINOR } from "./product";
 // Inventario periódico (docs/sprint-6-productos-inventario.md). Funciones puras: arman los asientos y
 // valoran el conteo. Todo el dinero pasa por money.ts; las cantidades son unidades enteras.
 //
-// - Compra: Dr 1435 / Cr 1105 (caja), 1110 (banco) o 3105 (carga inicial, aporte del dueño).
+// - Compra: Dr 1435 / Cr 1105 (caja), 1110 (banco), 3105 (carga inicial, aporte del dueño) o 2205
+//   (a crédito: se le debe al proveedor, sprint 8; ver payables.ts).
 // - Conteo: cada producto vale unidades × costo unitario de su ÚLTIMA compra (amount/quantity de esa
 //   línea), redondeado half-up una sola vez por línea con mulDiv. Sin compras, vale 0 y se marca.
 // - Ajuste: saldo de 1435 − valor contado. > 0: Dr 6135 / Cr 1435; < 0: Dr 1435 / Cr 6135; 0: nada.
 //   Así, después del conteo, 1435 es exactamente lo contado y 6135 del periodo es
 //   inventario inicial + compras − inventario final.
 
-export const PAID_FROM = ["cash", "bank", "owner"] as const;
+export const PAID_FROM = ["cash", "bank", "owner", "credit"] as const;
 export type PurchasePaidFrom = (typeof PAID_FROM)[number];
 
 /** Líneas por documento y unidades por línea: topes sanos para una barbería. */
@@ -29,6 +30,7 @@ export const PAID_FROM_LABELS: Record<PurchasePaidFrom, string> = {
   cash: "de la caja",
   bank: "del banco",
   owner: "como carga inicial (aporte del dueño)",
+  credit: "a crédito",
 };
 
 interface EntryMeta {
@@ -87,10 +89,12 @@ export function purchaseSource(paidFrom: PurchasePaidFrom): AccountCode {
       return ACCOUNTS.bank.code;
     case "owner":
       return ACCOUNTS.ownerEquity.code;
+    case "credit":
+      return ACCOUNTS.accountsPayable.code;
   }
 }
 
-/** Asiento de una compra: la mercancía entra a 1435 contra la caja, el banco o el capital del dueño. */
+/** Asiento de una compra: la mercancía entra a 1435 contra la caja, el banco, el capital del dueño o lo que se le debe al proveedor. */
 export function purchaseEntry(input: { total: Money; paidFrom: PurchasePaidFrom }, meta: EntryMeta): JournalEntryDraft {
   if (input.total.minor <= 0n) throw new InventoryError("El total de la compra debe ser mayor que cero");
   return {

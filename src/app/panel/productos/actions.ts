@@ -5,7 +5,9 @@ import { z } from "zod";
 import { auditActor, recordConfigChange } from "@/db/audit";
 import { db } from "@/db/client";
 import { recordCount, recordPurchase, reversePurchase } from "@/db/inventory";
+import { paySupplier, reverseSupplierPayment } from "@/db/payables";
 import { createProduct, productOf, productSnapshot, setProductActive, updateProduct } from "@/db/products";
+import { SUPPLIER_PAID_FROM } from "@/domain/inventory/payables";
 import type { Db } from "@/db/types";
 import { AUDIT_FIELDS } from "@/domain/audit/events";
 import { percentToBps } from "@/domain/catalog/service";
@@ -13,9 +15,9 @@ import { InventoryError, type ProductDraft } from "@/domain/inventory/product";
 import { MAX_LINES, MAX_QUANTITY } from "@/domain/inventory/periodic";
 import { format, fromUnits, negate } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { idempotencyKeySchema } from "@/lib/action-schemas";
+import { idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
-import { ownerPurchaseInput, purchaseNoteSchema } from "./purchase-schema";
+import { creditPurchaseInput, ownerPurchaseInput, purchaseNoteSchema } from "./purchase-schema";
 
 // Productos e inventario del dueño (sprint 6, docs/sprint-6-productos-inventario.md). Solo
 // inventory.manage. La sede sale SIEMPRE de la sesión. El precio viaja como texto de pesos enteros y
@@ -149,6 +151,79 @@ export async function recordPurchaseAction(raw: unknown): Promise<ActionResult<{
     });
     refresh();
     return { documentId: documentId.toString(), totalLabel: format(total) };
+  });
+}
+
+/**
+ * Compra de mercancía a crédito (sprint 8, parte A): entra al inventario y queda la deuda con el
+ * proveedor (2205). Solo el dueño, con reautenticación: crea una obligación de la barbería.
+ */
+export async function recordCreditPurchaseAction(raw: unknown): Promise<ActionResult<{ documentId: string; totalLabel: string }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("inventory.manage");
+    const input = creditPurchaseInput.parse(raw);
+    requireRecentAuth(staff);
+    const { documentId, total } = await recordPurchase(database(), {
+      locationId: staff.locationId,
+      paidFrom: "credit",
+      credit: { supplierName: input.supplierName, termDays: input.termDays },
+      lines: input.lines,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    revalidatePath("/panel");
+    return { documentId: documentId.toString(), totalLabel: format(total) };
+  });
+}
+
+const supplierPaymentSchema = z.object({
+  documentId: idSchema,
+  amountUnits: unitsSchema("El pago"),
+  paidFrom: z.enum(SUPPLIER_PAID_FROM, "Elige de dónde sale el pago"),
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * Pago (parcial o total) de una compra a crédito, desde Cuentas por pagar (solo el dueño). Del banco o
+ * de su bolsillo pide reautenticación, como el gasto de banco; de la caja exige el turno abierto y no.
+ */
+export async function paySupplierAction(raw: unknown): Promise<ActionResult<{ amountLabel: string; remainingLabel: string; supplierName: string; created: boolean }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("inventory.manage");
+    const input = supplierPaymentSchema.parse(raw);
+    if (input.paidFrom !== "cash") requireRecentAuth(staff);
+    const r = await paySupplier(database(), {
+      locationId: staff.locationId,
+      documentId: input.documentId,
+      amount: input.amountUnits,
+      paidFrom: input.paidFrom,
+      idempotencyKey: input.idempotencyKey,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    revalidatePath("/panel");
+    return { amountLabel: format(r.amount), remainingLabel: format(r.remaining), supplierName: r.supplierName, created: r.created };
+  });
+}
+
+const reversePaymentSchema = z.object({ paymentId: idSchema });
+
+/** Anula un pago a proveedor mal registrado (solo el dueño, con reautenticación): la deuda vuelve. */
+export async function reverseSupplierPaymentAction(raw: unknown): Promise<ActionResult<{ amountLabel: string; created: boolean }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("inventory.manage");
+    const input = reversePaymentSchema.parse(raw);
+    requireRecentAuth(staff);
+    const r = await reverseSupplierPayment(database(), {
+      locationId: staff.locationId,
+      paymentId: input.paymentId,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    revalidatePath("/panel");
+    return { amountLabel: format(r.amount), created: r.created };
   });
 }
 

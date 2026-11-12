@@ -27,3 +27,13 @@ export const cashPurchaseInput = z.object({ lines: purchaseLinesSchema, note: pu
 export const ownerPurchaseInput = cashPurchaseInput.extend({
   paidFrom: z.enum(["bank", "owner"], "Elige si se pagó del banco o es la carga inicial"),
 });
+
+/** Compra a crédito (sprint 8, parte A): a quién se le debe y el plazo en días, como dígitos. */
+export const creditPurchaseInput = cashPurchaseInput.extend({
+  supplierName: z.string().max(80, "El nombre del proveedor debe tener entre 2 y 80 caracteres"),
+  termDays: z
+    .string()
+    .trim()
+    .regex(/^\d{1,3}$/, "Escribe el plazo en días, como un número entero")
+    .transform((v) => Number.parseInt(v, 10)),
+});

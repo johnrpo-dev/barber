@@ -16,6 +16,7 @@ import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
 import { countSheet, recordPurchase } from "@/db/inventory";
+import { paySupplier } from "@/db/payables";
 import { createProduct } from "@/db/products";
 import { saveRecurringExpense } from "@/db/recurring-expenses";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user, workerHeartbeats } from "@/db/schema";
@@ -339,6 +340,34 @@ async function seedPurchase(locationId: bigint = A.location): Promise<string> {
   return documentId.toString();
 }
 
+/** Una compra a crédito de $10.000 ya registrada (cuentas por pagar, sprint 8); su id como texto. */
+async function seedCreditPurchase(locationId: bigint = A.location): Promise<string> {
+  const productId = BigInt(await seedProduct(locationId));
+  const { documentId } = await recordPurchase(db, {
+    locationId,
+    paidFrom: "credit",
+    credit: { supplierName: "Distribuidora de prueba", termDays: 30 },
+    lines: [{ productId, quantity: 2, amount: fromUnits(5_000n) }],
+    idempotencyKey: `seed-credito-${uniq()}`,
+    actor: { userId: "seed", role: "owner" },
+  });
+  return documentId.toString();
+}
+
+/** Un pago del banco de $4.000 a una compra a crédito nueva; el id del pago como texto. */
+async function seedSupplierPayment(locationId: bigint = A.location): Promise<string> {
+  const documentId = BigInt(await seedCreditPurchase(locationId));
+  const { paymentId } = await paySupplier(db, {
+    locationId,
+    documentId,
+    amount: fromUnits(4_000n),
+    paidFrom: "bank",
+    idempotencyKey: `seed-pago-${uniq()}`,
+    actor: { userId: "seed", role: "owner" },
+  });
+  return paymentId.toString();
+}
+
 /** Un conteo completo de la sede (cada producto que exige, con lo que debería haber), como la interfaz. */
 async function countLines(locationId: bigint = A.location): Promise<{ productId: string; quantity: string }[]> {
   const sheet = await countSheet(db, locationId);
@@ -541,7 +570,9 @@ async function fingerprint(locationId?: bigint): Promise<string> {
       (select coalesce(string_agg(id || ':' || name || ':' || coalesce(sku, '-') || ':' || price || ':' || commission_bps || ':' || active, ',' order by id), '')
          from products where ${loc}::bigint is null or location_id = ${loc}) as products,
       (select count(*) from inventory_documents where ${loc}::bigint is null or location_id = ${loc}) as inventory_documents,
-      (select count(*) from inventory_document_lines where ${loc}::bigint is null or location_id = ${loc}) as inventory_lines
+      (select count(*) from inventory_document_lines where ${loc}::bigint is null or location_id = ${loc}) as inventory_lines,
+      (select count(*) from suppliers where ${loc}::bigint is null or location_id = ${loc}) as suppliers,
+      (select count(*) from supplier_payments where ${loc}::bigint is null or location_id = ${loc}) as supplier_payments
   `);
   return JSON.stringify(rows);
 }
@@ -1546,6 +1577,49 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "productos · compra a crédito",
+    action: "recordCreditPurchaseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () =>
+        productos.recordCreditPurchaseAction({
+          supplierName: "Distribuidora Norte",
+          termDays: "30",
+          lines: purchaseLines(productId, "90000"),
+          idempotencyKey: `credito-${uniq()}`,
+        });
+    },
+  },
+  {
+    name: "productos · pagar a un proveedor del banco",
+    action: "paySupplierAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const documentId = await seedCreditPurchase();
+      return () => productos.paySupplierAction({ documentId, amountUnits: "3000", paidFrom: "bank", idempotencyKey: `pago-${uniq()}` });
+    },
+  },
+  {
+    name: "caja · pagar a un proveedor de la caja",
+    action: "payCashSupplierAction",
+    allowed: ["owner", "reception"],
+    prepare: async () => {
+      await drawerWithCash();
+      const documentId = await seedCreditPurchase();
+      return () => caja.payCashSupplierAction({ documentId, amountUnits: "2000", idempotencyKey: `pago-caja-${uniq()}` });
+    },
+  },
+  {
+    name: "productos · anular un pago a proveedor",
+    action: "reverseSupplierPaymentAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const paymentId = await seedSupplierPayment();
+      return () => productos.reverseSupplierPaymentAction({ paymentId });
+    },
+  },
+  {
     name: "productos · conteo de inventario",
     action: "recordCountAction",
     allowed: ["owner"],
@@ -1644,6 +1718,35 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
       await seedProduct();
       const lines = await countLines();
       return () => productos.recordCountAction({ lines, idempotencyKey: `intruso-conteo-${uniq()}` });
+    },
+  },
+  {
+    name: "pagar una compra a crédito de esta sede",
+    prepare: async () => {
+      const documentId = await seedCreditPurchase();
+      return () => productos.paySupplierAction({ documentId, amountUnits: "1000", paidFrom: "bank", idempotencyKey: `intruso-pago-${uniq()}` });
+    },
+  },
+  {
+    name: "pagar de su caja una compra a crédito de esta sede",
+    prepare: async () => {
+      const documentId = await seedCreditPurchase();
+      return () => caja.payCashSupplierAction({ documentId, amountUnits: "1000", idempotencyKey: `intruso-pago-caja-${uniq()}` });
+    },
+  },
+  {
+    name: "anular un pago a proveedor de esta sede",
+    prepare: async () => {
+      const paymentId = await seedSupplierPayment();
+      return () => productos.reverseSupplierPaymentAction({ paymentId });
+    },
+  },
+  {
+    name: "comprar a crédito con un producto de esta sede",
+    prepare: async () => {
+      const productId = await seedProduct();
+      return () =>
+        productos.recordCreditPurchaseAction({ supplierName: "Intruso", termDays: "30", lines: purchaseLines(productId), idempotencyKey: `intruso-credito-${uniq()}` });
     },
   },
   {
@@ -2049,12 +2152,18 @@ describe("acciones críticas con una sesión vieja", () => {
     const price = String(31_000 + Number(uniq()));
     const productId = await seedProduct();
     const documentId = await seedPurchase();
+    const creditId = await seedCreditPurchase();
+    const paymentId = await seedSupplierPayment();
     const attempts = [
       () => productos.createProductAction(productDraft()),
       () => productos.updateProductAction(productDraft({ productId, priceUnits: price })),
       () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `compra-${uniq()}` }),
       () => productos.recordPurchaseAction({ paidFrom: "owner", lines: purchaseLines(productId), idempotencyKey: `carga-${uniq()}` }),
       () => productos.reversePurchaseAction({ documentId }),
+      () => productos.recordCreditPurchaseAction({ supplierName: "Distribuidora Norte", termDays: "15", lines: purchaseLines(productId), idempotencyKey: `credito-${uniq()}` }),
+      () => productos.paySupplierAction({ documentId: creditId, amountUnits: "1000", paidFrom: "bank", idempotencyKey: `pago-${uniq()}` }),
+      () => productos.paySupplierAction({ documentId: creditId, amountUnits: "1000", paidFrom: "owner", idempotencyKey: `pago-dueno-${uniq()}` }),
+      () => productos.reverseSupplierPaymentAction({ paymentId }),
       // Después de anular: un conteo fija el inventario y ya no se podría anular la compra.
       async () => productos.recordCountAction({ lines: await countLines(), idempotencyKey: `conteo-${uniq()}` }),
       () => ajustes.savePaymentMethodAction({ id: String(A.methods.card), kind: "card", label: `Tarjeta ${uniq()}`, feeBps: "150", active: true }),
@@ -2895,6 +3004,10 @@ const AUDITED: Record<string, AuditAction> = {
   reversePurchaseAction: "inventory.purchase_reverse",
   recordCountAction: "inventory.count",
   recordCashPurchaseAction: "inventory.purchase",
+  recordCreditPurchaseAction: "inventory.purchase",
+  paySupplierAction: "inventory.supplier_payment",
+  payCashSupplierAction: "inventory.supplier_payment",
+  reverseSupplierPaymentAction: "inventory.supplier_payment_reverse",
   updateBookingSettingsAction: "settings.booking",
   updateCheckoutRulesAction: "settings.checkout_rules",
   savePaymentMethodAction: "payment_method.save",

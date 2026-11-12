@@ -22,6 +22,7 @@ import { cashSessionsInPeriod } from "@/db/history";
 import { readOnlySnapshot } from "@/db/reports";
 import { addExpense } from "@/db/expenses";
 import { recordPurchase } from "@/db/inventory";
+import { payables, paySupplier } from "@/db/payables";
 import { listProducts } from "@/db/products";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import type { Db } from "@/db/types";
@@ -80,7 +81,7 @@ export interface CashView {
     byMethod: { label: string; totalLabel: string }[];
     movements: {
       at: string;
-      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal" | "commission_payout" | "staff_advance" | "inventory_purchase";
+      kind: "sale" | "expense" | "tip_payout" | "cash_deposit" | "cash_adjustment" | "reversal" | "commission_payout" | "staff_advance" | "inventory_purchase" | "supplier_payment";
       description: string;
       /** null en el conteo a ciegas: sumados con la base darían el esperado. */
       amountLabel: string | null;
@@ -124,6 +125,19 @@ export interface CashView {
   canPurchase: boolean;
   /** Activos, con su precio de venta (centavos, texto) para avisar si el costo por unidad lo supera. */
   products: { id: string; name: string; priceMinor: string }[];
+  /**
+   * Compras a crédito con saldo pendiente (sprint 8, parte A), para "Pago a proveedor" de la caja: solo
+   * para quien puede comprar (inventory.purchase); vacío para los demás. La que vence primero, primero.
+   */
+  payables: {
+    documentId: string;
+    supplierName: string;
+    summary: string;
+    dueLabel: string;
+    overdue: boolean;
+    outstandingMinor: string;
+    outstandingLabel: string;
+  }[];
   canCloseDay: boolean;
   canReopenDay: boolean;
   /** Abrir la caja aunque hoy esté cerrado (lo reabre en la misma operación): recepción y dueño. */
@@ -161,6 +175,7 @@ const BREAKDOWN: { kinds: MovementKind[]; label: string; sign: "+" | "-" }[] = [
   { kinds: ["sale"], label: "Ventas en efectivo (neto de cambio)", sign: "+" },
   { kinds: ["expense"], label: "Gastos de caja", sign: "-" },
   { kinds: ["inventory_purchase"], label: "Compras de mercancía", sign: "-" },
+  { kinds: ["supplier_payment"], label: "Pagos a proveedores", sign: "-" },
   { kinds: ["tip_payout"], label: "Propinas pagadas en efectivo", sign: "-" },
   { kinds: ["commission_payout", "staff_advance"], label: "Pagos al personal (liquidaciones y anticipos)", sign: "-" },
   { kinds: ["cash_deposit"], label: "Consignaciones", sign: "-" },
@@ -177,6 +192,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
     const delivery = await deliveryStatus(database(), staff.locationId);
     const canPurchase = can(staff.role, "inventory.purchase");
     const products = canPurchase ? await listProducts(database(), { locationId: staff.locationId, activeOnly: true }) : [];
+    const owedToSuppliers = canPurchase ? (await payables(database(), staff.locationId)).rows.filter((r) => r.outstanding.minor > 0n) : [];
     const tz = day.timeZone;
     const canReview = can(staff.role, "cash.review");
     const blind = !canReview;
@@ -266,6 +282,15 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
       canBankExpense: can(staff.role, "expenses.bank"),
       canPurchase,
       products: products.map((p) => ({ id: p.id.toString(), name: p.name, priceMinor: p.price.minor.toString() })),
+      payables: owedToSuppliers.map((r) => ({
+        documentId: r.documentId.toString(),
+        supplierName: r.supplierName,
+        summary: r.summary,
+        dueLabel: r.due.label,
+        overdue: r.due.state === "overdue",
+        outstandingMinor: minorText(r.outstanding.minor),
+        outstandingLabel: moneyLabel(r.outstanding.minor),
+      })),
       canCloseDay: can(staff.role, "day.close"),
       canReopenDay: can(staff.role, "day.reopen"),
       canReopenToday: can(staff.role, "day.reopen.today"),
@@ -426,6 +451,33 @@ export async function recordCashPurchaseAction(raw: z.input<typeof cashPurchaseI
     });
     refresh();
     return { documentId: documentId.toString(), totalLabel: format(total) };
+  });
+}
+
+const supplierCashInput = z.object({ documentId: idSchema, amountUnits: unitsSchema("El pago"), idempotencyKey: idempotencyKeySchema });
+
+/**
+ * Pago a proveedor de la caja (sprint 8, parte A): abona una compra a crédito con efectivo del turno
+ * abierto. inventory.purchase (dueño y recepción), como la compra de caja; el dueño también puede pagar
+ * del banco o de su bolsillo desde Cuentas por pagar (paySupplierAction).
+ */
+export async function payCashSupplierAction(
+  raw: z.input<typeof supplierCashInput>,
+): Promise<ActionResult<{ amountLabel: string; remainingLabel: string; supplierName: string; created: boolean }>> {
+  const staff = await requirePermission("inventory.purchase");
+  return runAction(async () => {
+    const input = supplierCashInput.parse(raw);
+    const r = await paySupplier(database(), {
+      locationId: staff.locationId,
+      documentId: input.documentId,
+      amount: input.amountUnits,
+      paidFrom: "cash",
+      idempotencyKey: input.idempotencyKey,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    revalidatePath("/panel/productos");
+    return { amountLabel: format(r.amount), remainingLabel: format(r.remaining), supplierName: r.supplierName, created: r.created };
   });
 }
 

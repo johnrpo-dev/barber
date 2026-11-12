@@ -20,6 +20,9 @@ export const ACCOUNTS = {
   // Inventario periódico (sprint 6, docs/sprint-6-productos-inventario.md). Solo lo mueven los documentos
   // de inventario (compra y conteo): lo exige un trigger sobre journal_lines (migración 0032).
   inventory: { code: "1435", name: "Inventario de mercancía", type: "asset" },
+  // Cuentas por pagar a proveedores (sprint 8, parte A): solo la mueven las compras a crédito y los
+  // pagos a proveedores, con sus reversas (trigger de la migración 0036).
+  accountsPayable: { code: "2205", name: "Proveedores", type: "liability" },
   commissionsPayable: { code: "2335", name: "Comisiones por pagar a barberos", type: "liability" },
   tipsPayable: { code: "2380", name: "Propinas por pagar a barberos", type: "liability" },
   ownerEquity: { code: "3105", name: "Capital del dueño", type: "equity" },

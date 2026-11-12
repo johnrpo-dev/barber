@@ -27,6 +27,7 @@ import {
   loadCashView,
   markCashSessionReviewedAction,
   openCashSessionAction,
+  payCashSupplierAction,
   payTipsAction,
   recordCashPurchaseAction,
   reopenDayAction,
@@ -58,10 +59,11 @@ const MOVEMENT_LABEL: Record<Session["movements"][number]["kind"], string> = {
   commission_payout: "Liquidación",
   staff_advance: "Anticipo",
   inventory_purchase: "Compra de mercancía",
+  supplier_payment: "Pago a proveedor",
 };
 
 type SheetState =
-  | { kind: "open" | "close" | "expense" | "purchase" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
+  | { kind: "open" | "close" | "expense" | "purchase" | "supplier" | "tips" | "deposit" | "closeDay" | "closePendingDay" | "reopen" }
   | { kind: "void"; sale: DaySale }
   | { kind: "courtesy"; appointment: ToCharge }
   | { kind: "recurring"; item: RecurringDueItem }
@@ -439,7 +441,13 @@ export function CashBoard({ initial }: { initial: CashView }) {
                 <PackagePlus size={18} aria-hidden /> Compra de mercancía
               </Btn>
             ) : null}
-            <Btn onPress={startClose} className={view.canPurchase ? "col-span-2" : undefined}>
+            {view.canPurchase && view.payables.length > 0 ? (
+              <Btn variant="secondary" onPress={() => setSheet({ kind: "supplier" })} isDisabled={!cashOk}>
+                <HandCoins size={18} aria-hidden /> Pago a proveedor
+              </Btn>
+            ) : null}
+            {/* Cerrar caja ocupa la fila entera cuando los demás botones son pares. */}
+            <Btn onPress={startClose} className={(3 + (view.canPurchase ? 1 : 0) + (view.canPurchase && view.payables.length > 0 ? 1 : 0)) % 2 === 0 ? "col-span-2" : undefined}>
               <Lock size={18} aria-hidden /> Cerrar caja
             </Btn>
           </div>
@@ -627,6 +635,14 @@ export function CashBoard({ initial }: { initial: CashView }) {
             isCashShort={cashShort}
           />
         ) : null}
+      </Sheet>
+      <Sheet
+        isOpen={sheet?.kind === "supplier"}
+        onOpenChange={(o) => !o && closeSheet()}
+        title="Pago a proveedor"
+        description="Abona una compra a crédito con efectivo de la caja."
+      >
+        {sheet?.kind === "supplier" ? <SupplierPaymentForm view={view} onDone={done} onCancel={closeSheet} /> : null}
       </Sheet>
       <Sheet isOpen={sheet?.kind === "recurring"} onOpenChange={(o) => !o && closeSheet()} title="Registrar gasto fijo" description="Queda como un gasto de caja normal.">
         {sheet?.kind === "recurring" ? <RecurringRegisterForm item={sheet.item} cashOk={cashOk} onDone={done} onCancel={closeSheet} /> : null}
@@ -1161,6 +1177,84 @@ function TipsForm({ view, onDone, onCancel }: { view: CashView; onDone: (m: stri
       <FormError message={error} />
       <Actions pending={pending} onCancel={onCancel}>
         <HandCoins size={18} aria-hidden /> Pagar propinas
+      </Actions>
+    </Form>
+  );
+}
+
+// ─── Pago a proveedor (sprint 8, parte A) ─────────────────────────────────────
+
+function SupplierPaymentForm({ view, onDone, onCancel }: { view: CashView; onDone: (m: string) => void; onCancel: () => void }) {
+  const run = useKeyedAction();
+  const invalid = useFieldErrors<"purchase" | "amount">();
+  const first = view.payables[0];
+  const owedUnits = (minor: string) => (big(minor) / PESO).toString();
+  const [documentId, setDocumentId] = useState<string | null>(first?.documentId ?? null);
+  const [amount, setAmount] = useState(first ? owedUnits(first.outstandingMinor) : "");
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const selected = view.payables.find((p) => p.documentId === documentId);
+
+  async function onSubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError(null);
+    const form = e.currentTarget;
+    if (
+      !invalid.check(form, {
+        ...(!documentId ? { purchase: "Elige qué compra se paga." } : {}),
+        ...(unitsOf(amount) === 0n ? { amount: "Escribe cuánto se le paga." } : {}),
+        ...(selected && unitsOf(amount) * PESO > big(selected.outstandingMinor) ? { amount: `No puede ser más de lo que se debe (${selected.outstandingLabel}).` } : {}),
+      })
+    )
+      return;
+    setPending(true);
+    const r = await run((idempotencyKey) => payCashSupplierAction({ documentId: documentId!, amountUnits: amount, idempotencyKey }));
+    setPending(false);
+    if (r.ok) return onDone(r.data.created ? `Pagaste ${r.data.amountLabel} a ${r.data.supplierName} de la caja` : "Ese pago ya estaba registrado");
+    if (cashShort(r.error)) invalid.check(form, { amount: r.error });
+    else setError(r.error);
+  }
+
+  if (view.payables.length === 0) return <p className="text-sm text-tinta/70">No hay compras a crédito por pagar.</p>;
+
+  return (
+    <Form onSubmit={onSubmit} validationBehavior="aria" className="flex flex-col gap-4">
+      <SelectField
+        name="purchase"
+        label="Compra a crédito"
+        options={view.payables.map((p) => ({
+          id: p.documentId,
+          label: `${p.supplierName} · ${p.summary}`,
+          description: `Se debe ${p.outstandingLabel} · ${p.dueLabel}`,
+        }))}
+        value={documentId}
+        onChange={(v) => {
+          setDocumentId(v);
+          const p = view.payables.find((x) => x.documentId === v);
+          if (p) setAmount(owedUnits(p.outstandingMinor));
+          invalid.clear("purchase");
+        }}
+        error={invalid.errors.purchase}
+        isRequired
+      />
+      <MoneyField
+        name="amount"
+        label="Valor a pagar"
+        value={amount}
+        onChange={(v) => (setAmount(v), invalid.clear("amount"))}
+        error={invalid.errors.amount}
+        description={
+          selected ? (
+            <>
+              Se debe <span className="monto">{selected.outstandingLabel}</span> ({selected.dueLabel.toLowerCase()}). Puede ser un abono.
+            </>
+          ) : undefined
+        }
+        isRequired
+      />
+      <FormError message={error} />
+      <Actions pending={pending} onCancel={onCancel}>
+        <HandCoins size={18} aria-hidden /> Pagar de la caja
       </Actions>
     </Form>
   );

@@ -10,7 +10,7 @@ Diseño del 2026-11-06. Sale de la fila del sprint 8 en [00-descubrimiento.md](0
 | **C.** Avisos al dueño por correo (anulación pedida, caja descuadrada, día reabierto, cortesía) | Entra | Hoy solo los ve si abre Inicio |
 | **E.** Cortesía (lo que el roadmap llamaba "descuento del 100 % sin propina") | Entra | Ver §4 |
 | **B.** Gastos fijos con recordatorio | Entra | Arriendo, servicios y otros que se olvidan |
-| **A.** Cuentas por pagar a proveedores | **Aplazada** | Depende de si algún proveedor le fía a la barbería (pregunta 1). Sin inventario (sprint 6, aún sin decisiones) es lo que menos le da al dueño y lo que más toca el libro |
+| **A.** Cuentas por pagar a proveedores | Hecha (2026-11-12) | Se asume que los proveedores le fían a Villa (pregunta 1, sin confirmar del todo). Ver §5b |
 | **F.** QR del 2FA | **Descartada** | El dueño se inscribe desde el celular, que es el mismo aparato de la app de autenticación, y el enlace `otpauth://` ya la abre. Si algún día hace falta, nunca con una API externa de QR (le mandaría el secreto a un tercero) |
 
 **No entra:** compras de mercancía (1435), IVA descontable, gastos que se asienten solos y avisos por WhatsApp.
@@ -120,6 +120,55 @@ Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar 
 - **Pruebas:** `src/domain/expenses/recurring.test.ts` (ejemplos y propiedades: nunca repite un periodo, respeta el intervalo y el mes de inicio, no adelanta más de 3 días, no muestra lo registrado u omitido y sí todo lo demás que ya toca, un vencido sigue apareciendo hasta registrarse u omitirse) y `src/db/recurring-expenses.test.ts` (como `villa_app`: transacción única, idempotencia, caja y efectivo, día cerrado, otra sede, permisos de la base y la prueba de coherencia de §6).
 - **Coherencia (§6, hecha):** en `src/db/recurring-expenses.test.ts`, una propiedad con fast-check: con gastos sueltos de caja y de banco en varios días y gastos registrados desde plantillas, la suma de "Gastos por categoría" (`expensesByCategory`) es igual al neto de las cuentas de gasto de las categorías en el libro, en cualquier rango.
 
+## 5b. A. Cuentas por pagar a proveedores (hecho; diseño del 2026-11-12)
+
+Se construye suponiendo que los proveedores de productos le fían a Villa (lo usual con los distribuidores). Si al final no fían, la opción simplemente no se usa: nada más cambia.
+
+**Alcance:** solo compras de mercancía (1435). Los insumos y gastos a crédito no entran.
+
+**Contabilidad** (cuenta nueva **2205 Proveedores**, pasivo; que la valide el contador):
+
+| Operación | Débito | Crédito |
+|---|---|---|
+| Compra a crédito | 1435 | 2205 |
+| Pago al proveedor | 2205 | 1105 (caja), 1110 (banco) o 3105 (de su bolsillo: aporte del dueño) |
+| Anular una compra a crédito (sin pagos vigentes) | 2205 | 1435 |
+| Anular un pago | el espejo del pago | |
+
+**Modelo:**
+- `suppliers`: nombre único por sede (sin mayúsculas). Solo-inserción: se crean al escribir un nombre nuevo en la compra a crédito.
+- `inventory_documents`: `paid_from = 'credit'` con `supplier_id` y `due_date` (obligatorios solo en la compra a crédito; el vencimiento no es anterior al día de la compra). El plazo se escribe en días (0 a 180, 30 por defecto) y el servidor calcula la fecha.
+- `supplier_payments`: solo-inserción, con clave de idempotencia ligada al contenido. Cada pago es de UNA compra a crédito, puede ser parcial y nunca supera lo que se debe de esa compra. El de caja exige el turno abierto, el efectivo suficiente y es un movimiento de caja.
+
+**Garantías en la base:**
+- 2205 solo la mueven las compras a crédito y los pagos a proveedores (o sus reversas). Un pago solo toca 2205 y su cuenta de origen.
+- Al COMMIT: cada asiento de pago tiene su fila; el pago mueve exactamente su monto; la suma de pagos vigentes de una compra no supera su total; la compra pagada es a crédito y no está anulada.
+- Una compra a crédito con pagos vigentes no se anula (primero se anulan los pagos). Un pago de caja se anula solo con su mismo turno abierto, como la compra de caja.
+- Compra, pago y anulaciones toman el candado de inventario de la sede (M-1): no se cruzan.
+
+**Permisos:** compra a crédito, pago del banco o de su bolsillo y anular un pago, solo el dueño (`inventory.manage`) con reautenticación. Pago de la caja: `inventory.purchase` (dueño y recepción), como la compra de caja.
+
+**Pantallas:**
+- Productos → compra: "A crédito", con proveedor (uno existente o uno nuevo) y plazo en días.
+- Productos → "Cuentas por pagar": lo que se debe en total (2205 según el libro), y por compra: proveedor, total, abonado, saldo y vencimiento ("Vence en 5 días", "Vencida hace 2 días"). "Pagar" (monto prellenado con el saldo) y el historial de pagos con "Anular".
+- Caja: "Pago a proveedor" de la caja (recepción y dueño), con las compras pendientes.
+- Inicio: "N cuentas por pagar vencidas o por vencer ($X)" a quien tiene `inventory.manage`. El aviso de compras de caja de otras personas (M-2) cuenta también los pagos a proveedores de la caja.
+
+**Pruebas:** propiedades del dominio (saldo de una compra, tope del pago, vencimiento) y, sobre la base, una propiedad: para cualquier secuencia de compras a crédito, pagos parciales y anulaciones, el saldo de 2205 es la suma de lo que se debe por compra, nunca negativo, y un pago de más siempre se rechaza. Ataque directo con SQL: un asiento que no es de proveedores no mueve 2205.
+
+**Hecho** (migraciones 0036 y 0037):
+- **Cuenta 2205 Proveedores** (pasivo) en `ACCOUNTS`, en las sedes nuevas y, por la migración, en las que ya existían. Tipo de asiento nuevo `supplier_payment` (también en los CHECK de `journal_entries` y `cash_movements`).
+- **Tablas:** `suppliers` (nombre de 2 a 80, único por sede sin mayúsculas) y `supplier_payments` (`document_id`, `amount` en pesos enteros > 0, `paid_from` caja/banco/bolsillo, `business_date`, `journal_entry_id`, `cash_session_id` solo y siempre si es de caja, clave de idempotencia y huella). Las dos son solo-inserción (triggers contra UPDATE, DELETE y TRUNCATE; `villa_app` solo SELECT e INSERT). `inventory_documents` gana `supplier_id` y `due_date`, con un CHECK: `paid_from = 'credit'` si y solo si hay proveedor y vencimiento, y el vencimiento va del día de la compra a 180 días después.
+- **En la base, al COMMIT** (triggers diferidos): cada asiento `supplier_payment` tiene su fila; cada pago es de una compra a crédito vigente de la misma sede, su asiento es del mismo día, debita 2205 y acredita su origen por exactamente su monto, el de caja tiene su movimiento en su turno, y la suma de pagos vigentes no supera el total de la compra. 2205 solo lo mueven la compra (a crédito) y el pago, o sus reversas (`ledger_inventory_line_guard`). Una compra a crédito con pagos vigentes no se anula, y un pago de caja se anula solo con su mismo turno abierto (`inventory_assert_reversal`).
+- **Candado en la base (0037, auditoría):** el trigger del pago y uno nuevo sobre la reversa de una compra a crédito toman la fila de la sede en `inventory_locks` antes de verificar, así que ni dos pagos escritos a mano a la vez ni un pago contra la anulación de la compra se cruzan (prueba determinista en `src/db/concurrency.pg.test.ts`, verificada contra PostgreSQL 18).
+- **Dominio** (`src/domain/inventory/payables.ts`): vencimiento (`dueDateFor`, `dueStatus`: "Vencida hace N días", "Vence hoy", "Vence en N días"), saldo (`outstanding`), tope del pago (`assertPayment`) y el asiento del pago.
+- **Transacciones** (`src/db/inventory.ts` y `src/db/payables.ts`): la compra a crédito es `recordPurchase` con `paidFrom: "credit"` (crea el proveedor si es nuevo; la huella de idempotencia incluye proveedor y plazo solo en la compra a crédito, así que las demás conservan la suya). `paySupplier` y `reverseSupplierPayment`: SERIALIZABLE con el candado de inventario de la sede (M-1), clave ligada al contenido, asiento, movimiento de caja si aplica y bitácora (`inventory.supplier_payment` y `inventory.supplier_payment_reverse`). Recepción que intenta sacar más efectivo del que hay ve el mensaje a ciegas.
+- **Acciones:** en Productos, `recordCreditPurchaseAction` y `reverseSupplierPaymentAction` (dueño, con reautenticación) y `paySupplierAction` (dueño; reautenticación si es del banco o de su bolsillo). En Caja, `payCashSupplierAction` (`inventory.purchase`, solo de la caja). Todas en `authorization.test.ts`: matriz por rol, otra sede, sesión vieja y un evento por acción.
+- **Pantallas:** en la compra de Productos, la opción "A crédito" con proveedor (sugiere los de antes o acepta uno nuevo) y plazo en días, con la fecha de vencimiento a la vista. "Cuentas por pagar" en Productos (solo si hay algo): lo que se debe según 2205, y por compra el proveedor, el saldo, el vencimiento, lo abonado, "Pagar" (prellenado con el saldo; caja, banco o bolsillo del dueño) y sus pagos con "Anular". En las compras recientes, "a crédito con X". En Caja, "Pago a proveedor" (con la caja abierta) para abonar una compra pendiente. En Inicio, "N cuentas por pagar vencidas…" o "…vencen en los próximos días" (3 días o menos) y el aviso M-2 de pagos de caja hechos por otra persona en los últimos 7 días.
+- **Respaldo:** `deploy/backup/sanity.sql` (4c) revisa que 2205 solo lo muevan compras a crédito y pagos, que el saldo de 2205 de cada sede sea lo que falta de las compras a crédito vigentes, que ninguna compra tenga pagos por más de su total, que los triggers nuevos existan y que `villa_app` no pueda editar las tablas nuevas.
+- **Pruebas:** `src/domain/inventory/payables.test.ts` (ejemplos y propiedades), `src/db/payables.test.ts` (como `villa_app`: compra, abonos de los tres orígenes, idempotencia, caja y efectivo, otra sede, anulaciones, la vista, el aviso M-2, ataques con SQL y la propiedad de fast-check: 2205 = suma de lo que se debe por compra, nunca negativo, y un pago de más siempre se rechaza) y `src/db/backup-sanity.test.ts`.
+- **Pendiente:** que el contador valide la cuenta 2205 y el asiento del pago desde el bolsillo del dueño (3105), y saber a cuántos días fían de verdad y si cobran por pagar tarde (pregunta 1). Los intereses por mora no se manejan.
+
 ## 6. Orden
 
 1. D, C y E: no comparten archivos fuera de `schema.ts`, la bitácora y `authorization.test.ts`, que se integran uno por uno.
@@ -131,7 +180,7 @@ Una venta de $0 obligaría a volver opcional el asiento de la venta y a cambiar 
 
 ## 7. Preguntas al dueño (con el valor que se usa mientras no responda)
 
-1. **¿Algún proveedor les fía?** Mientras no responda, no hay cuentas por pagar (parte A aplazada).
+1. **¿Algún proveedor les fía?** Se asume que sí (2026-11-12) y la parte A entra. Falta saber a cuántos días fían (se usan 30 por defecto) y si cobran por pagar tarde.
 2. **¿Los avisos le llegan por correo o por WhatsApp?** Correo a `ALERT_EMAIL`, agrupado cada 15 minutos. WhatsApp necesita una plantilla aprobada y cuesta por mensaje.
 3. **¿Quién da cortesías y se le paga comisión al barbero?** Quien puede dar descuentos con tope de 100 %, y sin comisión.
 4. **¿Villa es responsable de IVA?** Resuelta: **no** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT.

@@ -139,7 +139,7 @@ export const journalEntries = pgTable(
     }),
     check(
       "journal_entries_kind_check",
-      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal','staff_advance','inventory_purchase','inventory_count')`,
+      sql`${t.kind} in ('sale','expense','commission_payout','tip_payout','cash_deposit','cash_adjustment','owner_contribution','owner_withdrawal','reversal','staff_advance','inventory_purchase','inventory_count','supplier_payment')`,
     ),
     check("journal_entries_reversal_check", sql`(${t.kind} = 'reversal') = (${t.reversesEntryId} is not null)`),
     index("journal_entries_location_date_idx").on(t.locationId, t.businessDate),
@@ -1217,7 +1217,7 @@ export const cashMovements = pgTable(
     locationId: locationId(),
     cashSessionId: bigint("cash_session_id", { mode: "bigint" }).notNull(),
     kind: text("kind", {
-      enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal", "commission_payout", "staff_advance", "inventory_purchase"],
+      enum: ["sale", "expense", "tip_payout", "cash_deposit", "reversal", "commission_payout", "staff_advance", "inventory_purchase", "supplier_payment"],
     }).notNull(),
     journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
     /** Pago de propinas, liquidación o anticipo: a quién. */
@@ -1249,7 +1249,7 @@ export const cashMovements = pgTable(
     }),
     check(
       "cash_movements_kind_check",
-      sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal','commission_payout','staff_advance','inventory_purchase')`,
+      sql`${t.kind} in ('sale','expense','tip_payout','cash_deposit','reversal','commission_payout','staff_advance','inventory_purchase','supplier_payment')`,
     ),
     check(
       "cash_movements_staff_check",
@@ -1943,8 +1943,31 @@ export const products = pgTable(
 );
 
 /**
- * Documento de inventario: una compra (con su asiento Dr 1435 / Cr 1105, 1110 o 3105) o un conteo (con
- * su asiento de ajuste contra 6135, o sin asiento si el libro ya valía lo contado). Solo-inserción.
+ * Proveedor de mercancía a crédito (sprint 8, parte A). Nace al escribir un nombre nuevo en una compra
+ * a crédito. Solo-inserción para la app (no se edita ni se borra: las compras lo nombran).
+ */
+export const suppliers = pgTable(
+  "suppliers",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    name: text("name").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("suppliers_location_id_id_key").on(t.locationId, t.id),
+    uniqueIndex("suppliers_location_name_key").on(t.locationId, sql`lower(${t.name})`),
+    check(
+      "suppliers_name_check",
+      sql`char_length(${t.name}) between 2 and 80 and ${t.name} = btrim(${t.name}) and ${t.name} !~ '[[:cntrl:]]' and ${t.name} !~ '  '`,
+    ),
+  ],
+);
+
+/**
+ * Documento de inventario: una compra (con su asiento Dr 1435 / Cr 1105, 1110, 3105 o 2205) o un conteo
+ * (con su asiento de ajuste contra 6135, o sin asiento si el libro ya valía lo contado). Solo-inserción.
  */
 export const inventoryDocuments = pgTable(
   "inventory_documents",
@@ -1952,14 +1975,20 @@ export const inventoryDocuments = pgTable(
     id: id(),
     locationId: locationId().references(() => locations.id),
     kind: text("kind", { enum: ["purchase", "count"] }).notNull(),
-    /** De dónde salió el dinero de una compra; null en un conteo. owner = carga inicial (3105). */
-    paidFrom: text("paid_from", { enum: ["cash", "bank", "owner"] }),
+    /**
+     * De dónde salió el dinero de una compra; null en un conteo. owner = carga inicial (3105);
+     * credit = se le debe al proveedor (2205, sprint 8).
+     */
+    paidFrom: text("paid_from", { enum: ["cash", "bank", "owner", "credit"] }),
     /** Día contable local de la sede. */
     businessDate: date("business_date", { mode: "string" }).notNull(),
     /** Null solo en un conteo sin ajuste. */
     journalEntryId: bigint("journal_entry_id", { mode: "bigint" }),
     /** El turno de caja de una compra pagada de la caja. */
     cashSessionId: bigint("cash_session_id", { mode: "bigint" }),
+    /** Compra a crédito: a quién se le debe y cuándo vence (los dos, solo en ella). */
+    supplierId: bigint("supplier_id", { mode: "bigint" }),
+    dueDate: date("due_date", { mode: "string" }),
     /** Compra: su costo total. Conteo: el valor contado (la suma de sus líneas). */
     total: amount("total").notNull(),
     /** Nota corta opcional; sin datos personales. */
@@ -1983,13 +2012,25 @@ export const inventoryDocuments = pgTable(
       columns: [t.locationId, t.cashSessionId],
       foreignColumns: [cashSessions.locationId, cashSessions.id],
     }),
+    foreignKey({
+      name: "inventory_documents_supplier_fk",
+      columns: [t.locationId, t.supplierId],
+      foreignColumns: [suppliers.locationId, suppliers.id],
+    }),
     check("inventory_documents_kind_check", sql`${t.kind} in ('purchase','count')`),
     check(
       "inventory_documents_paid_from_check",
-      sql`(${t.paidFrom} is null or ${t.paidFrom} in ('cash','bank','owner'))
+      sql`(${t.paidFrom} is null or ${t.paidFrom} in ('cash','bank','owner','credit'))
         and (${t.kind} = 'purchase') = (${t.paidFrom} is not null)
         and (coalesce(${t.paidFrom}, '') = 'cash') = (${t.cashSessionId} is not null)`,
     ),
+    check(
+      "inventory_documents_credit_check",
+      sql`(coalesce(${t.paidFrom}, '') = 'credit') = (${t.supplierId} is not null)
+        and (coalesce(${t.paidFrom}, '') = 'credit') = (${t.dueDate} is not null)
+        and (${t.dueDate} is null or (${t.dueDate} >= ${t.businessDate} and ${t.dueDate} <= ${t.businessDate} + 180))`,
+    ),
+    index("inventory_documents_supplier_idx").on(t.locationId, t.supplierId).where(sql`${t.supplierId} is not null`),
     check("inventory_documents_entry_check", sql`${t.kind} = 'count' or ${t.journalEntryId} is not null`),
     check(
       "inventory_documents_total_check",
@@ -2049,3 +2090,56 @@ export const inventoryLocks = pgTable("inventory_locks", {
     .references(() => locations.id),
   version: bigint("version", { mode: "bigint" }).notNull().default(sql`0`),
 });
+
+/**
+ * Pago a un proveedor de UNA compra a crédito (sprint 8, parte A): asiento Dr 2205 / Cr 1105, 1110 o
+ * 3105. Puede ser parcial; la base exige al COMMIT que los pagos vigentes de una compra no superen su
+ * total. El de caja es un movimiento de su turno. Solo-inserción: se corrige con la reversa del asiento.
+ */
+export const supplierPayments = pgTable(
+  "supplier_payments",
+  {
+    id: id(),
+    locationId: locationId().references(() => locations.id),
+    /** La compra a crédito que se abona. */
+    documentId: bigint("document_id", { mode: "bigint" }).notNull(),
+    amount: amount("amount").notNull(),
+    paidFrom: text("paid_from", { enum: ["cash", "bank", "owner"] }).notNull(),
+    /** Día contable local de la sede. */
+    businessDate: date("business_date", { mode: "string" }).notNull(),
+    journalEntryId: bigint("journal_entry_id", { mode: "bigint" }).notNull(),
+    /** El turno de caja de un pago de la caja. */
+    cashSessionId: bigint("cash_session_id", { mode: "bigint" }),
+    createdBy: text("created_by").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    unique("supplier_payments_location_id_id_key").on(t.locationId, t.id),
+    unique("supplier_payments_idempotency_key").on(t.locationId, t.idempotencyKey),
+    unique("supplier_payments_journal_entry_key").on(t.journalEntryId),
+    foreignKey({
+      name: "supplier_payments_document_fk",
+      columns: [t.locationId, t.documentId],
+      foreignColumns: [inventoryDocuments.locationId, inventoryDocuments.id],
+    }),
+    foreignKey({
+      name: "supplier_payments_journal_entry_fk",
+      columns: [t.locationId, t.journalEntryId],
+      foreignColumns: [journalEntries.locationId, journalEntries.id],
+    }),
+    foreignKey({
+      name: "supplier_payments_session_fk",
+      columns: [t.locationId, t.cashSessionId],
+      foreignColumns: [cashSessions.locationId, cashSessions.id],
+    }),
+    check(
+      "supplier_payments_paid_from_check",
+      sql`${t.paidFrom} in ('cash','bank','owner') and (${t.paidFrom} = 'cash') = (${t.cashSessionId} is not null)`,
+    ),
+    check("supplier_payments_amount_check", sql`${t.amount} > 0 and ${wholePesos(t.amount)} and ${t.amount} <= 10000000000000`),
+    check("supplier_payments_request_hash_check", hexCheck(t.requestHash)),
+    index("supplier_payments_document_idx").on(t.locationId, t.documentId),
+  ],
+);

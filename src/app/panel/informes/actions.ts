@@ -268,6 +268,7 @@ const ENTRY_KIND_LABELS: Record<EntryKind, string> = {
   staff_advance: "Anticipo",
   inventory_purchase: "Compra de mercancía",
   inventory_count: "Conteo de inventario",
+  supplier_payment: "Pago a proveedor",
 };
 
 const text = (v: string | null): CsvCell => ({ text: v ?? "" });

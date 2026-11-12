@@ -253,6 +253,20 @@
       "when": 1794461078634,
       "tag": "0035_inventory_locks",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794489218797,
+      "tag": "0036_supplier_payables",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794492004899,
+      "tag": "0037_supplier_payment_lock",
+      "breakpoints": true
     }
   ]
 }

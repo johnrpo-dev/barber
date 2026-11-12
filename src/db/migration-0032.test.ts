@@ -53,6 +53,8 @@ describe("migración 0032 sobre datos de antes", () => {
     expect(accounts.rows).toEqual([
       { code: "1105", name: "Caja (efectivo)", type: "asset" },
       { code: "1435", name: "Inventario de mercancía", type: "asset" },
+      // Se migra hasta la última: 0036 (cuentas por pagar) agrega 2205 a las sedes de antes.
+      { code: "2205", name: "Proveedores", type: "liability" },
       { code: "6135", name: "Costo de los productos vendidos", type: "expense" },
     ]);
 

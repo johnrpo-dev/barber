@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
 import { db } from "@/db/client";
 import { countDueToday, countReport, countSheet, inventoryBalance, PURCHASE_LOCK_MESSAGES, recentCounts, recentPurchases } from "@/db/inventory";
+import { PAYMENT_LOCK_MESSAGES, payables, supplierNames } from "@/db/payables";
+import { SUPPLIER_PAID_FROM_LABELS } from "@/domain/inventory/payables";
 import { PAID_FROM_LABELS } from "@/domain/inventory/periodic";
 import { dayLabel } from "../_components/dates";
 import { lastPurchases, listProducts } from "@/db/products";
 import type { Db } from "@/db/types";
-import { format, money, mulDiv, negate } from "@/domain/money";
+import { format, money, mulDiv, negate, PESO } from "@/domain/money";
 import { requirePermission } from "@/lib/session";
 import type { CountHistoryRow, CountSheetData } from "./count-form";
+import type { PayablesData } from "./payables-section";
 import { type ProductRow, ProductsManager, type PurchaseRow } from "./products-manager";
 
 export const metadata: Metadata = { title: "Productos · Villa" };
@@ -15,7 +18,7 @@ export const metadata: Metadata = { title: "Productos · Villa" };
 export default async function ProductosPage() {
   const staff = await requirePermission("inventory.manage");
   const conn = db() as unknown as Db;
-  const [products, last, balance, purchases, sheet, counts, countDue] = await Promise.all([
+  const [products, last, balance, purchases, sheet, counts, countDue, owed, suppliers] = await Promise.all([
     listProducts(conn, { locationId: staff.locationId }),
     lastPurchases(conn, staff.locationId),
     inventoryBalance(conn, staff.locationId),
@@ -23,6 +26,8 @@ export default async function ProductosPage() {
     countSheet(conn, staff.locationId),
     recentCounts(conn, staff.locationId),
     countDueToday(conn, staff.locationId),
+    payables(conn, staff.locationId),
+    supplierNames(conn, staff.locationId),
   ]);
   // Las diferencias de los últimos conteos se arman aquí (pocas filas): la hoja solo las muestra.
   const reports = await Promise.all(counts.map((c) => countReport(conn, staff.locationId, c.id)));
@@ -31,7 +36,7 @@ export default async function ProductosPage() {
     id: p.id.toString(),
     dateLabel: dayLabel(p.businessDate),
     paidFrom: p.paidFrom,
-    paidFromLabel: PAID_FROM_LABELS[p.paidFrom],
+    paidFromLabel: p.supplierName ? `a crédito con ${p.supplierName}` : PAID_FROM_LABELS[p.paidFrom],
     totalLabel: format(p.total),
     summary: p.summary,
     note: p.note,
@@ -39,6 +44,36 @@ export default async function ProductosPage() {
     // Por qué ya no se puede anular (se muestra en lugar del botón), o null si se puede.
     lockMessage: p.lock && p.lock !== "reversed" ? PURCHASE_LOCK_MESSAGES[p.lock] : null,
   }));
+
+  // Cuentas por pagar (sprint 8, parte A). Los saldos los suma la base; aquí solo se formatean. Los
+  // montos de las compras son pesos enteros (lo exige la base), así que minor / PESO es exacto.
+  const payablesData: PayablesData = {
+    balanceLabel: format(owed.balance),
+    pendingCount: owed.rows.filter((r) => r.outstanding.minor > 0n).length,
+    rows: owed.rows.map((r) => ({
+      documentId: r.documentId.toString(),
+      supplierName: r.supplierName,
+      summary: r.summary,
+      dateLabel: dayLabel(r.businessDate),
+      dueDateLabel: dayLabel(r.dueDate),
+      dueLabel: r.due.label,
+      dueState: r.due.state,
+      totalLabel: format(r.total),
+      paidLabel: r.paid.minor > 0n ? format(r.paid) : null,
+      outstandingMinor: r.outstanding.minor.toString(),
+      outstandingUnits: (r.outstanding.minor / PESO).toString(),
+      outstandingLabel: format(r.outstanding),
+      payments: r.payments.map((p) => ({
+        id: p.id.toString(),
+        dateLabel: dayLabel(p.businessDate),
+        amountLabel: format(p.amount),
+        paidFrom: p.paidFrom,
+        paidFromLabel: SUPPLIER_PAID_FROM_LABELS[p.paidFrom],
+        reversed: p.lock === "reversed",
+        lockMessage: p.lock === "session_closed" ? PAYMENT_LOCK_MESSAGES.session_closed : null,
+      })),
+    })),
+  };
 
   // bigint no viaja como JSON: ids y montos van como texto; las etiquetas se formatean aquí para que
   // servidor y navegador no difieran al hidratar.
@@ -110,6 +145,9 @@ export default async function ProductosPage() {
         countSheet={countSheetData}
         counts={countRows}
         countDue={countDue}
+        payables={payablesData}
+        suppliers={suppliers}
+        today={owed.today}
       />
     </main>
   );

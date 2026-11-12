@@ -481,6 +481,8 @@ export interface DashboardData {
   recentCourtesies: { count: number; from: string };
   /** Compras de mercancía de la caja que no registró el dueño, últimos 7 días (sprint 6, auditoría M-2). */
   recentCashPurchases: { count: number; total: bigint };
+  /** Pagos a proveedores de la caja que no hizo el dueño, últimos 7 días (sprint 8, A; el mismo control M-2). */
+  recentSupplierCashPayments: { count: number; total: bigint };
   owed: StaffBalances[];
   upcoming: { at: Date; staffName: string; serviceName: string; clientName: string | null; status: "pending" | "confirmed" | "arrived" }[];
 }
@@ -604,6 +606,18 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
                             where sm.location_id = d.location_id and sm.user_id = d.created_by and sm.role = 'owner')
       `),
     );
+    // Pagos a proveedores de la caja de otras personas (vigentes): el mismo control, para la deuda.
+    const [supplierCashRow] = rowsOf<{ n: string; total: string }>(
+      await tx.execute(sql`
+        select count(*)::text as n, coalesce(sum(p.amount), 0)::text as total
+          from supplier_payments p
+         where p.location_id = ${locationId}::bigint and p.paid_from = 'cash'
+           and p.business_date between ${courtesyFrom}::date and ${day.businessDate}::date
+           and not exists (select 1 from journal_entries r where r.location_id = p.location_id and r.reverses_entry_id = p.journal_entry_id)
+           and not exists (select 1 from staff_members sm
+                            where sm.location_id = p.location_id and sm.user_id = p.created_by and sm.role = 'owner')
+      `),
+    );
     const balances = await commissionBalances(tx, locationId);
 
     return {
@@ -625,6 +639,7 @@ export async function dashboardData(db: Db, input: { locationId: bigint; now?: D
       todayAutoReopen: reopen ? { by: reopen.by ?? "Personal", times: Number(reopen.times) } : null,
       recentCourtesies: { count: Number(courtesyRow?.n ?? "0"), from: courtesyFrom },
       recentCashPurchases: { count: Number(cashPurchaseRow?.n ?? "0"), total: BigInt(cashPurchaseRow?.total ?? "0") },
+      recentSupplierCashPayments: { count: Number(supplierCashRow?.n ?? "0"), total: BigInt(supplierCashRow?.total ?? "0") },
       owed: balances.filter((b) => b.commissionOwed !== 0n || b.tipsOwed !== 0n || b.receivable !== 0n),
       upcoming: upcoming.map((u) => ({ at: new Date(u.at), staffName: u.staff_name, serviceName: u.service_name, clientName: u.client_name, status: u.status })),
     };

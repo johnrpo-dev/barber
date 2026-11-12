@@ -30,6 +30,9 @@ export const AUDIT_ACTIONS = [
   "inventory.count",
   // Anular una compra mal registrada (solo el dueño): asiento de reversa, nunca un borrado.
   "inventory.purchase_reverse",
+  // Sprint 8, parte A: pago a un proveedor de una compra a crédito y su anulación (solo el dueño).
+  "inventory.supplier_payment",
+  "inventory.supplier_payment_reverse",
   // Configuración
   "service.create",
   "service.update",
@@ -96,6 +99,8 @@ export const AUDIT_CATEGORY: Record<AuditAction, AuditCategory> = {
   "inventory.purchase": "finanzas",
   "inventory.count": "finanzas",
   "inventory.purchase_reverse": "finanzas",
+  "inventory.supplier_payment": "finanzas",
+  "inventory.supplier_payment_reverse": "finanzas",
   "service.create": "configuracion",
   "service.update": "configuracion",
   "service.active": "configuracion",
@@ -146,6 +151,8 @@ export const AUDIT_LABELS: Record<AuditAction, string> = {
   "inventory.purchase": "Registró una compra de mercancía",
   "inventory.count": "Registró un conteo de inventario",
   "inventory.purchase_reverse": "Anuló una compra de mercancía",
+  "inventory.supplier_payment": "Pagó a un proveedor",
+  "inventory.supplier_payment_reverse": "Anuló un pago a un proveedor",
   "service.create": "Creó un servicio",
   "service.update": "Cambió un servicio",
   "service.active": "Activó o retiró un servicio",

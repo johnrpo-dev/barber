@@ -3,6 +3,7 @@
 import { backupStatus } from "@/db/backup-runs";
 import { db } from "@/db/client";
 import { countDueToday } from "@/db/inventory";
+import { payablesDue } from "@/db/payables";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import { dashboardData } from "@/db/reports";
 import type { Db } from "@/db/types";
@@ -32,7 +33,17 @@ export type DashboardView = {
   }[];
   cash: { open: boolean; openedAtLabel: string | null; openedBy: string | null; expectedLabel: string | null };
   alerts: {
-    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies" | "inventory_count" | "cash_purchases";
+    kind:
+      | "cash_review"
+      | "void_pending"
+      | "day_unclosed"
+      | "day_reopened"
+      | "recurring_overdue"
+      | "courtesies"
+      | "inventory_count"
+      | "cash_purchases"
+      | "payables_due"
+      | "supplier_cash_payments";
     count: number;
     label: string;
     href: string;
@@ -123,6 +134,33 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
         count: n,
         label: n === 1 ? `Una compra de mercancía de la caja en los últimos 7 días (${total})` : `${n} compras de mercancía de la caja en los últimos 7 días (${total})`,
         href: "/panel/productos#compras-recientes",
+      });
+    }
+    // Cuentas por pagar (sprint 8, parte A): compras a crédito vencidas o que vencen en 3 días o menos.
+    if (can(staff.role, "inventory.manage")) {
+      const due = await payablesDue(db() as unknown as Db, staff.locationId, now);
+      if (due.count > 0) {
+        const total = moneyLabel(due.total.minor);
+        alerts.push({
+          kind: "payables_due",
+          count: due.count,
+          label:
+            due.overdue > 0
+              ? `${plural(due.overdue, "Una cuenta por pagar vencida", `${due.overdue} cuentas por pagar vencidas`)} ${due.count > due.overdue ? ` y ${due.count - due.overdue} por vencer` : ""} (${total})`
+              : `${plural(due.count, "Una cuenta por pagar vence", `${due.count} cuentas por pagar vencen`)} en los próximos días (${total})`,
+          href: "/panel/productos#cuentas-por-pagar",
+        });
+      }
+    }
+    // Pagos a proveedores de la caja hechos por otra persona (el mismo control M-2 de las compras).
+    if (can(staff.role, "inventory.manage") && d.recentSupplierCashPayments.count > 0) {
+      const n = d.recentSupplierCashPayments.count;
+      const total = moneyLabel(d.recentSupplierCashPayments.total);
+      alerts.push({
+        kind: "supplier_cash_payments",
+        count: n,
+        label: n === 1 ? `Un pago a proveedor de la caja en los últimos 7 días (${total})` : `${n} pagos a proveedores de la caja en los últimos 7 días (${total})`,
+        href: "/panel/productos#cuentas-por-pagar",
       });
     }
     if (d.yesterdayUnclosed) alerts.push({ kind: "day_unclosed", count: 1, label: "Ayer no se cerró el día", href: "/panel/caja" });

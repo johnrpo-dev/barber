@@ -1,9 +1,11 @@
 "use client";
 
-import { Landmark, PackagePlus, Plus, Trash2, Wallet } from "lucide-react";
+import { CalendarClock, Landmark, PackagePlus, Plus, Trash2, Wallet } from "lucide-react";
 import { type FormEvent, useCallback, useRef, useState } from "react";
-import { Form, Input, Label, Radio, RadioGroup, TextField } from "react-aria-components";
+import { ComboBox, Form, Input, Label, ListBox, ListBoxItem, Popover, Radio, RadioGroup, Text, TextField } from "react-aria-components";
+import { DEFAULT_TERM_DAYS, dueDateFor, MAX_TERM_DAYS } from "@/domain/inventory/payables";
 import { format, fromUnits, type Money, money, mulDiv, sum } from "@/domain/money";
+import { dayLabel } from "../_components/dates";
 import type { ActionResult } from "@/lib/action";
 import { callAction, MoneyField, newKey, onlyDigits, unitsOf } from "../_components/money-field";
 import { useReauth } from "../_components/reauth";
@@ -12,15 +14,17 @@ import { Btn, cx, field, SheetFooter } from "../_components/ui";
 import { FormError, RadioDot, radioCard } from "../_manage/controls";
 
 // Compra de mercancía con varias líneas (producto, unidades, costo TOTAL de la línea), compartida por
-// Caja (de la caja) y Productos (del banco o carga inicial). El total que se ve es solo una vista
-// previa con money.ts; el servidor vuelve a sumar y la base exige que el documento cuadre.
+// Caja (de la caja) y Productos (del banco, carga inicial o a crédito). El total que se ve es solo una
+// vista previa con money.ts; el servidor vuelve a sumar y la base exige que el documento cuadre.
 
-export type PurchasePaidFrom = "cash" | "bank" | "owner";
+export type PurchasePaidFrom = "cash" | "bank" | "owner" | "credit";
 
 export interface PurchasePayload {
   paidFrom: PurchasePaidFrom;
   lines: { productId: string; quantity: string; amountUnits: string }[];
   note?: string;
+  /** Solo a crédito: a quién se le debe y en cuántos días (dígitos). */
+  credit?: { supplierName: string; termDays: string };
   idempotencyKey: string;
 }
 
@@ -78,7 +82,18 @@ function useKeyedAction() {
 const PAID_FROM_OPTIONS: Record<Exclude<PurchasePaidFrom, "cash">, { label: string; hint: string }> = {
   bank: { label: "Banco", hint: "Transferencia o tarjeta del negocio" },
   owner: { label: "Carga inicial", hint: "Mercancía que ya había; la aporta el dueño" },
+  credit: { label: "A crédito", hint: "El proveedor fía: se le paga después" },
 };
+
+const PAID_FROM_ICON = { bank: Landmark, owner: PackagePlus, credit: CalendarClock } as const;
+
+/** Vista previa del vencimiento ("12 dic 2026"), o null si el plazo no es válido. El servidor lo recalcula. */
+function dueLabelFor(today: string | undefined, termDays: string): string | null {
+  if (!today || !/^\d{1,3}$/.test(termDays)) return null;
+  const days = Number.parseInt(termDays, 10);
+  if (days > MAX_TERM_DAYS) return null;
+  return dayLabel(dueDateFor(today, days));
+}
 
 export function PurchaseForm({
   products,
@@ -87,10 +102,16 @@ export function PurchaseForm({
   onDone,
   onCancel,
   isCashShort,
+  suppliers = [],
+  today,
 }: {
   products: PurchaseProduct[];
-  /** "cash" (Caja) o ["bank", "owner"] (Productos). */
+  /** "cash" (Caja) o ["bank", "owner", "credit"] (Productos). */
   paidFromOptions: readonly PurchasePaidFrom[];
+  /** Proveedores ya conocidos de la sede, para sugerirlos en la compra a crédito. */
+  suppliers?: readonly string[];
+  /** Día contable de hoy en la sede ("yyyy-MM-dd"), para mostrar cuándo vence la compra a crédito. */
+  today?: string;
   submit: (payload: PurchasePayload) => Promise<ActionResult<{ totalLabel: string }>>;
   onDone: (message: string) => void;
   onCancel: () => void;
@@ -99,8 +120,14 @@ export function PurchaseForm({
 }) {
   const run = useKeyedAction();
   // Una compra del banco o la carga inicial pide confirmar identidad (lo decide el servidor).
-  const reauth = useReauth({ description: "Una compra del banco o la carga inicial cambia las cuentas sin pasar por la caja." });
+  const reauth = useReauth({ description: "Una compra del banco, a crédito o la carga inicial cambia las cuentas sin pasar por la caja." });
   const [paidFrom, setPaidFrom] = useState<PurchasePaidFrom>(paidFromOptions[0] ?? "cash");
+  const [supplier, setSupplier] = useState("");
+  const [termDays, setTermDays] = useState(String(DEFAULT_TERM_DAYS));
+  const [creditError, setCreditError] = useState<string | null>(null);
+  const isCredit = paidFrom === "credit";
+  const dueLabel = isCredit ? dueLabelFor(today, termDays) : null;
+  const supplierMatches = suppliers.filter((s) => s.toLowerCase().includes(supplier.trim().toLowerCase())).slice(0, 8);
   const [lines, setLines] = useState<Line[]>(() => [emptyLine()]);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -135,7 +162,14 @@ export function PurchaseForm({
       else if (l.amount === "") errors[l.key] = "Escribe el costo total de la línea.";
     }
     setLineErrors(errors);
-    if (Object.keys(errors).length > 0) return;
+    let creditProblem: string | null = null;
+    if (isCredit) {
+      const name = supplier.trim();
+      if (name.length < 2 || name.length > 80) creditProblem = "Escribe el nombre del proveedor (de 2 a 80 letras).";
+      else if (!/^\d{1,3}$/.test(termDays) || Number.parseInt(termDays, 10) > MAX_TERM_DAYS) creditProblem = `El plazo va de 0 a ${MAX_TERM_DAYS} días.`;
+    }
+    setCreditError(creditProblem);
+    if (Object.keys(errors).length > 0 || creditProblem) return;
     if (total.minor <= 0n) return setError("El total de la compra debe ser mayor que cero.");
     if (needsConfirm) {
       // Primer intento con un costo por unidad mayor que el precio de venta: se muestra el aviso y el
@@ -148,6 +182,7 @@ export function PurchaseForm({
       paidFrom,
       lines: lines.map((l) => ({ productId: l.productId!, quantity: l.quantity, amountUnits: l.amount })),
       note: note.trim() || undefined,
+      credit: isCredit ? { supplierName: supplier.trim(), termDays } : undefined,
     };
     const r = await run((idempotencyKey) => reauth.run(() => submit({ ...payload, idempotencyKey })));
     setPending(false);
@@ -157,7 +192,9 @@ export function PurchaseForm({
           ? `Compra registrada: salieron ${r.data.totalLabel} de la caja`
           : paidFrom === "bank"
             ? `Compra registrada: ${r.data.totalLabel} del banco`
-            : `Carga inicial registrada: ${r.data.totalLabel}`,
+            : paidFrom === "credit"
+              ? `Compra a crédito registrada: se le deben ${r.data.totalLabel} a ${supplier.trim()}`
+              : `Carga inicial registrada: ${r.data.totalLabel}`,
       );
     }
     setError(isCashShort?.(r.error) ? `${r.error}. Revisa el total de la compra.` : r.error);
@@ -172,26 +209,92 @@ export function PurchaseForm({
       {paidFromOptions.length > 1 ? (
         <RadioGroup value={paidFrom} onChange={(v) => setPaidFrom(v as PurchasePaidFrom)} className={field.root}>
           <Label className={field.label}>Se pagó</Label>
-          <div className="grid grid-cols-1 gap-2 min-[400px]:grid-cols-2">
+          <div className={cx("grid grid-cols-1 gap-2 min-[400px]:grid-cols-2", paidFromOptions.length > 2 && "min-[600px]:grid-cols-3")}>
             {paidFromOptions
               .filter((p): p is Exclude<PurchasePaidFrom, "cash"> => p !== "cash")
-              .map((p) => (
-                <Radio key={p} value={p} className={cx(radioCard, "group")}>
-                  <RadioDot />
-                  <span className="flex flex-col">
-                    <span className="inline-flex items-center gap-1.5">
-                      {p === "bank" ? <Landmark size={16} aria-hidden /> : <PackagePlus size={16} aria-hidden />} {PAID_FROM_OPTIONS[p].label}
+              .map((p) => {
+                const Icon = PAID_FROM_ICON[p];
+                return (
+                  <Radio key={p} value={p} className={cx(radioCard, "group")}>
+                    <RadioDot />
+                    <span className="flex flex-col">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Icon size={16} aria-hidden /> {PAID_FROM_OPTIONS[p].label}
+                      </span>
+                      <span className="text-xs font-normal text-tinta/70">{PAID_FROM_OPTIONS[p].hint}</span>
                     </span>
-                    <span className="text-xs font-normal text-tinta/70">{PAID_FROM_OPTIONS[p].hint}</span>
-                  </span>
-                </Radio>
-              ))}
+                  </Radio>
+                );
+              })}
           </div>
         </RadioGroup>
       ) : paidFrom === "cash" ? (
         <p className="flex items-center gap-2 text-sm text-tinta/70">
           <Wallet size={16} aria-hidden /> Sale del efectivo de la caja.
         </p>
+      ) : null}
+
+      {isCredit ? (
+        <div className="flex flex-col gap-3 rounded-xl border border-cuero/30 bg-cuero/5 p-3">
+          <ComboBox
+            className={field.root}
+            items={supplierMatches.map((name) => ({ id: name, name }))}
+            inputValue={supplier}
+            onInputChange={(v) => {
+              setSupplier(v);
+              setCreditError(null);
+            }}
+            onSelectionChange={(key) => {
+              if (typeof key === "string") setSupplier(key);
+            }}
+            menuTrigger="input"
+            allowsCustomValue
+            allowsEmptyCollection
+            isRequired
+          >
+            <Label className={field.label}>Proveedor</Label>
+            <Input className={field.input} placeholder="Distribuidora, marca o vendedor" autoComplete="off" maxLength={80} />
+            <Text slot="description" className={field.description}>
+              {suppliers.length > 0 ? "Elige uno de antes o escribe uno nuevo." : "Escribe el nombre: queda guardado para la próxima."}
+            </Text>
+            <Popover className="w-(--trigger-width) overflow-auto rounded-xl border border-tinta/10 bg-papel p-1 shadow-xl data-[entering]:animate-pop-in">
+              <ListBox className="max-h-60 outline-none" renderEmptyState={() => <p className="p-3 text-sm text-tinta/70">Proveedor nuevo</p>}>
+                {(s: { id: string; name: string }) => (
+                  <ListBoxItem
+                    id={s.id}
+                    textValue={s.name}
+                    className={({ isFocused }) =>
+                      cx("flex min-h-11 cursor-pointer items-center rounded-lg px-3 py-2 outline-none", isFocused && "bg-cuero/15 outline-2 -outline-offset-2 outline-cuero")
+                    }
+                  >
+                    {s.name}
+                  </ListBoxItem>
+                )}
+              </ListBox>
+            </Popover>
+          </ComboBox>
+          <TextField
+            value={termDays}
+            onChange={(v) => {
+              setTermDays(onlyDigits(v, 3));
+              setCreditError(null);
+            }}
+            inputMode="numeric"
+            isRequired
+            className={field.root}
+          >
+            <Label className={field.label}>Plazo para pagar (días)</Label>
+            <Input className={cx(field.input, "monto")} autoComplete="off" />
+            <Text slot="description" className={field.description}>
+              {dueLabel ? `Vence el ${dueLabel}.` : `De 0 a ${MAX_TERM_DAYS} días.`} Queda en Cuentas por pagar hasta que se pague.
+            </Text>
+          </TextField>
+          {creditError ? (
+            <p role="alert" className={field.error}>
+              {creditError}
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       <ol className="flex flex-col gap-3" aria-label="Productos de la compra">

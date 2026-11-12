@@ -7,6 +7,9 @@
 --   4. Balance de prueba: por sede, la suma de todos los débitos menos todos los créditos es 0.
 --   4b. Inventario (0032–0034): 1435 y 6135 solo los mueven asientos de inventario (o la reversa de
 --       una compra), y 1435 de cada sede vale el último conteo + las compras vigentes posteriores.
+--   4c. Proveedores (0036): 2205 solo la mueven la compra a crédito y el pago a proveedor (o sus
+--       reversas); lo que se debe según 2205 es lo que falta de las compras a crédito vigentes, y
+--       ninguna compra tiene pagos vigentes por más de su total.
 --   5. Las migraciones están aplicadas y los triggers de garantía existen y están activos.
 --   6. Postura de los roles: villa_app no tiene TEMPORARY ni DDL ni puede editar el libro.
 
@@ -97,6 +100,49 @@ BEGIN
     END IF;
   END IF;
 
+  -- 4c. Cuentas por pagar a proveedores (sprint 8, parte A).
+  IF to_regclass('public.supplier_payments') IS NOT NULL THEN
+    SELECT count(*) INTO n
+      FROM journal_lines l
+      JOIN accounts a ON a.location_id = l.location_id AND a.id = l.account_id
+      JOIN journal_entries e ON e.location_id = l.location_id AND e.id = l.entry_id
+      LEFT JOIN journal_entries o ON o.location_id = e.location_id AND o.id = e.reverses_entry_id
+     WHERE a.code = '2205'
+       AND NOT (e.kind IN ('inventory_purchase', 'supplier_payment')
+                OR (e.kind = 'reversal' AND o.kind IN ('inventory_purchase', 'supplier_payment')));
+    IF n > 0 THEN
+      RAISE EXCEPTION 'cordura: % línea(s) en 2205 que no son de compras a crédito ni pagos a proveedores', n;
+    END IF;
+
+    SELECT count(*) INTO n FROM (
+      SELECT a.location_id,
+             -coalesce((SELECT sum(l.debit - l.credit) FROM journal_lines l WHERE l.location_id = a.location_id AND l.account_id = a.id), 0) AS book,
+             coalesce((SELECT sum(d.total - coalesce((SELECT sum(p.amount) FROM supplier_payments p
+                                                       WHERE p.location_id = d.location_id AND p.document_id = d.id
+                                                         AND NOT EXISTS (SELECT 1 FROM journal_entries r WHERE r.location_id = p.location_id AND r.reverses_entry_id = p.journal_entry_id)), 0))
+                         FROM inventory_documents d
+                        WHERE d.location_id = a.location_id AND d.kind = 'purchase' AND d.paid_from = 'credit'
+                          AND NOT EXISTS (SELECT 1 FROM journal_entries r WHERE r.location_id = d.location_id AND r.reverses_entry_id = d.journal_entry_id)), 0) AS expected
+        FROM accounts a
+       WHERE a.code = '2205'
+    ) x WHERE book <> expected;
+    IF n > 0 THEN
+      RAISE EXCEPTION 'cordura: lo que se debe a proveedores (2205) no cuadra con las compras a crédito y sus pagos en % sede(s)', n;
+    END IF;
+
+    SELECT count(*) INTO n FROM (
+      SELECT d.id
+        FROM inventory_documents d
+        JOIN supplier_payments p ON p.location_id = d.location_id AND p.document_id = d.id
+       WHERE NOT EXISTS (SELECT 1 FROM journal_entries r WHERE r.location_id = p.location_id AND r.reverses_entry_id = p.journal_entry_id)
+       GROUP BY d.id, d.total
+      HAVING sum(p.amount) > d.total
+    ) over_paid;
+    IF n > 0 THEN
+      RAISE EXCEPTION 'cordura: % compra(s) a crédito con pagos por más de su total', n;
+    END IF;
+  END IF;
+
   -- 5. Garantías presentes después de restaurar.
   SELECT string_agg(want, ', ') INTO missing
     FROM unnest(ARRAY[
@@ -108,7 +154,9 @@ BEGIN
       'sales_totals',
       'journal_lines_inventory_accounts', 'journal_entries_inventory_document', 'journal_entries_inventory_reversal',
       'inventory_documents_entry_matches', 'inventory_documents_no_mutation', 'inventory_document_lines_no_mutation',
-      'products_no_delete'
+      'products_no_delete',
+      'journal_entries_supplier_payment_row', 'supplier_payments_entry_matches', 'supplier_payments_open_session',
+      'supplier_payments_no_mutation', 'suppliers_no_mutation', 'journal_entries_credit_reversal_lock'
     ]) AS want
    WHERE NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = want AND NOT tgisinternal AND tgenabled <> 'D');
   IF missing IS NOT NULL THEN
@@ -132,7 +180,7 @@ BEGIN
   IF has_database_privilege('villa_app', current_database(), 'CREATE') OR has_schema_privilege('villa_app', 'public', 'CREATE') THEN
     RAISE EXCEPTION 'cordura: villa_app puede crear objetos';
   END IF;
-  FOREACH t IN ARRAY ARRAY['journal_entries', 'journal_lines', 'inventory_documents', 'inventory_document_lines'] LOOP
+  FOREACH t IN ARRAY ARRAY['journal_entries', 'journal_lines', 'inventory_documents', 'inventory_document_lines', 'supplier_payments', 'suppliers'] LOOP
     IF has_table_privilege('villa_app', format('public.%I', t), 'UPDATE')
        OR has_table_privilege('villa_app', format('public.%I', t), 'DELETE')
        OR has_table_privilege('villa_app', format('public.%I', t), 'TRUNCATE') THEN
@@ -167,6 +215,13 @@ SELECT a.location_id AS sede, coalesce(sum(l.debit - l.credit), 0) AS inventario
   FROM accounts a
   LEFT JOIN journal_lines l ON l.location_id = a.location_id AND l.account_id = a.id
  WHERE a.code = '1435'
+ GROUP BY a.location_id ORDER BY a.location_id;
+
+\echo '== Lo que se debe a proveedores (2205) por sede =='
+SELECT a.location_id AS sede, -coalesce(sum(l.debit - l.credit), 0) AS deuda_centavos
+  FROM accounts a
+  LEFT JOIN journal_lines l ON l.location_id = a.location_id AND l.account_id = a.id
+ WHERE a.code = '2205'
  GROUP BY a.location_id ORDER BY a.location_id;
 
 \echo 'cordura: OK'

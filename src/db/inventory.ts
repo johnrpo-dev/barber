@@ -15,6 +15,7 @@ import {
   valueCount,
   type ValuedLine,
 } from "@/domain/inventory/periodic";
+import { cleanSupplierName, dueDateFor } from "@/domain/inventory/payables";
 import { InventoryError } from "@/domain/inventory/product";
 import { format, type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
@@ -23,7 +24,7 @@ import { recordAudit } from "./audit";
 import { type ActorRef, cashShortError, ledgerCash, requireOpenDay, requireOpenSession, today } from "./cash";
 import { accountBalance, postEntry, reverseEntry } from "./ledger";
 import { lastPurchases } from "./products";
-import { cashMovements, cashSessions, inventoryDocumentLines, inventoryDocuments, journalEntries, products } from "./schema";
+import { cashMovements, cashSessions, inventoryDocumentLines, inventoryDocuments, journalEntries, products, suppliers } from "./schema";
 import { serializable } from "./serializable";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
@@ -48,7 +49,7 @@ function cleanNote(note: string | null | undefined): string | null {
  * y solo el UPDATE de una fila que otra transacción ya cambió garantiza el 40001 que hace repetir con
  * datos frescos (auditoría del sprint 6, M-1). Se llama antes de leer saldos o últimas compras.
  */
-async function lockInventory(tx: Db, locationId: bigint): Promise<void> {
+export async function lockInventory(tx: Db, locationId: bigint): Promise<void> {
   await tx.execute(sql`
     insert into inventory_locks (location_id, version) values (${locationId}::bigint, 1)
     on conflict (location_id) do update set version = inventory_locks.version + 1
@@ -81,10 +82,34 @@ async function existingDocument(tx: Db, locationId: bigint, idempotencyKey: stri
 
 // ─── Compra ──────────────────────────────────────────────────────────────────
 
+/** Compra a crédito (sprint 8, parte A): a quién se le debe y en cuántos días vence. */
+export interface CreditTerms {
+  /** Nombre del proveedor: si no existe en la sede (sin mayúsculas), se crea. */
+  supplierName: string;
+  /** Plazo en días desde el día contable de la compra (0 a MAX_TERM_DAYS). */
+  termDays: number;
+}
+
+/**
+ * El proveedor de la sede con ese nombre (sin distinguir mayúsculas), o uno nuevo. Se llama con el
+ * candado de inventario tomado: dos compras a crédito con el mismo proveedor nuevo no chocan.
+ */
+async function supplierFor(tx: Db, locationId: bigint, name: string, createdBy: string): Promise<{ id: bigint; name: string }> {
+  const [found] = await tx
+    .select({ id: suppliers.id, name: suppliers.name })
+    .from(suppliers)
+    .where(and(eq(suppliers.locationId, locationId), sql`lower(${suppliers.name}) = lower(${name})`));
+  if (found) return found;
+  const [created] = await tx.insert(suppliers).values({ locationId, name, createdBy }).returning({ id: suppliers.id, name: suppliers.name });
+  return created!;
+}
+
 export interface RecordPurchaseInput {
   locationId: bigint;
   paidFrom: PurchasePaidFrom;
   lines: readonly PurchaseLine[];
+  /** Solo en la compra a crédito (paidFrom "credit"), y ahí es obligatorio. */
+  credit?: CreditTerms | null;
   note?: string | null;
   idempotencyKey: string;
   /** Con su rol: la caja exige inventory.purchase; el banco y la carga inicial, inventory.manage. */
@@ -92,7 +117,7 @@ export interface RecordPurchaseInput {
   now?: Date;
 }
 
-/** Permiso que exige una compra según de dónde sale el dinero (también lo usan las acciones). */
+/** Permiso que exige una compra según de dónde sale el dinero (también lo usan las acciones). A crédito: solo el dueño. */
 export function purchasePermission(paidFrom: PurchasePaidFrom): "inventory.purchase" | "inventory.manage" {
   return paidFrom === "cash" ? "inventory.purchase" : "inventory.manage";
 }
@@ -115,7 +140,14 @@ export async function recordPurchaseTx(tx: Db, input: RecordPurchaseInput): Prom
   }
   const total = purchaseTotal(input.lines);
   const note = cleanNote(input.note);
-  // El orden de las líneas no cambia la compra: la huella las ordena por producto.
+  if ((input.paidFrom === "credit") !== !!input.credit) {
+    throw new InventoryError(input.paidFrom === "credit" ? "Escribe el proveedor y el plazo de la compra a crédito" : "Solo la compra a crédito lleva proveedor y plazo");
+  }
+  const credit = input.credit ? { supplierName: cleanSupplierName(input.credit.supplierName), termDays: input.credit.termDays } : null;
+  // Valida el plazo antes de tocar nada (la fecha real sale del día contable, más abajo).
+  if (credit) dueDateFor("2000-01-01", credit.termDays);
+  // El orden de las líneas no cambia la compra: la huella las ordena por producto. La compra que no
+  // es a crédito conserva la huella de siempre (sin el campo credit).
   const sorted = [...input.lines].sort((a, b) => (a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0));
   const hash = requestHash({
     kind: "inventory_purchase",
@@ -124,6 +156,7 @@ export async function recordPurchaseTx(tx: Db, input: RecordPurchaseInput): Prom
     lines: sorted.map((l) => ({ productId: l.productId, quantity: l.quantity, amount: l.amount.minor })),
     note,
     by: input.actor.userId,
+    ...(credit ? { credit: { supplier: credit.supplierName.toLowerCase(), termDays: credit.termDays } } : {}),
   });
   const existing = await existingDocument(tx, input.locationId, input.idempotencyKey);
   if (existing) {
@@ -141,6 +174,8 @@ export async function recordPurchaseTx(tx: Db, input: RecordPurchaseInput): Prom
   const session = input.paidFrom === "cash" ? await requireOpenSession(tx, input.locationId, "Abre la caja para registrar una compra de caja", input.now) : null;
   const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new InventoryError(m));
   if (session && total.minor > (await ledgerCash(tx, input.locationId))) throw cashShortError(input.actor);
+  const supplier = credit ? await supplierFor(tx, input.locationId, credit.supplierName, input.actor.userId) : null;
+  const dueDate = credit ? dueDateFor(day, credit.termDays) : null;
 
   const first = names.get(sorted[0]!.productId) ?? "Producto";
   const what = sorted.length === 1 ? `${first} (${sorted[0]!.quantity} u.)` : `${first} y ${sorted.length - 1} más`;
@@ -159,6 +194,8 @@ export async function recordPurchaseTx(tx: Db, input: RecordPurchaseInput): Prom
       businessDate: day,
       journalEntryId: posted.entryId,
       cashSessionId: session?.id ?? null,
+      supplierId: supplier?.id ?? null,
+      dueDate,
       total: total.minor,
       note,
       createdBy: input.actor.userId,
@@ -186,7 +223,9 @@ export async function recordPurchaseTx(tx: Db, input: RecordPurchaseInput): Prom
     action: "inventory.purchase",
     targetKind: "inventory_document",
     targetRef: doc!.id.toString(),
-    summary: `Registró una compra de mercancía de ${format(total)} (${sorted.length} ${sorted.length === 1 ? "producto" : "productos"}), pagada ${PAID_FROM_LABELS[input.paidFrom]}`,
+    summary: `Registró una compra de mercancía de ${format(total)} (${sorted.length} ${sorted.length === 1 ? "producto" : "productos"}), ${
+      supplier ? `a crédito con ${supplier.name}, vence el ${dueDate}` : `pagada ${PAID_FROM_LABELS[input.paidFrom]}`
+    }`,
   });
   return { documentId: doc!.id, total, created: true };
 }
@@ -322,13 +361,14 @@ export interface ReversePurchaseInput {
   now?: Date;
 }
 
-/** Por qué una compra no se puede anular, o null si se puede (lo mismo que exige 0033). */
-export type PurchaseLock = "reversed" | "counted" | "session_closed" | null;
+/** Por qué una compra no se puede anular, o null si se puede (lo mismo que exigen 0033 y 0036). */
+export type PurchaseLock = "reversed" | "counted" | "session_closed" | "has_payments" | null;
 
 export const PURCHASE_LOCK_MESSAGES: Record<Exclude<PurchaseLock, null>, string> = {
   reversed: "Esta compra ya está anulada",
   counted: "Esta compra ya entró en un conteo de inventario: no se puede anular. La diferencia se corrige en el próximo conteo.",
   session_closed: "Esta compra salió de un turno de caja que ya se cerró: no se puede anular (el arqueo de ese turno ya la tuvo en cuenta).",
+  has_payments: "Esta compra tiene pagos al proveedor: anula primero esos pagos en Cuentas por pagar.",
 };
 
 /**
@@ -411,6 +451,7 @@ async function purchaseLock(
     .where(and(eq(inventoryDocuments.locationId, locationId), eq(inventoryDocuments.kind, "count"), sql`${inventoryDocuments.id} > ${doc.id}`))
     .limit(1);
   if (counted) return "counted";
+  if (doc.paidFrom === "credit" && (await hasActivePayments(tx, locationId, doc.id))) return "has_payments";
   if (doc.paidFrom === "cash") {
     const [session] = await tx
       .select({ closedAt: cashSessions.closedAt })
@@ -421,6 +462,20 @@ async function purchaseLock(
   return null;
 }
 
+/** ¿La compra a crédito tiene pagos sin anular? (Mientras los tenga, no se anula.) */
+async function hasActivePayments(tx: Db, locationId: bigint, documentId: bigint): Promise<boolean> {
+  const [row] = rowsOf<{ active: boolean }>(
+    await tx.execute(sql`
+      select exists (
+        select 1 from supplier_payments p
+         where p.location_id = ${locationId}::bigint and p.document_id = ${documentId}::bigint
+           and not exists (select 1 from journal_entries r where r.location_id = p.location_id and r.reverses_entry_id = p.journal_entry_id)
+      ) as active
+    `),
+  );
+  return !!row?.active;
+}
+
 export interface RecentPurchase {
   id: bigint;
   businessDate: string;
@@ -429,6 +484,8 @@ export interface RecentPurchase {
   note: string | null;
   /** "Cera para peinar (6 u.) y 1 más" */
   summary: string;
+  /** A crédito: el proveedor. */
+  supplierName: string | null;
   lock: PurchaseLock;
 }
 
@@ -448,6 +505,8 @@ export async function recentPurchases(db: Db, locationId: bigint, limit = 15): P
     reversed: boolean;
     counted: boolean;
     session_closed: boolean | null;
+    supplier_name: string | null;
+    has_payments: boolean;
   }>(
     await db.execute(sql`
       select d.id::text, d.business_date::text, d.paid_from, d.total::text, d.note, d.journal_entry_id::text as entry_id,
@@ -456,7 +515,11 @@ export async function recentPurchases(db: Db, locationId: bigint, limit = 15): P
              (select count(*)::int from inventory_document_lines l where l.location_id = d.location_id and l.document_id = d.id) as lines,
              exists (select 1 from journal_entries r where r.location_id = d.location_id and r.reverses_entry_id = d.journal_entry_id) as reversed,
              exists (select 1 from inventory_documents c where c.location_id = d.location_id and c.kind = 'count' and c.id > d.id) as counted,
-             (select s.closed_at is not null from cash_sessions s where s.location_id = d.location_id and s.id = d.cash_session_id) as session_closed
+             (select s.closed_at is not null from cash_sessions s where s.location_id = d.location_id and s.id = d.cash_session_id) as session_closed,
+             (select sp.name from suppliers sp where sp.location_id = d.location_id and sp.id = d.supplier_id) as supplier_name,
+             exists (select 1 from supplier_payments p
+                      where p.location_id = d.location_id and p.document_id = d.id
+                        and not exists (select 1 from journal_entries r where r.location_id = p.location_id and r.reverses_entry_id = p.journal_entry_id)) as has_payments
         from inventory_documents d
         cross join lateral (
           select p.name, l.quantity from inventory_document_lines l
@@ -476,7 +539,16 @@ export async function recentPurchases(db: Db, locationId: bigint, limit = 15): P
     total: money(BigInt(r.total)),
     note: r.note,
     summary: r.lines > 1 ? `${r.first_name} (${r.first_qty} u.) y ${r.lines - 1} más` : `${r.first_name} (${r.first_qty} u.)`,
-    lock: r.reversed ? "reversed" : r.counted ? "counted" : r.paid_from === "cash" && r.session_closed !== false ? "session_closed" : null,
+    supplierName: r.supplier_name,
+    lock: r.reversed
+      ? "reversed"
+      : r.counted
+        ? "counted"
+        : r.has_payments
+          ? "has_payments"
+          : r.paid_from === "cash" && r.session_closed !== false
+            ? "session_closed"
+            : null,
   }));
 }
 

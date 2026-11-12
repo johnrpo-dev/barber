@@ -8,12 +8,21 @@ import { bpsToPercentText, MoneyField, percentTextToBps, unitsOf } from "../_com
 import { useReauth } from "../_components/reauth";
 import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, FieldMessage, FormError, Toggle, useFieldErrors } from "../_manage/controls";
-import { createProductAction, recordPurchaseAction, reversePurchaseAction, setProductActiveAction, updateProductAction } from "./actions";
+import {
+  createProductAction,
+  recordCreditPurchaseAction,
+  recordPurchaseAction,
+  reversePurchaseAction,
+  setProductActiveAction,
+  updateProductAction,
+} from "./actions";
 import { type CountHistoryRow, CountForm, CountReportView, type CountSheetData } from "./count-form";
+import { type PayablesData, PayablesSection } from "./payables-section";
 import { PurchaseForm } from "./purchase-form";
 
-// Productos (sprint 6, docs/sprint-6-productos-inventario.md): catálogo del dueño y compras del banco
-// o carga inicial. La compra pagada de la caja se registra desde Caja (también recepción).
+// Productos (sprint 6, docs/sprint-6-productos-inventario.md): catálogo del dueño, compras del banco, a
+// crédito (sprint 8) o carga inicial, y cuentas por pagar. La compra pagada de la caja se registra
+// desde Caja (también recepción).
 
 export interface ProductRow {
   id: string;
@@ -32,7 +41,7 @@ export interface ProductRow {
 export interface PurchaseRow {
   id: string;
   dateLabel: string;
-  paidFrom: "cash" | "bank" | "owner";
+  paidFrom: "cash" | "bank" | "owner" | "credit";
   paidFromLabel: string;
   totalLabel: string;
   summary: string;
@@ -56,6 +65,7 @@ const REVERSE_EFFECT: Record<PurchaseRow["paidFrom"], string> = {
   cash: "El efectivo vuelve a la caja de este turno.",
   bank: "El dinero vuelve a la cuenta del banco.",
   owner: "Se retira del aporte del dueño.",
+  credit: "Se borra la deuda con el proveedor.",
 };
 
 export function ProductsManager({
@@ -65,6 +75,9 @@ export function ProductsManager({
   countSheet,
   counts,
   countDue,
+  payables,
+  suppliers,
+  today,
 }: {
   products: ProductRow[];
   purchases: PurchaseRow[];
@@ -73,6 +86,11 @@ export function ProductsManager({
   counts: CountHistoryRow[];
   /** Último día del mes y todavía sin conteo hoy. */
   countDue: boolean;
+  payables: PayablesData;
+  /** Proveedores conocidos de la sede (para la compra a crédito). */
+  suppliers: string[];
+  /** Día contable de hoy en la sede. */
+  today: string;
 }) {
   const toast = useToast();
   const [editing, setEditing] = useState<Editing>(null);
@@ -120,6 +138,8 @@ export function ProductsManager({
           </Btn>
         </div>
       ) : null}
+
+      <PayablesSection data={payables} />
 
       {products.length === 0 ? (
         <div className={cx(card, "flex flex-col items-center gap-3 px-6 py-12 text-center")}>
@@ -183,7 +203,7 @@ export function ProductsManager({
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <p className={cx("text-sm font-semibold", p.reversed && "text-tinta/70 line-through")}>{p.summary}</p>
                     <p className="text-xs text-tinta/70">
-                      {p.dateLabel} · pagada {p.paidFromLabel}
+                      {p.dateLabel} · {p.paidFrom === "credit" ? p.paidFromLabel : `pagada ${p.paidFromLabel}`}
                       {p.note ? ` · ${p.note}` : ""}
                     </p>
                   </div>
@@ -300,14 +320,19 @@ export function ProductsManager({
         isOpen={editing?.mode === "purchase"}
         onOpenChange={(open) => !open && setEditing(null)}
         title="Registrar compra"
-        description="Pagada del banco o carga inicial. La compra en efectivo se registra en Caja."
+        description="Del banco, a crédito o carga inicial. La compra en efectivo se registra en Caja."
       >
         {editing?.mode === "purchase" ? (
           <PurchaseForm
             products={active.map((p) => ({ id: p.id, name: p.name, priceMinor: p.priceMinor }))}
-            paidFromOptions={["bank", "owner"]}
-            submit={({ paidFrom, lines, note, idempotencyKey }) =>
-              recordPurchaseAction({ paidFrom: paidFrom === "cash" ? "bank" : paidFrom, lines, note, idempotencyKey })
+            paidFromOptions={["bank", "credit", "owner"]}
+            suppliers={suppliers}
+            today={today}
+            submit={({ paidFrom, lines, note, credit, idempotencyKey }) =>
+              // A crédito SIEMPRE va a la acción de crédito (sin proveedor, el servidor la rechaza): nunca cae en el banco.
+              paidFrom === "credit"
+                ? recordCreditPurchaseAction({ supplierName: credit?.supplierName ?? "", termDays: credit?.termDays ?? "", lines, note, idempotencyKey })
+                : recordPurchaseAction({ paidFrom: paidFrom === "owner" ? "owner" : "bank", lines, note, idempotencyKey })
             }
             onDone={(m) => {
               setEditing(null);

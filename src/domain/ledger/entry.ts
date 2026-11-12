@@ -26,6 +26,9 @@ export const ENTRY_KINDS = [
   // (con sus reversas) que pueden mover 1435 y 6135 (trigger de la migración 0032).
   "inventory_purchase",
   "inventory_count",
+  // Pago a un proveedor de una compra a crédito (sprint 8, parte A): Dr 2205 contra la caja, el banco
+  // o el capital del dueño. Con su reversa, el único tipo (además de la compra) que mueve 2205.
+  "supplier_payment",
 ] as const;
 
 export type EntryKind = (typeof ENTRY_KINDS)[number];

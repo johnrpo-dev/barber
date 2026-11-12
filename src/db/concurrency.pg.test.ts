@@ -10,7 +10,9 @@ import { fromUnits } from "@/domain/money";
 import { closeBusinessDay, closeCashSession, ledgerCash, openCashSession, payTips } from "./cash";
 import { recordCount, recordPurchase, recordPurchaseTx } from "./inventory";
 import { commissionBalances, previewSettlement, reverseSettlement, type SettlementOptions, settleCommissions } from "./commissions";
-import { postEntry, trialBalance } from "./ledger";
+import { accountBalance, postEntry, reverseEntry, trialBalance } from "./ledger";
+import { supplierPaymentEntry } from "@/domain/inventory/payables";
+import { and, eq, sql } from "drizzle-orm";
 import { createProduct } from "./products";
 import { checkout } from "./sales";
 import { chairAppointment, key, quickSale, type Shop, setupShop, simpleCheckout, TZ } from "./sales-testing";
@@ -128,6 +130,87 @@ describe.skipIf(!url)("concurrencia en PostgreSQL real (TEST_PG_URL)", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     expect(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason)).toMatch(/1105|quedaría negativo|Failed query/);
     expect(await ledgerCash(a, shop.locationId)).toBe(1_000_000n);
+  });
+
+  // ─── Cuentas por pagar (sprint 8, A; migración 0037): el candado lo toma también la base ───
+
+  /** Una compra a crédito de $100.000 y su asiento. */
+  async function creditPurchase(shop: Shop): Promise<{ documentId: bigint; entryId: bigint }> {
+    const productId = (await createProduct(a, { locationId: shop.locationId, draft: { name: `Cera ${key()}`, sku: null, price: cop(30_000n), commissionBps: 0 } })).id;
+    const { documentId } = await recordPurchase(a, {
+      locationId: shop.locationId,
+      paidFrom: "credit",
+      credit: { supplierName: "Distribuidora Norte", termDays: 30 },
+      lines: [{ productId, quantity: 4, amount: cop(100_000n) }],
+      idempotencyKey: key("credito"),
+      actor: shop.owner,
+    });
+    const [doc] = await a
+      .select({ entryId: schema.inventoryDocuments.journalEntryId })
+      .from(schema.inventoryDocuments)
+      .where(and(eq(schema.inventoryDocuments.locationId, shop.locationId), eq(schema.inventoryDocuments.id, documentId)));
+    return { documentId, entryId: doc!.entryId! };
+  }
+
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /**
+   * Un pago del banco escrito a mano (sin lockInventory ni SERIALIZABLE): solo la base lo frena.
+   * `hold`: verifica ya (SET CONSTRAINTS ALL IMMEDIATE) y espera antes del COMMIT; así el otro llega a
+   * su verificación con este pago escrito pero sin confirmar, que es justo la carrera que cierra 0037.
+   */
+  const rawPayment = (conn: Db, shop: Shop, documentId: bigint, pesos: bigint, opts: { hold?: number; delay?: number } = {}) =>
+    conn.transaction(async (tx) => {
+      if (opts.delay) await sleep(opts.delay);
+      const t = tx as unknown as Db;
+      const day = businessDate(new Date(), TZ);
+      const k = key("pago-a-mano");
+      const posted = await postEntry(t, {
+        locationId: shop.locationId,
+        createdBy: "x",
+        entry: supplierPaymentEntry({ amount: cop(pesos), paidFrom: "bank" }, { businessDate: day, memo: "Pago a mano", idempotencyKey: `supplier_payment:${k}` }),
+      });
+      await t.insert(schema.supplierPayments).values({
+        locationId: shop.locationId,
+        documentId,
+        amount: cop(pesos).minor,
+        paidFrom: "bank",
+        businessDate: day,
+        journalEntryId: posted.entryId,
+        createdBy: "x",
+        idempotencyKey: k,
+        requestHash: "a".repeat(64),
+      });
+      if (opts.hold) {
+        await t.execute(sql`set constraints all immediate`);
+        await sleep(opts.hold);
+      }
+    });
+
+  it("READ COMMITTED: dos pagos a mano de la misma compra a la vez no superan su total", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    const { documentId } = await creditPurchase(shop);
+    const results = await Promise.allSettled([
+      rawPayment(a, shop, documentId, 60_000n, { hold: 600 }),
+      rawPayment(b, shop, documentId, 60_000n, { delay: 150 }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(String((results.find((r) => r.status === "rejected") as PromiseRejectedResult).reason)).toMatch(/superan su total|Failed query/);
+    expect(await accountBalance(a, shop.locationId, ACCOUNTS.accountsPayable.code)).toBe(-cop(40_000n).minor);
+  });
+
+  it("READ COMMITTED: pagar a mano mientras otro anula la compra: gana uno solo", async () => {
+    const shop = await setupShop(a, `Concurrencia ${key()}`);
+    const { documentId, entryId } = await creditPurchase(shop);
+    const reverse = b.transaction(async (tx) => {
+      await sleep(150);
+      await reverseEntry(tx as unknown as Db, { locationId: shop.locationId, entryId, businessDate: businessDate(new Date(), TZ), reason: "Anulación a mano", createdBy: "x" });
+    });
+    const results = await Promise.allSettled([rawPayment(a, shop, documentId, 30_000n, { hold: 600 }), reverse]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    // Gane quien gane, 2205 es lo que se debe: $70.000 (se pagó) o $0 (se anuló sin pagos).
+    const owed = -(await accountBalance(a, shop.locationId, ACCOUNTS.accountsPayable.code));
+    expect([cop(70_000n).minor, 0n]).toContain(owed);
   });
 
   // ─── Comisiones (sprint 5): la persona se bloquea primero; en SERIALIZABLE el que pierde repite ───
