@@ -22,7 +22,7 @@ import { addStaffMember, createStaffUser, setStaffActive, setStaffServices, setW
 import type { Db } from "./types";
 
 const LOCATION_NAME = "Barbería Villa";
-const DEMO_PHONE = "+573122325994"; // Solo para pruebas.
+const DEMO_PHONE = "+573003024035"; // Solo para pruebas.
 
 // Catálogo de la demo: los servicios que Barbería Villa publica hoy en su página de reservas (precio y
 // duración de nov. 2026), en el orden de lo más pedido allá: sin citas, la portada usa este orden.
