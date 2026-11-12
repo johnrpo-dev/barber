@@ -167,7 +167,7 @@ Se construye suponiendo que los proveedores de productos le fían a Villa (lo us
 - **Pantallas:** en la compra de Productos, la opción "A crédito" con proveedor (sugiere los de antes o acepta uno nuevo) y plazo en días, con la fecha de vencimiento a la vista. "Cuentas por pagar" en Productos (solo si hay algo): lo que se debe según 2205, y por compra el proveedor, el saldo, el vencimiento, lo abonado, "Pagar" (prellenado con el saldo; caja, banco o bolsillo del dueño) y sus pagos con "Anular". En las compras recientes, "a crédito con X". En Caja, "Pago a proveedor" (con la caja abierta) para abonar una compra pendiente. En Inicio, "N cuentas por pagar vencidas…" o "…vencen en los próximos días" (3 días o menos) y el aviso M-2 de pagos de caja hechos por otra persona en los últimos 7 días.
 - **Respaldo:** `deploy/backup/sanity.sql` (4c) revisa que 2205 solo lo muevan compras a crédito y pagos, que el saldo de 2205 de cada sede sea lo que falta de las compras a crédito vigentes, que ninguna compra tenga pagos por más de su total, que los triggers nuevos existan y que `villa_app` no pueda editar las tablas nuevas.
 - **Pruebas:** `src/domain/inventory/payables.test.ts` (ejemplos y propiedades), `src/db/payables.test.ts` (como `villa_app`: compra, abonos de los tres orígenes, idempotencia, caja y efectivo, otra sede, anulaciones, la vista, el aviso M-2, ataques con SQL y la propiedad de fast-check: 2205 = suma de lo que se debe por compra, nunca negativo, y un pago de más siempre se rechaza) y `src/db/backup-sanity.test.ts`.
-- **Pendiente:** que el contador valide la cuenta 2205 y el asiento del pago desde el bolsillo del dueño (3105), y saber a cuántos días fían de verdad y si cobran por pagar tarde (pregunta 1). Los intereses por mora no se manejan.
+- **Pendiente:** que el contador valide la cuenta 2205 y el asiento del pago desde el bolsillo del dueño (3105), y si cobran por pagar tarde (pregunta 1; el plazo de 30 días quedó confirmado). Los intereses por mora no se manejan.
 
 ## 6. Orden
 
@@ -180,7 +180,7 @@ Se construye suponiendo que los proveedores de productos le fían a Villa (lo us
 
 ## 7. Preguntas al dueño (con el valor que se usa mientras no responda)
 
-1. **¿Algún proveedor les fía?** Se asume que sí (2026-11-12) y la parte A entra. Falta saber a cuántos días fían (se usan 30 por defecto) y si cobran por pagar tarde.
+1. **¿Algún proveedor les fía?** Se asume que sí (2026-11-12) y la parte A entra. Plazo: **30 días**, confirmado por el dueño (2026-11-12). Falta saber si cobran por pagar tarde. Revisión contable en [revision-contable.md](revision-contable.md).
 2. **¿Los avisos le llegan por correo o por WhatsApp?** Correo a `ALERT_EMAIL`, agrupado cada 15 minutos. WhatsApp necesita una plantilla aprobada y cuesta por mensaje.
 3. **¿Quién da cortesías y se le paga comisión al barbero?** Quien puede dar descuentos con tope de 100 %, y sin comisión.
 4. **¿Villa es responsable de IVA?** Resuelta: **no** (el dueño, 2026-11-11). Requisitos que conviene que el contador confirme: solo una persona natural puede ser no responsable (una S.A.S. es responsable por ley), y los ingresos brutos del año anterior deben ser menores a 3.500 UVT.
