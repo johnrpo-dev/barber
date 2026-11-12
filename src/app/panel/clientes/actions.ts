@@ -18,6 +18,7 @@ import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 import { type ClientRecordView, toClientRecordView } from "./record-view";
 
+import { textSchema } from "@/lib/action-schemas";
 // Clientes en el panel:
 // - Supresión de datos a su solicitud, tal como promete la política de privacidad
 //   (docs/sprint-5-comisiones-informes.md §12.8). Solo el dueño, con reautenticación, desde la ficha.
@@ -87,7 +88,7 @@ export type ClientSearchView = { clients: ClientOption[]; hasMore: boolean };
 export async function loadClientSearch(query: string): Promise<ActionResult<ClientSearchView>> {
   const staff = await requirePermission("clients.manage");
   return runAction(async () => {
-    const q = z.string().max(80).parse(query);
+    const q = textSchema().max(80).parse(query);
     const found = await searchClients(conn(), { locationId: staff.locationId, query: q, limit: CLIENT_SEARCH_LIMIT + 1 });
     const rows = found.slice(0, CLIENT_SEARCH_LIMIT);
     await recordContactReads(conn(), { locationId: staff.locationId, staffId: staff.staffId, context: "client_search", clientIds: rows.filter((c) => c.phoneE164).map((c) => c.id) });

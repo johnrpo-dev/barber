@@ -25,6 +25,7 @@ import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { MIN_PASSWORD_LENGTH } from "@/lib/auth";
 import { requirePermission, requireRecentAuth, type StaffContext } from "@/lib/session";
 
+import { textSchema } from "@/lib/action-schemas";
 // Personal y horarios. Las ausencias, bloqueos y cierres están en ../bloqueos/actions.
 // Cada acción verifica su permiso en el servidor y toma la sede de la sesión, nunca del cliente.
 // Crear o ascender dueños, cambiar roles y poner contraseñas exigen reautenticación reciente.
@@ -57,7 +58,7 @@ async function requireMember(locationId: bigint, staffId: bigint) {
 
 // ─── Personal ────────────────────────────────────────────────────────────────
 
-const nameSchema = z.string().trim().min(2, "El nombre debe tener al menos 2 caracteres").max(80, "El nombre es muy largo");
+const nameSchema = textSchema().min(2, "El nombre debe tener al menos 2 caracteres").max(80, "El nombre es muy largo");
 const roleSchema = z.enum(ROLES, "Elige un rol");
 
 const createStaffSchema = z.discriminatedUnion("withAccess", [

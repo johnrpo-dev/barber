@@ -15,7 +15,7 @@ import { InventoryError, type ProductDraft } from "@/domain/inventory/product";
 import { MAX_LINES, MAX_QUANTITY } from "@/domain/inventory/periodic";
 import { format, fromUnits, negate } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
+import { idempotencyKeySchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 import { creditPurchaseInput, ownerPurchaseInput, purchaseNoteSchema } from "./purchase-schema";
 
@@ -28,8 +28,8 @@ import { creditPurchaseInput, ownerPurchaseInput, purchaseNoteSchema } from "./p
 const database = () => db() as unknown as Db;
 
 const draftSchema = z.object({
-  name: z.string().max(80, "El nombre debe tener entre 2 y 80 caracteres"),
-  sku: z.string().max(40, "La referencia debe tener hasta 40 caracteres").optional(),
+  name: textSchema().max(80, "El nombre debe tener entre 2 y 80 caracteres"),
+  sku: textSchema().max(40, "La referencia debe tener hasta 40 caracteres").optional(),
   /** Precio de venta en pesos enteros, solo dígitos. */
   priceUnits: z.string().regex(/^\d{1,10}$/, "Escribe el precio en pesos, sin centavos"),
   /** Porcentaje como lo escribe el dueño: "10" o "7,5". */

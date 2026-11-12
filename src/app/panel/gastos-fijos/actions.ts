@@ -19,7 +19,7 @@ import { PESO } from "@/domain/money";
 import { sessionIsFromEarlierDay } from "@/domain/sales/cash";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { dateSchema, unitsSchema } from "@/lib/action-schemas";
+import { dateSchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { moneyLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 import { dayShort } from "../_components/dates";
@@ -124,7 +124,7 @@ const monthSchema = dateSchema.refine((v) => v.endsWith("-01"), "Elige el mes de
 
 const templateInput = z.object({
   id: idSchema.optional(),
-  name: z.string().max(60, "El nombre es muy largo (máximo 60 caracteres)"),
+  name: textSchema().max(60, "El nombre es muy largo (máximo 60 caracteres)"),
   categoryId: idSchema,
   estimatedUnits: unitsSchema("El monto estimado"),
   payMode: z.enum(RECURRING_PAY_MODES, "Elige si se paga de la caja o del banco"),
@@ -162,7 +162,7 @@ const registerInput = z.object({
   recurringId: idSchema,
   period: monthSchema,
   amountUnits: unitsSchema("El gasto"),
-  description: z.string().trim().min(3, "Describe el gasto (mínimo 3 caracteres)").max(200, "La descripción es muy larga"),
+  description: textSchema().min(3, "Describe el gasto (mínimo 3 caracteres)").max(200, "La descripción es muy larga"),
 });
 
 export async function registerRecurringExpenseAction(raw: z.input<typeof registerInput>): Promise<ActionResult<{ expenseId: string; created: boolean }>> {
@@ -195,7 +195,7 @@ export async function registerRecurringExpenseAction(raw: z.input<typeof registe
 const skipInput = z.object({
   recurringId: idSchema,
   period: monthSchema,
-  reason: z.string().trim().min(3, "Escribe por qué se omite (mínimo 3 caracteres)").max(300, "El motivo es muy largo"),
+  reason: textSchema().min(3, "Escribe por qué se omite (mínimo 3 caracteres)").max(300, "El motivo es muy largo"),
 });
 
 export async function skipRecurringExpenseAction(raw: z.input<typeof skipInput>): Promise<ActionResult<{ created: boolean }>> {

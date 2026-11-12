@@ -26,7 +26,7 @@ import type { Db } from "@/db/types";
 import { AUDIT_FIELDS } from "@/domain/audit/events";
 import { InvalidClientError, normalizePhone } from "@/domain/clients/client";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { bpsSchema, unitsSchema } from "@/lib/action-schemas";
+import { bpsSchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 
 // Ajustes de la sede (solo el dueño). La sede sale SIEMPRE de la sesión, nunca del cliente.
@@ -37,9 +37,7 @@ const minutes = (min: number, max: number, label: string) =>
   z.number().int(`${label}: escribe un número entero`).min(min, `${label}: mínimo ${min}`).max(max, `${label}: máximo ${max}`);
 
 const optionalText = (max: number, label: string) =>
-  z
-    .string()
-    .trim()
+  textSchema()
     .max(max, `${label} es muy largo`)
     .transform((v) => v || null);
 
@@ -173,7 +171,7 @@ export async function loadCheckoutSettings(): Promise<ActionResult<CheckoutSetti
 const methodSchema = z.object({
   id: idSchema.optional(),
   kind: z.enum(["cash", "card", "transfer", "wallet"], "Elige el tipo de medio de pago"),
-  label: z.string().max(40, "El nombre es muy largo"),
+  label: textSchema().max(40, "El nombre es muy largo"),
   feeBps: bpsSchema("El costo del medio de pago", 9_999n),
   active: z.boolean(),
 });
@@ -211,7 +209,7 @@ export async function savePaymentMethodAction(raw: z.input<typeof methodSchema>)
 
 const categorySchema = z.object({
   id: idSchema.optional(),
-  name: z.string().max(60, "El nombre es muy largo"),
+  name: textSchema().max(60, "El nombre es muy largo"),
   accountCode: z.string().max(10),
   active: z.boolean(),
 });

@@ -15,6 +15,7 @@ import { parseTime } from "@/domain/staff/schedule";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { requirePermission, requireStaff, type StaffContext } from "@/lib/session";
 
+import { textSchema } from "@/lib/action-schemas";
 // Ausencias, bloqueos y cierres de la sede. Dueño y recepción manejan los de cualquiera
 // (time_off.manage.all); el barbero solo bloquea su propio tiempo (time_off.manage.own).
 // La sede sale siempre de la sesión, nunca del cliente.
@@ -50,7 +51,7 @@ const rangeSchema = z.discriminatedUnion("allDay", [
 ]);
 type RangeInput = z.infer<typeof rangeSchema>;
 
-const reasonSchema = z.string().trim().max(200, "El motivo es muy largo").optional();
+const reasonSchema = textSchema().max(200, "El motivo es muy largo").optional();
 
 /** Traduce lo que escribió el usuario (hora local de la sede) a lo que espera addTimeOff. */
 async function toTimeOffRange(locationId: bigint, range: RangeInput) {

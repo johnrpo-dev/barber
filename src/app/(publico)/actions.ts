@@ -41,6 +41,7 @@ import { alertSender, notifier } from "@/lib/notify";
 import { allowsDevFallbacks, type PublicConfig, publicConfig, PublicBookingUnavailableError, revealsCodeOnScreen } from "@/lib/public-readiness";
 import { humanVerifier } from "@/lib/turnstile";
 
+import { textSchema } from "@/lib/action-schemas";
 // Acciones del portal público (contrato de sprint-3-reserva-publica.md §10). Delgadas: validan
 // la forma con zod, toman la sede del servidor (nunca del navegador), aplican Turnstile y los
 // límites por IP, y llaman a src/db/public-booking.ts. Los mensajes salen tal cual a la interfaz.
@@ -161,7 +162,7 @@ const startInput = z.object({
   staffId: staffChoice,
   date: dateSchema,
   minute: minuteSchema,
-  name: z.string().max(120),
+  name: textSchema().max(120),
   phone: z.string().max(30),
   email: z.union([z.literal(""), z.email("El correo no es válido")]).optional(),
   // `reminders` se acepta por compatibilidad con formularios viejos pero no cuenta: el único
@@ -364,7 +365,7 @@ export async function forgetDevice(): Promise<ActionResult<undefined>> {
 
 // ─── Gestionar la cita (/cita/[token]) ───────────────────────────────────────
 
-const cancelInput = z.object({ token: tokenSchema, reason: z.string().max(200).optional() });
+const cancelInput = z.object({ token: tokenSchema, reason: textSchema().max(200).optional() });
 
 export async function cancelByToken(raw: { token: string; reason?: string }): Promise<ActionResult<undefined>> {
   return runAction(async () => {

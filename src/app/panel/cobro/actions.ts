@@ -9,7 +9,7 @@ import { requestVoid } from "@/db/voids";
 import { CheckoutError } from "@/domain/sales/checkout";
 import { canDiscount } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
+import { idempotencyKeySchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, minorText, moneyLabel } from "@/lib/labels";
 import { describeError } from "@/lib/log";
 import { bucketHash, publicConfig, receiptChannels } from "@/lib/public-readiness";
@@ -215,7 +215,7 @@ async function queueReceipt(conn: Db, locationId: bigint, publicId: string): Pro
 
 const clientInput = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("existing"), id: idSchema }),
-  z.object({ kind: z.literal("new"), name: z.string().max(80, "El nombre es muy largo"), phone: z.string().max(30) }),
+  z.object({ kind: z.literal("new"), name: textSchema().max(80, "El nombre es muy largo"), phone: z.string().max(30) }),
   z.object({ kind: z.literal("none") }),
 ]);
 
@@ -239,7 +239,7 @@ const checkoutInput = z
     .max(20, "Demasiados productos")
     .default([]),
   discounts: z
-    .array(z.object({ key: z.string().max(20), amountUnits: unitsSchema("El descuento"), reason: z.string().max(200, "El motivo del descuento es muy largo") }))
+    .array(z.object({ key: z.string().max(20), amountUnits: unitsSchema("El descuento"), reason: textSchema().max(200, "El motivo del descuento es muy largo") }))
     .max(20),
   tips: z.array(z.object({ staffId: idSchema, amountUnits: unitsSchema("La propina") })).max(10, "Demasiadas propinas"),
   payments: z
@@ -313,7 +313,7 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
   });
 }
 
-const voidInput = z.object({ saleId: idSchema, reason: z.string().max(300, "El motivo es muy largo"), idempotencyKey: idempotencyKeySchema });
+const voidInput = z.object({ saleId: idSchema, reason: textSchema().max(300, "El motivo es muy largo"), idempotencyKey: idempotencyKeySchema });
 
 export async function requestVoidAction(raw: z.input<typeof voidInput>): Promise<ActionResult<{ requestId: string }>> {
   const staff = await requirePermission("ledger.post");

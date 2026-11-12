@@ -12,12 +12,13 @@ import { fromUnits } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 
+import { textSchema } from "@/lib/action-schemas";
 // Catálogo de servicios. La sede sale SIEMPRE de la sesión, nunca del cliente.
 // El precio viaja como texto de pesos enteros ("35000") y se convierte con fromUnits: nunca pasa por number.
 // Precio y comisión son dinero: crear un servicio o cambiarlos exige reautenticación reciente.
 
 const draftSchema = z.object({
-  name: z.string().max(80, "El nombre debe tener entre 2 y 80 caracteres"),
+  name: textSchema().max(80, "El nombre debe tener entre 2 y 80 caracteres"),
   /** Pesos enteros, solo dígitos. */
   priceUnits: z.string().regex(/^\d{1,10}$/, "Escribe el precio en pesos, sin centavos"),
   durationMin: z.number().int("La duración debe ser un número entero de minutos"),

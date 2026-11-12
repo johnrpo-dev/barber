@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { fromUnits, type Money } from "@/domain/money";
+import { cleanText } from "@/domain/text";
 
 // Esquemas compartidos por las acciones de dinero (docs/sprint-4-cobro-caja.md §9). El dinero que
 // entra viaja como texto de pesos enteros ("30000") y los puntos básicos como texto de dígitos
@@ -27,3 +28,10 @@ export const bpsSchema = (label: string, max: bigint) =>
 export const idempotencyKeySchema = z.string().min(8, "Formulario inválido; recarga la pantalla").max(100, "Formulario inválido");
 
 export const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha inválida");
+
+/**
+ * Texto libre (nombres, notas, motivos, descripciones): pasa por `cleanText` ANTES de medirlo, así
+ * los mínimos y máximos cuentan lo que queda (sin controles bidi, invisibles ni espacios de más; ver
+ * src/domain/text.ts). No sirve para contraseñas ni códigos: esos se comparan tal cual llegan.
+ */
+export const textSchema = () => z.string().overwrite(cleanText);

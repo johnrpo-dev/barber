@@ -8,7 +8,7 @@ import type { Db } from "@/db/types";
 import { decideVoid, voidQueue } from "@/db/voids";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { idempotencyKeySchema } from "@/lib/action-schemas";
+import { idempotencyKeySchema, textSchema } from "@/lib/action-schemas";
 import { atLabel, moneyLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 
@@ -59,7 +59,7 @@ export async function loadVoidQueue(): Promise<ActionResult<VoidQueueView>> {
 const decideInput = z.object({
   requestId: idSchema,
   approve: z.boolean(),
-  note: z.string().max(300, "La nota es muy larga"),
+  note: textSchema().max(300, "La nota es muy larga"),
   idempotencyKey: idempotencyKeySchema,
 });
 

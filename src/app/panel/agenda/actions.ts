@@ -34,6 +34,7 @@ import { type ActionResult, idSchema, runAction } from "@/lib/action";
 import { receiptChannels } from "@/lib/public-readiness";
 import { requirePermission, requireStaff, type StaffContext } from "@/lib/session";
 
+import { textSchema } from "@/lib/action-schemas";
 // Acciones de la agenda. Cada una vuelve a comprobar el permiso y toma la sede de la sesión,
 // nunca del navegador. Los ids llegan como texto y se validan con zod.
 
@@ -61,8 +62,8 @@ const idempotencyKey = z.string().min(8).max(100);
 
 const clientChoice = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("existing"), id: idSchema }),
-  z.object({ kind: z.literal("new"), name: z.string().max(120), phone: z.string().max(30) }),
-  z.object({ kind: z.literal("none"), name: z.string().max(120).optional() }),
+  z.object({ kind: z.literal("new"), name: textSchema().max(120), phone: z.string().max(30) }),
+  z.object({ kind: z.literal("none"), name: textSchema().max(120).optional() }),
 ]);
 
 async function resolveClient(staff: StaffContext, choice: z.infer<typeof clientChoice>): Promise<bigint | null> {
@@ -123,7 +124,7 @@ export interface ClientOption {
 export async function findClients(query: string): Promise<ActionResult<ClientOption[]>> {
   const staff = await requirePermission("appointments.manage.all");
   return runAction(async () => {
-    const q = z.string().max(80).parse(query);
+    const q = textSchema().max(80).parse(query);
     const seeContact = can(staff.role, "clients.view.contact");
     const rows = await searchClients(database(), { locationId: staff.locationId, query: q });
     // Ley 1581: queda constancia de quién vio el celular completo (src/db/privacy.ts).
@@ -185,7 +186,7 @@ const createInput = z.object({
   date: dateSchema,
   minute: minuteSchema,
   client: clientChoice,
-  notes: z.string().max(500).optional(),
+  notes: textSchema().max(500).optional(),
   allowOutsideHours: z.boolean().optional(),
   idempotencyKey,
 });
@@ -348,7 +349,7 @@ const statusInput = z.object({
   appointmentId: idSchema,
   to: z.enum(APPOINTMENT_STATUSES),
   cancelReason: z.enum(["client", "staff", "left", "duplicate"]).optional(),
-  note: z.string().max(300).optional(),
+  note: textSchema().max(300).optional(),
 });
 
 export async function setStatus(raw: z.input<typeof statusInput>): Promise<ActionResult> {

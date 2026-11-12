@@ -24,7 +24,7 @@ import { money } from "@/domain/money";
 import { bpsLabel } from "@/domain/reports/rates";
 import { can } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
+import { dateSchema, idempotencyKeySchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, minorText, moneyLabel, paidFromLabel, signedLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 
@@ -41,7 +41,7 @@ function refresh() {
 }
 
 const reasonSchema = (what: string) =>
-  z.string().trim().min(3, `Escribe ${what} (mínimo 3 caracteres)`).max(300, `${what[0]!.toUpperCase()}${what.slice(1)} es muy largo`);
+  textSchema().min(3, `Escribe ${what} (mínimo 3 caracteres)`).max(300, `${what[0]!.toUpperCase()}${what.slice(1)} es muy largo`);
 const publicIdSchema = z.string().refine(isUlid, "Comprobante inválido");
 const paidFromSchema = z.enum(["cash", "bank"]);
 
@@ -320,7 +320,7 @@ export async function loadSettlementPreview(raw: SettlementPreviewInput): Promis
 }
 
 const settleInput = previewInput.extend({
-  note: z.string().trim().max(300, "La nota es muy larga").optional(),
+  note: textSchema().max(300, "La nota es muy larga").optional(),
   previewToken: z.string().regex(/^[0-9a-f]{64}$/, "Vuelve a abrir la liquidación"),
   idempotencyKey: idempotencyKeySchema,
 });

@@ -34,7 +34,7 @@ import { CashError, sessionIsFromEarlierDay } from "@/domain/sales/cash";
 import { canGiveCourtesy } from "@/domain/sales/courtesy";
 import { can, canDiscount } from "@/domain/staff/roles";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
-import { dateSchema, idempotencyKeySchema, unitsSchema } from "@/lib/action-schemas";
+import { dateSchema, idempotencyKeySchema, textSchema, unitsSchema } from "@/lib/action-schemas";
 import { absLabel, atLabel, minorText, moneyLabel, signedLabel } from "@/lib/labels";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
 import { dueItems, type RecurringDueItem, sortDue } from "../gastos-fijos/view";
@@ -325,7 +325,7 @@ export async function loadCashView(): Promise<ActionResult<CashView>> {
 
 const countInput = z.object({
   countedUnits: unitsSchema("El efectivo contado"),
-  note: z.string().max(300, "La nota es muy larga").optional(),
+  note: textSchema().max(300, "La nota es muy larga").optional(),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -400,7 +400,7 @@ const expenseInput = z.object({
   categoryId: idSchema,
   amountUnits: unitsSchema("El gasto"),
   paidFrom: z.enum(["cash", "bank"], "Elige si sale de la caja o del banco"),
-  description: z.string().trim().min(3, "Describe el gasto (mínimo 3 caracteres)").max(200, "La descripción es muy larga"),
+  description: textSchema().min(3, "Describe el gasto (mínimo 3 caracteres)").max(200, "La descripción es muy larga"),
   idempotencyKey: idempotencyKeySchema,
 });
 
@@ -521,7 +521,7 @@ export async function cashDepositAction(raw: z.input<typeof depositInput>): Prom
 const courtesyInput = z.object({
   appointmentId: idSchema,
   // El dominio lo deja en una línea y exige de 3 a 300 caracteres; aquí solo se acota la entrada.
-  reason: z.string().max(1000, "El motivo es muy largo"),
+  reason: textSchema().max(1000, "El motivo es muy largo"),
 });
 
 /**
@@ -560,7 +560,7 @@ export async function closeDayAction(raw: z.input<typeof closeDayInput>): Promis
   });
 }
 
-const reopenDayInput = z.object({ businessDate: dateSchema, reason: z.string().max(300, "El motivo es muy largo") });
+const reopenDayInput = z.object({ businessDate: dateSchema, reason: textSchema().max(300, "El motivo es muy largo") });
 
 export async function reopenDayAction(raw: z.input<typeof reopenDayInput>): Promise<ActionResult> {
   const staff = await requirePermission("day.reopen");
