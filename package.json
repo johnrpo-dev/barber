@@ -22,7 +22,11 @@
     "db:seed": "tsx --env-file-if-exists=.env src/db/seed.ts",
     "db:seed-demo": "tsx --env-file-if-exists=.env src/db/seed-demo.ts",
     "staff:create-owner": "tsx --env-file-if-exists=.env src/scripts/create-owner.ts",
-    "staff:unlock": "tsx --env-file-if-exists=.env src/scripts/unlock-staff.ts"
+    "staff:unlock": "tsx --env-file-if-exists=.env src/scripts/unlock-staff.ts",
+    "demo:setup": "tsx src/scripts/demo.ts setup",
+    "demo:owner": "tsx src/scripts/demo.ts owner",
+    "demo": "tsx src/scripts/demo.ts start",
+    "demo:stop": "tsx src/scripts/demo.ts stop"
   },
   "dependencies": {
     "@date-fns/tz": "1.5.0",

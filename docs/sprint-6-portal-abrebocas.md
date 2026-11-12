@@ -83,7 +83,7 @@ Villa, y que después siguiera siendo la página real de la barbería. Amplía, 
 ## Lo que falta y no es código
 
 - **Fotos reales:** la fachada, el local y cortes hechos ahí, con permiso del dueño, y autorización escrita de cada barbero si sale su cara. Hoy hay fotos de referencia que solo salen en desarrollo o en la demo. Sin fotos reales, en producción la página vuelve a ser tipográfica.
-- **Para la reunión:** la página pública es la vitrina, pero lo que diferencia al sistema de Weibook es la caja, el cierre del día y la liquidación a barberos que siempre cuadran. Hay que mostrar eso con los datos de la barbería.
+- **Para la reunión:** la página pública es la vitrina, pero lo que diferencia al sistema de Weibook es la caja, el cierre del día y la liquidación a barberos que siempre cuadran. Hay que mostrar eso con los datos de la barbería. La base con un mes de operación y el guion están en [demo.md](demo.md).
 - **Lo que no se debe prometer:** menos inasistencias ni más ventas sin medirlo, que reemplaza a Weibook desde el primer día (mejor correr los dos en paralelo un mes), ni soporte 24/7.
 - **Tener respuesta a "¿y si usted desaparece?":** código, documentación y un plan de continuidad.
 

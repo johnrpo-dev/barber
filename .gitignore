@@ -16,6 +16,9 @@ next-env.d.ts
 # equipo real para seed-demo (datos personales, Ley 1581)
 *.local.json
 
+# PostgreSQL local de la demo (npm run demo:setup)
+.demo/
+
 # tests
 coverage/
 playwright-report/
