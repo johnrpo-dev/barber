@@ -10,6 +10,7 @@ import {
   cashDifferences,
   courtesiesByStaff,
   expensesByCategory,
+  inventoryCountsInPeriod,
   journalDetail,
   noShowStats,
   paymentMix,
@@ -27,7 +28,7 @@ import { saleNumber } from "@/domain/sales/receipt-number";
 import { CSV_MAX_ROWS, CSV_REPORTS, type CsvCell, type CsvReport, csvFilename, toCsv } from "@/domain/reports/csv";
 import { type PeriodPreset, PERIOD_PRESET_LABELS, PERIOD_PRESETS, periodLabel, presetPeriod, type ReportPeriod, reportPeriod } from "@/domain/reports/period";
 import type { EntryKind } from "@/domain/ledger/entry";
-import { assemblePnl } from "@/domain/reports/pnl";
+import { assemblePnl, productMargin } from "@/domain/reports/pnl";
 import { bpsLabel, rateBps } from "@/domain/reports/rates";
 import { type ActionResult, runAction } from "@/lib/action";
 import { dateSchema } from "@/lib/action-schemas";
@@ -59,6 +60,11 @@ export type ReportView = {
     profitLabel: string;
     marginLabel: string | null;
   };
+  /**
+   * Productos (sprint 6, fase D): 4135 − 6135, o null si no hubo ni ventas ni costo. counted: hubo un
+   * conteo en el periodo (sin él, el costo de lo vendido todavía no se conoce).
+   */
+  products: { incomeLabel: string; costLabel: string; marginMinor: string; marginLabel: string; rateLabel: string | null; counted: boolean } | null;
   /** Servicios en bruto, descuento y neto; productos (sprint 6) en su neto; la comisión es de todo. */
   byStaff: {
     staffId: string;
@@ -115,6 +121,8 @@ export async function loadReport(raw: z.input<typeof periodInput>): Promise<Acti
       const day = await today(tx, staff.locationId);
       const pnlData = await profitAndLoss(tx, q);
       const pnl = assemblePnl(pnlData.rows, pnlData.totals);
+      const products = productMargin(pnl);
+      const counts = products ? await inventoryCountsInPeriod(tx, q) : 0;
       const byStaff = await salesByStaff(tx, q);
       const byService = await salesByService(tx, q);
       const payments = await paymentMix(tx, q);
@@ -140,6 +148,16 @@ export async function loadReport(raw: z.input<typeof periodInput>): Promise<Acti
           profitLabel: moneyLabel(pnl.profit.minor),
           marginLabel: share(pnl.profit.minor, pnl.totalIncome.minor),
         },
+        products: products
+          ? {
+              incomeLabel: moneyLabel(products.income.minor),
+              costLabel: moneyLabel(products.cost.minor),
+              marginMinor: minorText(products.margin.minor),
+              marginLabel: moneyLabel(products.margin.minor),
+              rateLabel: share(products.margin.minor, products.income.minor),
+              counted: counts > 0,
+            }
+          : null,
         byStaff: byStaff.map((r) => ({
           staffId: r.staffId.toString(),
           name: r.name,

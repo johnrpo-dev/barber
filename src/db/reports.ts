@@ -355,6 +355,17 @@ export async function noShowStats(db: Db, q: ReportQuery & { timeZone: string })
  * Cortesías del periodo por quien atendió (sprint 8, §4): cuántas y su precio de lista sumado, por
  * el día contable en que se dieron. No es dinero del libro: lo que el negocio dejó de cobrar.
  */
+/** Conteos de inventario con día contable en el periodo: sin ninguno, 6135 del periodo no está completo. */
+export async function inventoryCountsInPeriod(db: Db, q: ReportQuery): Promise<number> {
+  const [row] = rowsOf<{ n: number }>(
+    await db.execute(sql`
+      select count(*)::int as n from inventory_documents d
+       where d.location_id = ${loc(q)} and d.kind = 'count' and ${inRange(sql`d.business_date`, q)}
+    `),
+  );
+  return row?.n ?? 0;
+}
+
 export async function courtesiesByStaff(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ staff_id: string; name: string; courtesies: string; list_price: string; total_courtesies: string; total_list_price: string }>(
     await db.execute(sql`

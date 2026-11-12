@@ -1,5 +1,5 @@
-import type { AccountType } from "../ledger/accounts";
-import { type Money, money } from "../money";
+import { ACCOUNTS, type AccountType } from "../ledger/accounts";
+import { type Money, money, subtract } from "../money";
 import { ReportError } from "./period";
 
 // Estado de resultados (docs/sprint-5-comisiones-informes.md §6.2). Las sumas salen de SQL
@@ -57,4 +57,26 @@ export function assemblePnl(rows: readonly AccountTotalRow[], totals: PnlTotals)
     throw new ReportError("El estado de resultados no cuadra con sus totales; no se muestra");
   }
   return { income, expenses, totalIncome: money(totals.income), totalExpenses: money(totals.expenses), profit: money(totals.profit) };
+}
+
+/** Ventas de productos contra su costo en el periodo (sprint 6, fase D). */
+export interface ProductMargin {
+  /** 4135: ventas netas de productos. */
+  readonly income: Money;
+  /** 6135: costo de ventas (lo fija el conteo de inventario). */
+  readonly cost: Money;
+  /** income − cost. */
+  readonly margin: Money;
+}
+
+/**
+ * Margen de productos a partir del estado de resultados ya armado (cuyas sumas vienen de SQL): 4135 −
+ * 6135. Null si el periodo no tiene ni ventas de productos ni costo. El costo solo existe donde hubo un
+ * conteo: un periodo sin conteo muestra las ventas con costo 0, y la pantalla lo advierte.
+ */
+export function productMargin(pnl: Pnl): ProductMargin | null {
+  const income = pnl.income.find((l) => l.code === ACCOUNTS.productIncome.code)?.amount ?? money(0n);
+  const cost = pnl.expenses.find((l) => l.code === ACCOUNTS.costOfGoodsSold.code)?.amount ?? money(0n);
+  if (income.minor === 0n && cost.minor === 0n) return null;
+  return { income, cost, margin: subtract(income, cost) };
 }

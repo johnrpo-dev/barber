@@ -135,7 +135,7 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
    - `/panel/productos` (solo `inventory.manage`): crear, editar, retirar; compra del banco o carga inicial con reautenticación; saldo de 1435 según el libro y costo de la última compra por producto;
    - Caja: "Compra de mercancía" (recepción y dueño), varias líneas, sale del efectivo del turno y aparece en el desglose del esperado;
    - acciones en `authorization.test.ts` (matriz, IDOR, reautenticación y bitácora); productos de ejemplo en `seed-demo`.
-   - La pantalla del conteo queda para la fase D (la función ya existe y está probada).
+   - La pantalla del conteo llegó en la fase D.
    - **Anular una compra (hecho, migración 0033):** "Compras recientes" en Productos, solo el dueño; reglas arriba. Aviso de costo alto antes de registrar.
 3. **C, vender (hecho, migración 0034):**
    - `sale_lines`: `kind` (`service` o `product`), `product_id` y `quantity`; un CHECK exige exactamente uno de servicio o producto, un servicio de a uno y un producto de 1 a 99 unidades. `unit_price` es por unidad; el bruto es `unit_price × quantity` y los CHECK de monto y comisión lo usan.
@@ -145,9 +145,23 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
    - La anulación no cambió: es la reversa exacta del asiento (devuelve 4135 y la comisión).
    - Recibos, historial y movimiento de caja muestran las unidades ("Cera ×2", "2 × $25.000").
    - Informes: por servicio, solo servicios. Por barbero, servicios, bruto, descuento y neto siguen siendo de servicios (la suma del neto es 4170), una columna "Productos" con el neto vendido por cada quien (la suma es 4135) y la comisión de todo lo que atendió o vendió (la misma que se liquida). Inicio cuenta solo servicios.
-4. **D, conteo e informes:**
-   - pantalla de conteo e informe de diferencias en unidades;
-   - margen del mes (4135 − 6135).
+4. **D, conteo e informes (hecho, sin migración):**
+   - **Unidades** (`countSheet` y `countReport` en `db/inventory.ts`, sumadas en SQL; `expectedUnits` y `unitDifference` en el dominio, con fast-check). Por producto, entre dos conteos: `esperado = conteo anterior + compras vigentes − vendidas`.
+     - Las compras se ordenan contra los conteos por id, porque el candado de inventario las serializa. Una compra anulada no cuenta.
+     - Las ventas cuentan por hora: suman las cobradas en el periodo y restan las anuladas en él (la unidad volvió). Una venta anulada después de un conteo devuelve su unidad al periodo siguiente, y el informe del conteo guardado no cambia.
+     - El esperado puede salir negativo (se vendió algo cuya compra no se registró) y se muestra tal cual.
+   - **Pantalla del conteo** (Productos → "Contar inventario", solo el dueño, con reautenticación; `recordCountAction`).
+     - Por cada producto que el conteo exige (activos o con movimientos): lo que debería haber, cómo se llega a ese número y, al escribir lo contado, la diferencia ("Falta 1", "Sobran 2", "Cuadra").
+     - Vista previa del valor al costo de la última compra (`valueCountLine`), del saldo de 1435 y del ajuste al costo de ventas. El servidor recalcula todo.
+     - Avisa si un producto contado no tiene compras (vale $0).
+     - Un conteo no se borra: el siguiente lo corrige.
+   - **Historial** ("Conteos" en Productos): los últimos 6 con su valor, su ajuste (lo que movió en 6135) y las unidades que faltaron. "Ver diferencias" abre la tabla por producto: debería, hay y diferencia.
+   - **Margen de productos en Informes** (`productMargin` en `domain/reports/pnl.ts`, con fast-check): 4135 − 6135 a partir del estado de resultados, cuyas sumas vienen de SQL. Se muestra si hubo ventas de productos o costo.
+     - Si en el periodo no hubo conteo (`inventoryCountsInPeriod`), advierte que el costo todavía no se conoce y el margen sale inflado.
+   - **Recordatorio** (`countDueToday`): el último día del mes en la zona de la sede, si hay productos activos y aún no hay un conteo con ese día contable.
+     - Inicio muestra la alerta "Hoy es el último día del mes: toca contar el inventario" a quien tiene `inventory.manage`.
+     - Productos muestra "Contar ahora".
+   - `recordCountAction` en `authorization.test.ts`: matriz (solo el dueño), IDOR (contar con productos de otra sede), sesión vieja y bitácora `inventory.count`.
 5. **E, cierre:** chequeo de cordura del backup (1435 solo con documentos de inventario), documentación y auditoría de seguridad.
 
 **Pruebas clave (propiedades):**

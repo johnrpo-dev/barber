@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { addDays } from "../booking/clock";
 import { fromUnits, money, negate, ratioBps, truncateTo, PESO } from "../money";
 import { CSV_MAX_ROWS, type CsvCell, csvFilename, csvMoney, csvText, toCsv } from "./csv";
-import { assemblePnl, type AccountTotalRow } from "./pnl";
+import { assemblePnl, type AccountTotalRow, productMargin } from "./pnl";
 import { daysBetween, MAX_REPORT_DAYS, PERIOD_PRESETS, presetPeriod, ReportError, reportPeriod, sameDayLastWeek, sameSpanPreviousMonth } from "./period";
 import { bpsLabel, changeLabel, rateBps } from "./rates";
 
@@ -161,6 +161,45 @@ describe("estado de resultados", () => {
         expect(pnl.income.reduce((a, l) => a + l.amount.minor, 0n)).toBe(income);
         expect(pnl.expenses.reduce((a, l) => a + l.amount.minor, 0n)).toBe(expenses);
         expect(() => assemblePnl(rs, { income: income + 1n, expenses, profit: income + 1n - expenses })).toThrow(ReportError);
+      }),
+    );
+  });
+});
+
+describe("margen de productos (sprint 6, fase D)", () => {
+  it("4135 − 6135; null sin ventas de productos ni costo", () => {
+    const rs: AccountTotalRow[] = [
+      { code: "4135", name: "Productos", type: "income", debits: 0n, credits: 9_000_000n },
+      { code: "4170", name: "Servicios", type: "income", debits: 0n, credits: 20_000_000n },
+      { code: "6135", name: "Costo de ventas", type: "expense", debits: 5_500_000n, credits: 0n },
+    ];
+    const pnl = assemblePnl(rs, { income: 29_000_000n, expenses: 5_500_000n, profit: 23_500_000n });
+    expect(productMargin(pnl)).toEqual({ income: money(9_000_000n), cost: money(5_500_000n), margin: money(3_500_000n) });
+    // Sin productos: nada que mostrar.
+    expect(productMargin(assemblePnl([rs[1]!], { income: 20_000_000n, expenses: 0n, profit: 20_000_000n }))).toBeNull();
+    // Un conteo con sobrante deja 6135 negativo: el margen supera las ventas.
+    const surplus = assemblePnl([{ code: "6135", name: "Costo", type: "expense", debits: 0n, credits: 100_000n }], { income: 0n, expenses: -100_000n, profit: 100_000n });
+    expect(productMargin(surplus)).toEqual({ income: money(0n), cost: money(-100_000n), margin: money(100_000n) });
+  });
+
+  it("propiedad: margen + costo = ventas de productos, sin importar las otras cuentas", () => {
+    const amount = fc.bigInt({ min: -(10n ** 12n), max: 10n ** 12n });
+    fc.assert(
+      fc.property(amount, amount, amount, amount, (products, cost, services, other) => {
+        const side = (net: bigint) => (net >= 0n ? { debits: 0n, credits: net } : { debits: -net, credits: 0n });
+        const exp = (net: bigint) => (net >= 0n ? { debits: net, credits: 0n } : { debits: 0n, credits: -net });
+        const rs: AccountTotalRow[] = [
+          { code: "4135", name: "P", type: "income", ...side(products) },
+          { code: "4170", name: "S", type: "income", ...side(services) },
+          { code: "5105", name: "C", type: "expense", ...exp(other) },
+          { code: "6135", name: "K", type: "expense", ...exp(cost) },
+        ];
+        const pnl = assemblePnl(rs, { income: products + services, expenses: other + cost, profit: products + services - other - cost });
+        const m = productMargin(pnl);
+        if (products === 0n && cost === 0n) return expect(m).toBeNull();
+        expect(m!.margin.minor + m!.cost.minor).toBe(products);
+        expect(m!.income.minor).toBe(products);
+        expect(m!.cost.minor).toBe(cost);
       }),
     );
   });

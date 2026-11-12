@@ -1,6 +1,6 @@
 "use client";
 
-import { Package, PackagePlus, Pencil, Plus, Undo2 } from "lucide-react";
+import { ClipboardCheck, ListChecks, Package, PackagePlus, Pencil, Plus, Undo2 } from "lucide-react";
 import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { PESO } from "@/domain/money";
@@ -9,6 +9,7 @@ import { useReauth } from "../_components/reauth";
 import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, FieldMessage, FormError, Toggle, useFieldErrors } from "../_manage/controls";
 import { createProductAction, recordPurchaseAction, reversePurchaseAction, setProductActiveAction, updateProductAction } from "./actions";
+import { type CountHistoryRow, CountForm, CountReportView, type CountSheetData } from "./count-form";
 import { PurchaseForm } from "./purchase-form";
 
 // Productos (sprint 6, docs/sprint-6-productos-inventario.md): catálogo del dueño y compras del banco
@@ -46,6 +47,8 @@ type Editing =
   | { mode: "edit"; product: ProductRow }
   | { mode: "purchase" }
   | { mode: "reverse"; purchase: PurchaseRow }
+  | { mode: "count" }
+  | { mode: "countReport"; count: CountHistoryRow }
   | null;
 
 /** Qué pasa con el dinero al anular, según de dónde salió. */
@@ -55,7 +58,22 @@ const REVERSE_EFFECT: Record<PurchaseRow["paidFrom"], string> = {
   owner: "Se retira del aporte del dueño.",
 };
 
-export function ProductsManager({ products, purchases, inventoryLabel }: { products: ProductRow[]; purchases: PurchaseRow[]; inventoryLabel: string }) {
+export function ProductsManager({
+  products,
+  purchases,
+  inventoryLabel,
+  countSheet,
+  counts,
+  countDue,
+}: {
+  products: ProductRow[];
+  purchases: PurchaseRow[];
+  inventoryLabel: string;
+  countSheet: CountSheetData;
+  counts: CountHistoryRow[];
+  /** Último día del mes y todavía sin conteo hoy. */
+  countDue: boolean;
+}) {
   const toast = useToast();
   const [editing, setEditing] = useState<Editing>(null);
   const active = products.filter((p) => p.active);
@@ -67,6 +85,10 @@ export function ProductsManager({ products, purchases, inventoryLabel }: { produ
         title="Productos"
         actions={
           <div className="flex flex-wrap gap-2">
+            <Btn variant="secondary" onPress={() => setEditing({ mode: "count" })} isDisabled={countSheet.products.length === 0}>
+              <ClipboardCheck size={18} aria-hidden />
+              Contar inventario
+            </Btn>
             <Btn variant="secondary" onPress={() => setEditing({ mode: "purchase" })} isDisabled={active.length === 0}>
               <PackagePlus size={18} aria-hidden />
               Registrar compra
@@ -86,6 +108,18 @@ export function ProductsManager({ products, purchases, inventoryLabel }: { produ
           Sube con cada compra. El conteo del último día del mes lo deja en lo que de verdad hay; la diferencia es el costo de lo vendido.
         </p>
       </div>
+
+      {countDue && countSheet.products.length > 0 ? (
+        <div role="note" className={cx(card, "flex flex-col gap-3 border-cuero/40 bg-cuero/5 p-4 min-[480px]:flex-row min-[480px]:items-center min-[480px]:justify-between")}>
+          <p className="text-sm">
+            <span className="font-semibold">Hoy es el último día del mes:</span> toca contar el inventario para cerrar el costo de ventas del mes.
+          </p>
+          <Btn size="sm" className="self-start min-[480px]:self-auto" onPress={() => setEditing({ mode: "count" })}>
+            <ClipboardCheck size={16} aria-hidden />
+            Contar ahora
+          </Btn>
+        </div>
+      ) : null}
 
       {products.length === 0 ? (
         <div className={cx(card, "flex flex-col items-center gap-3 px-6 py-12 text-center")}>
@@ -170,6 +204,64 @@ export function ProductsManager({ products, purchases, inventoryLabel }: { produ
           </ul>
         </section>
       ) : null}
+
+      {counts.length > 0 ? (
+        <section aria-labelledby="conteos" className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <h2 id="conteos" className="font-display text-xl">
+              Conteos
+            </h2>
+            <p className="text-sm text-tinta/70">Lo que se contó contra lo que debería haber según las compras y las ventas.</p>
+          </div>
+          <ul className="flex flex-col gap-2" aria-label="Conteos">
+            {counts.map((c) => (
+              <li key={c.id} className={cx(card, "flex flex-col gap-2 p-4")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <p className="text-sm font-semibold">Conteo del {c.dateLabel}</p>
+                    <p className="text-xs text-tinta/70">
+                      {c.adjustment === "cost" ? `${c.adjustmentLabel} al costo de ventas` : c.adjustment === "surplus" ? `Sobrante de ${c.adjustmentLabel}` : "Cuadró con el libro"}
+                      {c.missingUnits > 0 ? ` · ${c.missingUnits === 1 ? "faltó 1 unidad" : `faltaron ${c.missingUnits} unidades`}` : ""}
+                    </p>
+                  </div>
+                  <span className="monto shrink-0 text-base font-semibold">{c.totalLabel}</span>
+                </div>
+                <Btn variant="ghost" size="sm" className="self-start" onPress={() => setEditing({ mode: "countReport", count: c })}>
+                  <ListChecks size={16} aria-hidden />
+                  Ver diferencias
+                </Btn>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <Sheet
+        isOpen={editing?.mode === "count"}
+        onOpenChange={(open) => !open && setEditing(null)}
+        title="Contar inventario"
+        description={`${countSheet.products.length} ${countSheet.products.length === 1 ? "producto" : "productos"} · solo el dueño`}
+      >
+        {editing?.mode === "count" ? (
+          <CountForm
+            sheet={countSheet}
+            onDone={(m) => {
+              setEditing(null);
+              toast(m);
+            }}
+            onCancel={() => setEditing(null)}
+          />
+        ) : null}
+      </Sheet>
+
+      <Sheet
+        isOpen={editing?.mode === "countReport"}
+        onOpenChange={(open) => !open && setEditing(null)}
+        title={editing?.mode === "countReport" ? `Conteo del ${editing.count.dateLabel}` : "Conteo"}
+        description="Diferencias por producto"
+      >
+        {editing?.mode === "countReport" ? <CountReportView count={editing.count} /> : null}
+      </Sheet>
 
       <Sheet
         isOpen={editing?.mode === "reverse"}

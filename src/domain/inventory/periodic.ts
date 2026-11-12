@@ -134,6 +134,40 @@ export function valueCount(lines: readonly CountedLine[], lastPurchases: Readonl
   return { lines: valued, total: sum(valued.map((l) => l.value)) };
 }
 
+/** ¿Es el último día de su mes? El conteo se hace ese día (decisión del dueño). Fecha "yyyy-MM-dd". */
+export function isLastDayOfMonth(date: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) throw new InventoryError("Fecha inválida");
+  const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  // El día 0 del mes siguiente es el último de este (calendario, sin zona horaria).
+  return day === new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+// ─── Unidades: esperado vs. contado (informativo, no asienta nada) ───────────
+
+/** Lo que pasó con un producto entre dos conteos, en unidades enteras. */
+export interface UnitMovement {
+  /** Unidades del conteo anterior (0 si no hubo o el producto es nuevo). */
+  readonly base: number;
+  /** Unidades de las compras vigentes (no anuladas) del periodo. */
+  readonly purchased: number;
+  /** Unidades vendidas en el periodo, neto de las ventas anuladas en él. */
+  readonly sold: number;
+}
+
+/**
+ * Unidades que debería haber: conteo anterior + compras − ventas. Puede salir negativo (se vendió algo
+ * cuya compra no se registró): se muestra tal cual, porque esconderlo taparía el error.
+ */
+export function expectedUnits(m: UnitMovement): number {
+  return m.base + m.purchased - m.sold;
+}
+
+/** contado − esperado. Negativo: faltan unidades (consumo del local, pérdida o venta sin cobrar). */
+export function unitDifference(counted: number, m: UnitMovement): number {
+  return counted - expectedUnits(m);
+}
+
 /** Ajuste del conteo: saldo de 1435 − valor contado (positivo: costo de lo vendido y lo perdido). */
 export function countAdjustment(bookBalance: Money, countedValue: Money): Money {
   return subtract(bookBalance, countedValue);

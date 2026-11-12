@@ -164,6 +164,33 @@ export function ReportsView({ initial }: { initial: Report }) {
             </span>
           </div>
           <p className="text-xs text-tinta/70">Las propinas no son ingreso del negocio: se le deben al personal. Una anulación resta el día en que se aprueba, no el de la venta.</p>
+          {r.products ? (
+            <div className={cx(card, "flex flex-col gap-2 px-4 py-3")}>
+              <h3 className="font-semibold">Margen de productos</h3>
+              <dl className="flex flex-col gap-1 text-sm">
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt>Ventas de productos</dt>
+                  <dd className="monto">{r.products.incomeLabel}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt>Costo de ventas (del conteo)</dt>
+                  <dd className="monto">{r.products.costLabel}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 border-t border-tinta/10 pt-1">
+                  <dt className="font-semibold">Margen</dt>
+                  <dd className="flex flex-col items-end">
+                    <span className={cx("monto text-lg font-semibold", r.products.marginMinor.startsWith("-") && "text-alerta")}>{r.products.marginLabel}</span>
+                    {r.products.rateLabel ? <span className="monto text-xs text-tinta/70">{r.products.rateLabel} de las ventas</span> : null}
+                  </dd>
+                </div>
+              </dl>
+              <p className="text-xs text-tinta/70">
+                {r.products.counted
+                  ? "El costo es lo que bajó el inventario entre conteos: lo vendido más lo que se perdió o se usó en el local. Es exacto para un mes cerrado con su conteo."
+                  : "En este periodo no hubo conteo de inventario: el costo de lo vendido todavía no se conoce y el margen sale inflado. Mira el mes completo después del conteo del último día."}
+              </p>
+            </div>
+          ) : null}
         </Section>
 
         {/* Ventas por barbero */}

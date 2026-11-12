@@ -2,6 +2,7 @@
 
 import { backupStatus } from "@/db/backup-runs";
 import { db } from "@/db/client";
+import { countDueToday } from "@/db/inventory";
 import { dueRecurringExpenses } from "@/db/recurring-expenses";
 import { dashboardData } from "@/db/reports";
 import type { Db } from "@/db/types";
@@ -31,7 +32,7 @@ export type DashboardView = {
   }[];
   cash: { open: boolean; openedAtLabel: string | null; openedBy: string | null; expectedLabel: string | null };
   alerts: {
-    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies";
+    kind: "cash_review" | "void_pending" | "day_unclosed" | "day_reopened" | "recurring_overdue" | "courtesies" | "inventory_count";
     count: number;
     label: string;
     href: string;
@@ -106,6 +107,11 @@ export async function loadDashboard(): Promise<ActionResult<DashboardView>> {
         label: plural(n, "Una cortesía en los últimos 7 días", `${n} cortesías en los últimos 7 días`),
         href: `/panel/informes?desde=${d.recentCourtesies.from}&hasta=${d.businessDate}#sec-courtesies`,
       });
+    }
+    // Conteo de inventario (sprint 6, fase D): el último día del mes, mientras no se haya contado. Solo
+    // a quien puede contar (inventory.manage); el enlace abre Productos.
+    if (can(staff.role, "inventory.manage") && (await countDueToday(db() as unknown as Db, staff.locationId, now))) {
+      alerts.push({ kind: "inventory_count", count: 1, label: "Hoy es el último día del mes: toca contar el inventario", href: "/panel/productos" });
     }
     if (d.yesterdayUnclosed) alerts.push({ kind: "day_unclosed", count: 1, label: "Ayer no se cerró el día", href: "/panel/caja" });
     if (d.todayAutoReopen) {

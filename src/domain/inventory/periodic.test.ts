@@ -6,11 +6,14 @@ import { fromUnits, money } from "../money";
 import {
   countAdjustmentEntry,
   type CountedLine,
+  expectedUnits,
+  isLastDayOfMonth,
   type LastPurchase,
   type PurchaseLine,
   type PurchasePaidFrom,
   purchaseEntry,
   purchaseTotal,
+  unitDifference,
   valueCount,
   valueCountLine,
 } from "./periodic";
@@ -223,6 +226,56 @@ describe("PROPIEDADES del inventario periódico", () => {
         // El balance de prueba de todo lo simulado da cero.
         const totals = [...netByAccount(entries.flatMap((e) => e.lines)).values()].reduce((s, m) => s + m.minor, 0n);
         expect(totals).toBe(0n);
+      }),
+    );
+  });
+});
+
+describe("unidades esperadas contra contadas", () => {
+  it("ejemplo: 10 contadas + 5 compradas − 2 vendidas = 13; se cuentan 12 → falta 1", () => {
+    const m = { base: 10, purchased: 5, sold: 2 };
+    expect(expectedUnits(m)).toBe(13);
+    expect(unitDifference(12, m)).toBe(-1);
+    // Vendido sin compra registrada: el esperado negativo se muestra tal cual.
+    expect(expectedUnits({ base: 0, purchased: 0, sold: 3 })).toBe(-3);
+  });
+
+  it("propiedad: esperado + diferencia = contado, y encadenar periodos es lo mismo que sumarlos", () => {
+    const mv = fc.record({ base: fc.integer({ min: 0, max: 100_000 }), purchased: fc.integer({ min: 0, max: 100_000 }), sold: fc.integer({ min: -500, max: 100_000 }) });
+    fc.assert(
+      fc.property(mv, fc.integer({ min: 0, max: 100_000 }), (m, counted) => {
+        expect(expectedUnits(m) + unitDifference(counted, m)).toBe(counted);
+        expect(unitDifference(expectedUnits(m), m)).toBe(0);
+      }),
+    );
+    // Sin conteo en medio, dos periodos seguidos esperan lo mismo que uno con sus compras y ventas sumadas.
+    fc.assert(
+      fc.property(mv, fc.integer({ min: 0, max: 100_000 }), fc.integer({ min: 0, max: 100_000 }), (a, p2, s2) => {
+        const chained = expectedUnits({ base: expectedUnits(a), purchased: p2, sold: s2 });
+        expect(chained).toBe(expectedUnits({ base: a.base, purchased: a.purchased + p2, sold: a.sold + s2 }));
+      }),
+    );
+  });
+});
+
+describe("día del conteo", () => {
+  it("el último día de cada mes, con febrero bisiesto", () => {
+    expect(isLastDayOfMonth("2026-11-30")).toBe(true);
+    expect(isLastDayOfMonth("2026-11-29")).toBe(false);
+    expect(isLastDayOfMonth("2026-12-31")).toBe(true);
+    expect(isLastDayOfMonth("2027-02-28")).toBe(true);
+    expect(isLastDayOfMonth("2028-02-28")).toBe(false);
+    expect(isLastDayOfMonth("2028-02-29")).toBe(true);
+    expect(() => isLastDayOfMonth("30/11/2026")).toThrow();
+  });
+
+  it("propiedad: exactamente un día por mes, y el siguiente es el 1.º", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 2000, max: 2100 }), fc.integer({ min: 1, max: 12 }), (year, month) => {
+        const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+        const ymd = (d: number) => `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const last = Array.from({ length: days }, (_, i) => i + 1).filter((d) => isLastDayOfMonth(ymd(d)));
+        expect(last).toEqual([days]);
       }),
     );
   });

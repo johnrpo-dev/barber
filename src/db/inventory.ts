@@ -1,8 +1,12 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, type SQL, sql } from "drizzle-orm";
 import { ACCOUNTS } from "@/domain/ledger/accounts";
 import {
   countAdjustmentEntry,
   type CountedLine,
+  expectedUnits,
+  isLastDayOfMonth,
+  unitDifference,
+  type UnitMovement,
   PAID_FROM_LABELS,
   type PurchaseLine,
   type PurchasePaidFrom,
@@ -16,7 +20,7 @@ import { format, type Money, money } from "@/domain/money";
 import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { can, type Role } from "@/domain/staff/roles";
 import { recordAudit } from "./audit";
-import { type ActorRef, cashShortError, ledgerCash, requireOpenDay, requireOpenSession } from "./cash";
+import { type ActorRef, cashShortError, ledgerCash, requireOpenDay, requireOpenSession, today } from "./cash";
 import { accountBalance, postEntry, reverseEntry } from "./ledger";
 import { lastPurchases } from "./products";
 import { cashMovements, cashSessions, inventoryDocumentLines, inventoryDocuments, journalEntries, products } from "./schema";
@@ -469,6 +473,170 @@ export async function recentPurchases(db: Db, locationId: bigint, limit = 15): P
     summary: r.lines > 1 ? `${r.first_name} (${r.first_qty} u.) y ${r.lines - 1} más` : `${r.first_name} (${r.first_qty} u.)`,
     lock: r.reversed ? "reversed" : r.counted ? "counted" : r.paid_from === "cash" && r.session_closed !== false ? "session_closed" : null,
   }));
+}
+
+// ─── Unidades: esperado vs. contado (informativo) ────────────────────────────
+//
+// Por producto, entre dos conteos: unidades del conteo anterior + compras vigentes − ventas. Las
+// compras se ordenan contra los conteos por id (el candado de inventario las serializa); las ventas
+// por la hora: cuentan las cobradas en el periodo y descuentan las anuladas en él (la unidad volvió).
+// Todo se suma en SQL. No asienta nada: el dinero lo fija el conteo (1435 contra 6135).
+
+export interface UnitsRow extends UnitMovement {
+  productId: bigint;
+  name: string;
+  active: boolean;
+  /** conteo anterior + compras − ventas (puede ser negativo). */
+  expected: number;
+}
+
+export interface CountSummary {
+  id: bigint;
+  businessDate: string;
+  /** Valor contado (la suma de sus líneas). */
+  total: Money;
+  /** Lo que el conteo llevó a 6135: positivo es costo de lo vendido y lo perdido; negativo, sobrante. */
+  adjustment: Money;
+}
+
+async function countSummaries(db: Db, locationId: bigint, where: SQL, limit: number): Promise<CountSummary[]> {
+  const rows = rowsOf<{ id: string; business_date: string; total: string; adjustment: string }>(
+    await db.execute(sql`
+      select d.id::text, d.business_date::text, d.total::text,
+             coalesce((select sum(jl.debit - jl.credit) from journal_lines jl
+                         join accounts a on a.location_id = jl.location_id and a.id = jl.account_id
+                        where jl.location_id = d.location_id and jl.entry_id = d.journal_entry_id
+                          and a.code = ${ACCOUNTS.costOfGoodsSold.code}), 0)::text as adjustment
+        from inventory_documents d
+       where d.location_id = ${locationId}::bigint and d.kind = 'count' and ${where}
+       order by d.id desc
+       limit ${limit}
+    `),
+  );
+  return rows.map((r) => ({ id: BigInt(r.id), businessDate: r.business_date, total: money(BigInt(r.total)), adjustment: money(BigInt(r.adjustment)) }));
+}
+
+/** Los últimos conteos de la sede (más nuevos primero), con su valor y su ajuste. */
+export function recentCounts(db: Db, locationId: bigint, limit = 6): Promise<CountSummary[]> {
+  return countSummaries(db, locationId, sql`true`, limit);
+}
+
+interface UnitsQueryRow {
+  id: string;
+  name: string;
+  active: boolean;
+  base: number;
+  purchased: number;
+  sold: number;
+  counted: number | null;
+  value: string | null;
+}
+
+/**
+ * Movimiento de unidades por producto desde el conteo `from` (null: desde el principio) hasta el
+ * conteo `to` (null: hasta ahora). Con `to`, las filas son las líneas de ese conteo; sin él, los
+ * productos que el próximo conteo exige (activos o con movimientos, lo mismo que recordCount).
+ */
+async function unitMovements(db: Db, locationId: bigint, from: bigint | null, to: bigint | null): Promise<UnitsQueryRow[]> {
+  const rowsFilter =
+    to === null
+      ? sql`(p.active or exists (select 1 from inventory_document_lines l where l.location_id = p.location_id and l.product_id = p.id))`
+      : sql`exists (select 1 from inventory_document_lines l where l.location_id = p.location_id and l.document_id = ${to}::bigint and l.product_id = p.id)`;
+  return rowsOf<UnitsQueryRow>(
+    await db.execute(sql`
+      with bounds as (
+        select coalesce((select created_at from inventory_documents where location_id = ${locationId}::bigint and kind = 'count' and id = ${from}::bigint),
+                        '-infinity'::timestamptz) as lo,
+               (select created_at from inventory_documents where location_id = ${locationId}::bigint and kind = 'count' and id = ${to}::bigint) as hi
+      )
+      select p.id::text as id, p.name, p.active,
+             coalesce((select l.quantity from inventory_document_lines l
+                        where l.location_id = p.location_id and l.document_id = ${from}::bigint and l.product_id = p.id), 0)::int as base,
+             coalesce((select sum(l.quantity) from inventory_document_lines l
+                         join inventory_documents d on d.location_id = l.location_id and d.id = l.document_id
+                        where l.location_id = p.location_id and l.product_id = p.id and d.kind = 'purchase'
+                          and d.id > coalesce(${from}::bigint, 0) and (${to}::bigint is null or d.id < ${to}::bigint)
+                          and not exists (select 1 from journal_entries r where r.location_id = d.location_id and r.reverses_entry_id = d.journal_entry_id)), 0)::int as purchased,
+             coalesce((select sum(case when s.created_at > b.lo and (b.hi is null or s.created_at <= b.hi) then sl.quantity else 0 end)
+                            - sum(case when s.voided_at > b.lo and (b.hi is null or s.voided_at <= b.hi) then sl.quantity else 0 end)
+                         from sale_lines sl
+                         join sales s on s.location_id = sl.location_id and s.id = sl.sale_id
+                        where sl.location_id = p.location_id and sl.product_id = p.id and sl.kind = 'product'), 0)::int as sold,
+             (select l.quantity from inventory_document_lines l
+               where l.location_id = p.location_id and l.document_id = ${to}::bigint and l.product_id = p.id) as counted,
+             (select l.amount::text from inventory_document_lines l
+               where l.location_id = p.location_id and l.document_id = ${to}::bigint and l.product_id = p.id) as value
+        from products p
+        cross join bounds b
+       where p.location_id = ${locationId}::bigint and ${rowsFilter}
+       order by p.name, p.id
+    `),
+  );
+}
+
+function unitsRow(r: UnitsQueryRow): UnitsRow {
+  const movement = { base: r.base, purchased: r.purchased, sold: r.sold };
+  return { productId: BigInt(r.id), name: r.name, active: r.active, ...movement, expected: expectedUnits(movement) };
+}
+
+export interface CountSheet {
+  /** El conteo anterior, o null si es el primero. */
+  lastCount: CountSummary | null;
+  /** Un renglón por producto que el conteo exige, con las unidades que debería haber. */
+  rows: UnitsRow[];
+}
+
+/** La hoja del próximo conteo: desde el último conteo hasta ahora. */
+export async function countSheet(db: Db, locationId: bigint): Promise<CountSheet> {
+  const [lastCount] = await recentCounts(db, locationId, 1);
+  const rows = await unitMovements(db, locationId, lastCount?.id ?? null, null);
+  return { lastCount: lastCount ?? null, rows: rows.map(unitsRow) };
+}
+
+export interface CountReportRow extends UnitsRow {
+  counted: number;
+  /** contado − esperado: negativo es faltante. */
+  difference: number;
+  /** Valor de la línea en ese conteo. */
+  value: Money;
+}
+
+export interface CountReport {
+  count: CountSummary;
+  previous: CountSummary | null;
+  rows: CountReportRow[];
+}
+
+/** Diferencias de un conteo guardado contra el anterior; null si el conteo no es de la sede. */
+export async function countReport(db: Db, locationId: bigint, documentId: bigint): Promise<CountReport | null> {
+  const [count] = await countSummaries(db, locationId, sql`d.id = ${documentId}::bigint`, 1);
+  if (!count) return null;
+  const [previous] = await countSummaries(db, locationId, sql`d.id < ${documentId}::bigint`, 1);
+  const rows = await unitMovements(db, locationId, previous?.id ?? null, documentId);
+  return {
+    count,
+    previous: previous ?? null,
+    rows: rows.map((r) => {
+      const counted = r.counted ?? 0;
+      return { ...unitsRow(r), counted, difference: unitDifference(counted, r), value: money(BigInt(r.value ?? "0")) };
+    }),
+  };
+}
+
+/**
+ * ¿Toca contar hoy? Último día del mes en la sede, hay productos que contar y todavía no hay un conteo
+ * con el día contable de hoy. Lo usan Inicio (recordatorio) y Productos.
+ */
+export async function countDueToday(db: Db, locationId: bigint, now: Date = new Date()): Promise<boolean> {
+  const { businessDate: day } = await today(db, locationId, now);
+  if (!isLastDayOfMonth(day)) return false;
+  const [row] = rowsOf<{ products: boolean; counted: boolean }>(
+    await db.execute(sql`
+      select exists (select 1 from products p where p.location_id = ${locationId}::bigint and p.active) as products,
+             exists (select 1 from inventory_documents d where d.location_id = ${locationId}::bigint and d.kind = 'count' and d.business_date = ${day}::date) as counted
+    `),
+  );
+  return !!row?.products && !row.counted;
 }
 
 /** Saldo de 1435 (inventario según el libro), sumado en SQL. */

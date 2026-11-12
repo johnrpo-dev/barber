@@ -15,7 +15,7 @@ import { rememberClientDevice } from "@/db/client-devices";
 import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
-import { recordPurchase } from "@/db/inventory";
+import { countSheet, recordPurchase } from "@/db/inventory";
 import { createProduct } from "@/db/products";
 import { saveRecurringExpense } from "@/db/recurring-expenses";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user, workerHeartbeats } from "@/db/schema";
@@ -337,6 +337,12 @@ async function seedPurchase(locationId: bigint = A.location): Promise<string> {
     actor: { userId: "seed", role: "owner" },
   });
   return documentId.toString();
+}
+
+/** Un conteo completo de la sede (cada producto que exige, con lo que debería haber), como la interfaz. */
+async function countLines(locationId: bigint = A.location): Promise<{ productId: string; quantity: string }[]> {
+  const sheet = await countSheet(db, locationId);
+  return sheet.rows.map((r) => ({ productId: r.productId.toString(), quantity: String(Math.max(r.expected, 0)) }));
 }
 
 // ─── Comisiones: estado de partida para cada intento ────────────────────────
@@ -1540,6 +1546,15 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "productos · conteo de inventario",
+    action: "recordCountAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      await seedPurchase();
+      return async () => productos.recordCountAction({ lines: await countLines(), note: "Fin de mes", idempotencyKey: `conteo-${uniq()}` });
+    },
+  },
+  {
     name: "tablero del dueño",
     action: "loadDashboard",
     allowed: ["owner"],
@@ -1621,6 +1636,14 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     prepare: async () => {
       const documentId = await seedPurchase();
       return () => productos.reversePurchaseAction({ documentId });
+    },
+  },
+  {
+    name: "contar con los productos de esta sede",
+    prepare: async () => {
+      await seedProduct();
+      const lines = await countLines();
+      return () => productos.recordCountAction({ lines, idempotencyKey: `intruso-conteo-${uniq()}` });
     },
   },
   {
@@ -2032,6 +2055,8 @@ describe("acciones críticas con una sesión vieja", () => {
       () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `compra-${uniq()}` }),
       () => productos.recordPurchaseAction({ paidFrom: "owner", lines: purchaseLines(productId), idempotencyKey: `carga-${uniq()}` }),
       () => productos.reversePurchaseAction({ documentId }),
+      // Después de anular: un conteo fija el inventario y ya no se podría anular la compra.
+      async () => productos.recordCountAction({ lines: await countLines(), idempotencyKey: `conteo-${uniq()}` }),
       () => ajustes.savePaymentMethodAction({ id: String(A.methods.card), kind: "card", label: `Tarjeta ${uniq()}`, feeBps: "150", active: true }),
       () => ajustes.saveExpenseCategoryAction({ id: String(A.category), name: `Categoría ${uniq()}`, accountCode: "5195", active: true }),
       () => ajustes.updateCheckoutRulesAction({ commissionBase: "gross", maxDiscountBps: "500", receptionCanDiscount: true, tipsBearCardFees: true }),
@@ -2868,6 +2893,7 @@ const AUDITED: Record<string, AuditAction> = {
   setProductActiveAction: "product.active",
   recordPurchaseAction: "inventory.purchase",
   reversePurchaseAction: "inventory.purchase_reverse",
+  recordCountAction: "inventory.count",
   recordCashPurchaseAction: "inventory.purchase",
   updateBookingSettingsAction: "settings.booking",
   updateCheckoutRulesAction: "settings.checkout_rules",

@@ -4,16 +4,18 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { auditActor, recordConfigChange } from "@/db/audit";
 import { db } from "@/db/client";
-import { recordPurchase, reversePurchase } from "@/db/inventory";
+import { recordCount, recordPurchase, reversePurchase } from "@/db/inventory";
 import { createProduct, productOf, productSnapshot, setProductActive, updateProduct } from "@/db/products";
 import type { Db } from "@/db/types";
 import { AUDIT_FIELDS } from "@/domain/audit/events";
 import { percentToBps } from "@/domain/catalog/service";
 import { InventoryError, type ProductDraft } from "@/domain/inventory/product";
-import { format, fromUnits } from "@/domain/money";
+import { MAX_LINES, MAX_QUANTITY } from "@/domain/inventory/periodic";
+import { format, fromUnits, negate } from "@/domain/money";
 import { type ActionResult, idSchema, runAction } from "@/lib/action";
+import { idempotencyKeySchema } from "@/lib/action-schemas";
 import { requirePermission, requireRecentAuth } from "@/lib/session";
-import { ownerPurchaseInput } from "./purchase-schema";
+import { ownerPurchaseInput, purchaseNoteSchema } from "./purchase-schema";
 
 // Productos e inventario del dueño (sprint 6, docs/sprint-6-productos-inventario.md). Solo
 // inventory.manage. La sede sale SIEMPRE de la sesión. El precio viaja como texto de pesos enteros y
@@ -147,6 +149,51 @@ export async function recordPurchaseAction(raw: unknown): Promise<ActionResult<{
     });
     refresh();
     return { documentId: documentId.toString(), totalLabel: format(total) };
+  });
+}
+
+const countSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        productId: idSchema,
+        // Unidades contadas como dígitos (0 si no hay): nada pasa por parseFloat.
+        quantity: z
+          .string()
+          .trim()
+          .regex(/^\d{1,6}$/, "Las unidades contadas deben ser un número entero")
+          .transform((v) => Number.parseInt(v, 10))
+          .refine((n) => n <= MAX_QUANTITY, `Las unidades contadas deben estar entre 0 y ${MAX_QUANTITY}`),
+      }),
+    )
+    .min(1, "No hay productos para contar")
+    .max(MAX_LINES * 10, "El conteo tiene demasiados productos"),
+  note: purchaseNoteSchema,
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * Conteo de inventario (solo el dueño, con reautenticación): deja 1435 en lo contado y lleva la
+ * diferencia a 6135 (recordCount). No se deshace: un conteo nuevo lo corrige.
+ */
+export async function recordCountAction(
+  raw: unknown,
+): Promise<ActionResult<{ totalLabel: string; adjustmentLabel: string; adjustment: "cost" | "surplus" | "none"; created: boolean }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("inventory.manage");
+    const input = countSchema.parse(raw);
+    requireRecentAuth(staff);
+    const r = await recordCount(database(), {
+      locationId: staff.locationId,
+      lines: input.lines,
+      note: input.note,
+      idempotencyKey: input.idempotencyKey,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    revalidatePath("/panel");
+    const sign = r.adjustment.minor > 0n ? "cost" : r.adjustment.minor < 0n ? "surplus" : "none";
+    return { totalLabel: format(r.total), adjustmentLabel: format(r.adjustment.minor < 0n ? negate(r.adjustment) : r.adjustment), adjustment: sign, created: r.created };
   });
 }
 
