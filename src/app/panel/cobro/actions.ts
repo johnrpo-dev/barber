@@ -52,6 +52,10 @@ export interface CheckoutView {
   }[];
   /** commissionBps solo para la vista previa: el servidor la vuelve a leer al cobrar. */
   extraServices: { serviceId: string; name: string; unitPriceMinor: string; unitPriceLabel: string; commissionBps: string }[];
+  /** Productos activos (sprint 6, fase C): precio por unidad y comisión de quien vende, solo para la vista previa. */
+  products: { productId: string; name: string; unitPriceMinor: string; unitPriceLabel: string; commissionBps: string }[];
+  /** Quien cobra: vendedor por defecto de un producto en un cobro sin cita. */
+  actorStaffId: string;
   /** serviceIds: lo que hace cada quien (para "Lo hizo"); las propinas van a cualquiera. */
   staff: { id: string; name: string; serviceIds: string[] }[];
   methods: { id: string; kind: "cash" | "card" | "transfer" | "wallet"; label: string; feeBps: string }[];
@@ -77,6 +81,16 @@ async function receiptModes(locationId: bigint): Promise<Record<NotificationChan
 }
 
 const loadInput = z.object({ appointmentId: idSchema });
+
+function productOptions(list: { id: bigint; name: string; price: bigint; commissionBps: number }[]): CheckoutView["products"] {
+  return list.map((p) => ({
+    productId: p.id.toString(),
+    name: p.name,
+    unitPriceMinor: minorText(p.price),
+    unitPriceLabel: moneyLabel(p.price),
+    commissionBps: String(p.commissionBps),
+  }));
+}
 
 export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<ActionResult<CheckoutView>> {
   const staff = await requirePermission("ledger.post");
@@ -111,6 +125,8 @@ export async function loadCheckout(raw: z.input<typeof loadInput>): Promise<Acti
         unitPriceLabel: moneyLabel(s.price),
         commissionBps: String(s.commissionBps),
       })),
+      products: productOptions(ctx.products),
+      actorStaffId: staff.staffId.toString(),
       staff: ctx.staff.map((s) => ({ id: s.id.toString(), name: s.name, serviceIds: s.serviceIds.map(String) })),
       methods: ctx.methods.map((m) => ({ id: m.id.toString(), kind: m.kind, label: m.label, feeBps: String(m.feeBps) })),
       rules: {
@@ -145,6 +161,8 @@ export async function loadWalkInCheckout(): Promise<ActionResult<CheckoutView>> 
         unitPriceLabel: moneyLabel(s.price),
         commissionBps: String(s.commissionBps),
       })),
+      products: productOptions(ctx.products),
+      actorStaffId: staff.staffId.toString(),
       // Primero quienes atienden (barberos), después el resto del personal activo.
       staff: [...ctx.staff].sort((a, b) => Number(b.role === "barber") - Number(a.role === "barber")).map((s) => ({ id: s.id.toString(), name: s.name, serviceIds: s.serviceIds.map(String) })),
       methods: ctx.methods.map((m) => ({ id: m.id.toString(), kind: m.kind, label: m.label, feeBps: String(m.feeBps) })),
@@ -209,6 +227,17 @@ const checkoutInput = z
   client: clientInput.optional(),
   // Hasta 20 líneas por venta: la cita más 19, o 20 en un walk-in.
   extras: z.array(z.object({ serviceId: idSchema, staffId: idSchema })).max(20, "Demasiados servicios"),
+  /** Productos (sprint 6, fase C): unidades y quien vende. Precio y comisión los lee el servidor. */
+  products: z
+    .array(
+      z.object({
+        productId: idSchema,
+        quantity: z.number().int("Las unidades van enteras").min(1, "Al menos una unidad").max(99, "Máximo 99 unidades"),
+        staffId: idSchema,
+      }),
+    )
+    .max(20, "Demasiados productos")
+    .default([]),
   discounts: z
     .array(z.object({ key: z.string().max(20), amountUnits: unitsSchema("El descuento"), reason: z.string().max(200, "El motivo del descuento es muy largo") }))
     .max(20),
@@ -221,9 +250,16 @@ const checkoutInput = z
   /** Quien cobra le preguntó al cliente y quiere enviarle el recibo por WhatsApp o correo. */
   sendReceipt: z.boolean().optional(),
 })
-  .refine((v) => v.appointmentId === null || v.extras.length <= 19, { message: "Demasiados servicios", path: ["extras"] })
+  // Hasta 20 líneas en total: la cita (si hay), los servicios adicionales y los productos.
+  .refine((v) => (v.appointmentId === null ? 0 : 1) + v.extras.length + v.products.length <= 20, {
+    message: "La venta tiene demasiadas líneas (máximo 20)",
+    path: ["extras"],
+  })
   .refine((v) => v.appointmentId === null || v.client === undefined, { message: "El cliente de una cita es el de la cita", path: ["client"] })
-  .refine((v) => v.appointmentId !== null || v.extras.length > 0, { message: "Elige al menos un servicio", path: ["extras"] });
+  .refine((v) => v.appointmentId !== null || v.extras.length + v.products.length > 0, {
+    message: "Elige al menos un servicio o un producto",
+    path: ["extras"],
+  });
 
 export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promise<ActionResult<Receipt>> {
   const staff = await requirePermission("ledger.post");
@@ -245,6 +281,7 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
       appointmentId: input.appointmentId,
       ...walkInClient,
       extras: input.extras,
+      products: input.products,
       discounts: input.discounts.map((d) => ({ key: d.key, amount: d.amountUnits, reason: d.reason })),
       tips: input.tips.map((t) => ({ staffId: t.staffId, amount: t.amountUnits })),
       payments: input.payments.map((p) => ({ methodId: p.methodId, amount: p.amountUnits, tendered: p.tenderedUnits })),
@@ -263,7 +300,10 @@ export async function checkoutAction(raw: z.input<typeof checkoutInput>): Promis
       publicId: sale.publicId,
       totalLabel: moneyLabel(sale.totalPaid),
       changeLabel: change > 0n ? moneyLabel(change) : null,
-      lines: sale.lines.map((l) => ({ description: l.description, netLabel: moneyLabel(l.net) })),
+      lines: sale.lines.map((l) => ({
+        description: l.quantity > 1 ? `${l.description} ×${l.quantity}` : l.description,
+        netLabel: moneyLabel(l.net),
+      })),
       tips: sale.tips.map((t) => ({ staffName: t.staffName, amountLabel: absLabel(t.amount) })),
       payments: sale.payments.map((p) => ({ label: p.label, amountLabel: moneyLabel(p.amount) })),
       businessDate: sale.businessDate,

@@ -80,7 +80,16 @@ describe("el cobro del diseño (§3): corte con descuento, propina, efectivo y t
     const sale = await saleDetail(db, shop.locationId, saleId);
     expect(sale).toMatchObject({ status: "paid", totalPaid: 3_200_000n, businessDate: businessDate(new Date(), TZ) });
     expect(sale!.lines).toEqual([
-      { description: "Corte", staffId: shop.barber, unitPrice: 3_000_000n, discount: 300_000n, net: 2_700_000n, commission: 1_080_000n },
+      {
+        kind: "service",
+        quantity: 1,
+        description: "Corte",
+        staffId: shop.barber,
+        unitPrice: 3_000_000n,
+        discount: 300_000n,
+        net: 2_700_000n,
+        commission: 1_080_000n,
+      },
     ]);
     expect(sale!.payments.map((p) => [p.kind, p.amount, p.tendered, p.change, p.fee])).toEqual([
       ["cash", 2_000_000n, 5_000_000n, 3_000_000n, 0n],

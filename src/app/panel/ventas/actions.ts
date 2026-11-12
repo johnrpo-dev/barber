@@ -35,7 +35,7 @@ export interface SaleReceiptView {
   voided: boolean;
   location: { name: string; address: string | null; phoneLabel: string | null; taxId: string | null; footer: string | null };
   chargedByName: string | null;
-  lines: { description: string; staffName: string; unitPriceLabel: string; discountLabel: string | null; netLabel: string }[];
+  lines: { description: string; staffName: string; unitPriceLabel: string; hasQuantity: boolean; discountLabel: string | null; netLabel: string }[];
   subtotalLabel: string;
   discountLabel: string | null;
   tips: { staffName: string; amountLabel: string }[];
@@ -74,9 +74,11 @@ export async function loadSaleReceipt(raw: z.input<typeof receiptInput>): Promis
       },
       chargedByName: r.chargedByName,
       lines: r.lines.map((l) => ({
-        description: l.description,
+        description: l.quantity > 1 ? `${l.description} ×${l.quantity}` : l.description,
         staffName: l.staffName,
-        unitPriceLabel: moneyLabel(l.unitPrice),
+        // Con unidades: "2 × $25.000"; de a uno, el precio.
+        unitPriceLabel: l.quantity > 1 ? `${l.quantity} × ${moneyLabel(l.unitPrice)}` : moneyLabel(l.unitPrice),
+        hasQuantity: l.quantity > 1,
         discountLabel: l.discount > 0n ? `-${absLabel(l.discount)}` : null,
         netLabel: moneyLabel(l.net),
       })),

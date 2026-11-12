@@ -124,6 +124,8 @@ const sale = fc
         pricePesos: fc.bigInt({ min: 0n, max: 500_000n }),
         discountBps: fc.bigInt({ min: 0n, max: 3_000n }),
         commissionBps: bps,
+        kind: fc.constantFrom("service" as const, "product" as const),
+        quantity: fc.integer({ min: 1, max: 99 }),
       }),
       { minLength: 1, maxLength: 4 },
     ),
@@ -140,12 +142,24 @@ const sale = fc
   })
   .map(({ lines, tips, payments, rules }) => {
     const priced = lines.map((l) => {
+      // Un servicio va de a uno; un producto, de 1 a 99 unidades.
+      const quantity = l.kind === "service" ? 1 : l.quantity;
       const unitPrice = fromUnits(l.pricePesos);
-      // Descuento en pesos enteros, por debajo del tope (truncado, no redondeado).
-      const discount = fromUnits((l.pricePesos * l.discountBps) / 10_000n);
-      return { staffId: l.staffId, description: "Servicio", unitPrice, discount, discountReason: "motivo", commissionBps: l.commissionBps };
+      // Descuento en pesos enteros sobre el bruto, por debajo del tope (truncado, no redondeado).
+      const discount = fromUnits((l.pricePesos * BigInt(quantity) * l.discountBps) / 10_000n);
+      return {
+        kind: l.kind,
+        quantity,
+        staffId: l.staffId,
+        description: l.kind === "service" ? "Servicio" : "Producto",
+        unitPrice,
+        discount,
+        discountReason: "motivo",
+        commissionBps: l.commissionBps,
+      };
     });
-    const due = priced.reduce((a, l) => a + l.unitPrice.minor - l.discount.minor, 0n) + tips.reduce((a, t) => a + t.amount, 0n);
+    const due =
+      priced.reduce((a, l) => a + l.unitPrice.minor * BigInt(l.quantity) - l.discount.minor, 0n) + tips.reduce((a, t) => a + t.amount, 0n);
     // Se reparte en pesos enteros: así el efectivo nunca lleva centavos.
     const amounts = due > 0n ? allocate(money(due / PESO), payments.map((p) => p.weight)).map((m) => money(m.minor * PESO)) : [];
     const input: CheckoutInput = {
@@ -178,6 +192,55 @@ function priceOrReject(input: CheckoutInput, rules: CheckoutRules) {
   }
 }
 
+describe("productos en el cobro (sprint 6, fase C)", () => {
+  const corte = { staffId: 1n, description: "Corte", unitPrice: cop(30_000), discount: cop(0), commissionBps: 4_000n };
+  const cera = {
+    kind: "product" as const,
+    quantity: 2,
+    staffId: 2n,
+    description: "Cera para peinar",
+    unitPrice: cop(25_000),
+    discount: cop(5_000),
+    discountReason: "Lleva dos",
+    commissionBps: 1_000n,
+  };
+
+  it("cobra servicio y producto: 4170 el servicio, 4135 el producto, sin costo", () => {
+    const c = priceCheckout({ lines: [corte, cera], tips: [], payments: [{ methodId: 1n, kind: "cash", amount: cop(75_000), feeBps: 0n }] });
+    expect(c.lines[1]!.gross).toEqual(cop(50_000));
+    expect(c.lines[1]!.net).toEqual(cop(45_000));
+    // 10 % del neto del producto, para quien lo vendió.
+    expect(c.lines[1]!.commission).toEqual(cop(4_500));
+    expect(c.subtotal).toEqual(cop(80_000));
+    const net = netByAccount(saleEntry(c, META).lines);
+    expect(net.get(ACCOUNTS.serviceIncome.code)).toEqual(cop(-30_000));
+    expect(net.get(ACCOUNTS.productIncome.code)).toEqual(cop(-45_000));
+    expect(net.get(ACCOUNTS.commissionExpense.code)).toEqual(cop(16_500));
+  });
+
+  it("una venta solo de productos (mostrador) no toca 4170", () => {
+    const c = priceCheckout({ lines: [{ ...cera, discount: cop(0) }], tips: [], payments: [{ methodId: 1n, kind: "cash", amount: cop(50_000), feeBps: 0n }] });
+    const net = netByAccount(saleEntry(c, META).lines);
+    expect(net.has(ACCOUNTS.serviceIncome.code)).toBe(false);
+    expect(net.get(ACCOUNTS.productIncome.code)).toEqual(cop(-50_000));
+  });
+
+  it("el tope de descuento es sobre el bruto de todas las unidades", () => {
+    const pay = (pesos: number) => [{ methodId: 1n, kind: "cash" as const, amount: cop(pesos), feeBps: 0n }];
+    // 30 % de $50.000 = $15.000: pasa justo en el tope; un peso más, no.
+    expect(() => priceCheckout({ lines: [{ ...cera, discount: cop(15_000) }], tips: [], payments: pay(35_000) })).not.toThrow();
+    expect(() => priceCheckout({ lines: [{ ...cera, discount: cop(15_001) }], tips: [], payments: pay(34_999) })).toThrow(/tope/);
+  });
+
+  it("rechaza cantidades imposibles y un servicio con más de una unidad", () => {
+    const pay = [{ methodId: 1n, kind: "cash" as const, amount: cop(1_000), feeBps: 0n }];
+    for (const quantity of [0, -1, 1.5, 100, Number.NaN]) {
+      expect(() => priceCheckout({ lines: [{ ...cera, quantity }], tips: [], payments: pay })).toThrow(/cantidad/);
+    }
+    expect(() => priceCheckout({ lines: [{ ...corte, quantity: 2 }], tips: [], payments: pay })).toThrow(/de a uno/);
+  });
+});
+
 describe("propiedades del cobro", () => {
   it("todo asiento de venta cuadra y pagado = neto + propinas", () => {
     fc.assert(
@@ -204,7 +267,13 @@ describe("propiedades del cobro", () => {
         expect(at(ACCOUNTS.cash.code)).toBe(cash);
         expect(at(ACCOUNTS.bank.code)).toBe(electronic - c.feesTotal.minor);
         expect(at(ACCOUNTS.cardFees.code)).toBe(c.businessFees.minor);
-        expect(at(ACCOUNTS.serviceIncome.code)).toBe(-c.netTotal.minor);
+        // Servicios a 4170 y productos a 4135; entre los dos, todo el neto. Nada toca 1435 ni 6135.
+        const netOf = (kind: string) => total(c.lines.filter((l) => l.kind === kind).map((l) => l.net));
+        expect(at(ACCOUNTS.serviceIncome.code)).toBe(-netOf("service"));
+        expect(at(ACCOUNTS.productIncome.code)).toBe(-netOf("product"));
+        expect(c.serviceNet.minor + c.productNet.minor).toBe(c.netTotal.minor);
+        expect(at("1435")).toBe(0n);
+        expect(at("6135")).toBe(0n);
         expect(at(ACCOUNTS.tipsPayable.code)).toBe(-total(c.tips.map((t) => t.payable)));
         expect(at(ACCOUNTS.commissionExpense.code)).toBe(c.commissionTotal.minor);
         expect(at(ACCOUNTS.commissionsPayable.code)).toBe(-c.commissionTotal.minor);
@@ -220,11 +289,15 @@ describe("propiedades del cobro", () => {
         const c = priceOrReject(input, rules);
         if (!c) return;
         for (const l of c.lines) {
-          const base = rules.commissionBase === "net" ? l.net : l.unitPrice;
+          // El bruto es exacto: precio × unidades, y el subtotal es la suma de los brutos.
+          expect(l.gross.minor).toBe(l.unitPrice.minor * BigInt(l.quantity));
+          expect(l.net.minor).toBe(l.gross.minor - l.discount.minor);
+          const base = rules.commissionBase === "net" ? l.net : l.gross;
           expect(l.commission).toEqual(percentOf(base, l.commissionBps, PESO));
           expect(l.commission.minor % PESO).toBe(0n);
         }
         expect(c.commissionTotal.minor).toBe(total(c.lines.map((l) => l.commission)));
+        expect(c.subtotal.minor).toBe(total(c.lines.map((l) => l.gross)));
       }),
     );
   });

@@ -113,7 +113,7 @@ export async function salesDetail(db: Db, q: ReportQuery & { limit: number }): P
              to_char(s.created_at at time zone l.timezone, 'HH24:MI') as time,
              s.status, ve.business_date::text as voided_on,
              s.subtotal::text, s.discount::text, s.tips::text, s.total_paid::text as total,
-             (select string_agg(sl.description, ', ' order by sl.position)
+             (select string_agg(sl.description || case when sl.quantity > 1 then ' ×' || sl.quantity::text else '' end, ', ' order by sl.position)
                 from sale_lines sl where sl.location_id = s.location_id and sl.sale_id = s.id) as services,
              (select string_agg(x.name, ', ' order by x.first)
                 from (select m.display_name as name, min(sl.position) as first

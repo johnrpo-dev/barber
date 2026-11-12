@@ -1,6 +1,6 @@
 import { ACCOUNTS, type AccountCode } from "../ledger/accounts";
 import type { JournalEntryDraft, LedgerLine } from "../ledger/entry";
-import { allocate, CENTAVO, type Money, money, PESO, percentOf, subtract, sum } from "../money";
+import { allocate, CENTAVO, type Money, money, mulDiv, PESO, percentOf, subtract, sum } from "../money";
 
 // Cobro de una venta (docs/sprint-4-cobro-caja.md §1 y §3). Funciones puras: calculan líneas,
 // comisiones congeladas, cambio y costo del datáfono, y arman el asiento. La base de datos
@@ -30,10 +30,20 @@ export const DEFAULT_CHECKOUT_RULES: CheckoutRules = {
   tipsBearCardFees: false,
 };
 
+/** Un servicio (ingreso 4170) o un producto (ingreso 4135, sprint 6 fase C). */
+export type LineKind = "service" | "product";
+
 export interface CheckoutLineInput {
+  /** Por defecto, servicio. */
+  readonly kind?: LineKind;
+  /** Unidades (solo productos; un servicio va de a uno). Por defecto, 1. */
+  readonly quantity?: number;
+  /** Quien atendió o vendió: recibe la comisión de la línea. */
   readonly staffId: bigint;
   readonly description: string;
+  /** Precio de UNA unidad. El bruto de la línea es unitPrice × quantity. */
   readonly unitPrice: Money;
+  /** Descuento sobre el bruto de la línea (todas sus unidades). */
   readonly discount: Money;
   readonly discountReason?: string;
   readonly commissionBps: bigint;
@@ -62,6 +72,10 @@ export interface CheckoutInput {
 }
 
 export interface PricedLine extends CheckoutLineInput {
+  readonly kind: LineKind;
+  readonly quantity: number;
+  /** unitPrice × quantity, exacto. */
+  readonly gross: Money;
   readonly net: Money;
   /** Comisión congelada: half-up al peso, una sola vez por línea (ADR-001). */
   readonly commission: Money;
@@ -88,6 +102,10 @@ export interface Checkout {
   readonly subtotal: Money;
   readonly discount: Money;
   readonly netTotal: Money;
+  /** Neto de las líneas de servicio (crédito a 4170). */
+  readonly serviceNet: Money;
+  /** Neto de las líneas de producto (crédito a 4135). serviceNet + productNet = netTotal. */
+  readonly productNet: Money;
   readonly tipsTotal: Money;
   /** Lo que paga el cliente: neto + propinas = suma de los pagos aplicados. */
   readonly totalDue: Money;
@@ -106,6 +124,8 @@ export const MAX_AMOUNT_MINOR = 10n ** 13n;
 export const MAX_LINES = 20;
 export const MAX_PAYMENTS = 5;
 export const MAX_TIPS = 10;
+/** Unidades de un producto en una línea (la base exige el mismo tope). */
+export const MAX_QUANTITY = 99;
 
 function assertAmount(m: Money, what: string, opts: { wholePesos: boolean }) {
   if (m.minor < 0n) throw new CheckoutError(`${what} no puede ser negativo`);
@@ -127,28 +147,37 @@ export function formatBps(bps: bigint): string {
 
 /** Calcula la venta completa o lanza CheckoutError con un mensaje para el usuario. */
 export function priceCheckout(input: CheckoutInput, rules: CheckoutRules = DEFAULT_CHECKOUT_RULES): Checkout {
-  if (input.lines.length === 0) throw new CheckoutError("La venta no tiene servicios");
+  if (input.lines.length === 0) throw new CheckoutError("La venta no tiene servicios ni productos");
   if (input.lines.length > MAX_LINES || input.payments.length > MAX_PAYMENTS || input.tips.length > MAX_TIPS) {
     throw new CheckoutError("La venta tiene demasiadas líneas, pagos o propinas");
   }
   assertBps(rules.maxDiscountBps, "El tope de descuento");
 
   const lines: PricedLine[] = input.lines.map((line) => {
+    const kind: LineKind = line.kind ?? "service";
+    const quantity = line.quantity ?? 1;
+    if (kind !== "service" && kind !== "product") throw new CheckoutError("Tipo de línea desconocido");
+    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_QUANTITY) {
+      throw new CheckoutError(`La cantidad debe estar entre 1 y ${MAX_QUANTITY}`);
+    }
+    if (kind === "service" && quantity !== 1) throw new CheckoutError("Un servicio se cobra de a uno");
     assertAmount(line.unitPrice, "El precio", { wholePesos: true });
     assertAmount(line.discount, "El descuento", { wholePesos: true });
     assertBps(line.commissionBps, "La comisión");
-    if (!line.description.trim()) throw new CheckoutError("Cada servicio necesita una descripción");
-    if (line.discount.minor > line.unitPrice.minor) throw new CheckoutError("El descuento no puede superar el precio");
-    // Comparación exacta (sin redondear): descuento / precio ≤ tope.
-    if (line.discount.minor * MAX_BPS > line.unitPrice.minor * rules.maxDiscountBps) {
+    if (!line.description.trim()) throw new CheckoutError("Cada línea necesita una descripción");
+    const gross = mulDiv(line.unitPrice, BigInt(quantity), 1n);
+    assertAmount(gross, "El total de la línea", { wholePesos: true });
+    if (line.discount.minor > gross.minor) throw new CheckoutError("El descuento no puede superar el precio");
+    // Comparación exacta (sin redondear): descuento / bruto ≤ tope.
+    if (line.discount.minor * MAX_BPS > gross.minor * rules.maxDiscountBps) {
       throw new CheckoutError(`El descuento supera el tope permitido (${formatBps(rules.maxDiscountBps)})`);
     }
     if (line.discount.minor > 0n && !line.discountReason?.trim()) {
       throw new CheckoutError("Escribe el motivo del descuento");
     }
-    const net = subtract(line.unitPrice, line.discount);
-    const base = rules.commissionBase === "net" ? net : line.unitPrice;
-    return { ...line, net, commission: percentOf(base, line.commissionBps, PESO) };
+    const net = subtract(gross, line.discount);
+    const base = rules.commissionBase === "net" ? net : gross;
+    return { ...line, kind, quantity, gross, net, commission: percentOf(base, line.commissionBps, PESO) };
   });
 
   const currency = lines[0]!.unitPrice.currency;
@@ -159,9 +188,11 @@ export function priceCheckout(input: CheckoutInput, rules: CheckoutRules = DEFAU
   const tipStaff = new Set(input.tips.map((t) => t.staffId));
   if (tipStaff.size !== input.tips.length) throw new CheckoutError("Hay dos propinas para la misma persona");
 
-  const subtotal = sum(lines.map((l) => l.unitPrice), currency);
+  const subtotal = sum(lines.map((l) => l.gross), currency);
   const discount = sum(lines.map((l) => l.discount), currency);
   const netTotal = sum(lines.map((l) => l.net), currency);
+  const serviceNet = sum(lines.filter((l) => l.kind === "service").map((l) => l.net), currency);
+  const productNet = sum(lines.filter((l) => l.kind === "product").map((l) => l.net), currency);
   const tipsTotal = sum(input.tips.map((t) => t.amount), currency);
   const totalDue = sum([netTotal, tipsTotal], currency);
   if (totalDue.minor <= 0n) throw new CheckoutError("No hay nada que cobrar");
@@ -214,6 +245,8 @@ export function priceCheckout(input: CheckoutInput, rules: CheckoutRules = DEFAU
     subtotal,
     discount,
     netTotal,
+    serviceNet,
+    productNet,
     tipsTotal,
     totalDue,
     commissionTotal: sum(lines.map((l) => l.commission), currency),
@@ -248,7 +281,9 @@ export function saleEntry(
       [ACCOUNTS.cash.code, cash.minor],
       [ACCOUNTS.bank.code, electronic.minor - checkout.feesTotal.minor],
       [ACCOUNTS.cardFees.code, checkout.businessFees.minor],
-      [ACCOUNTS.serviceIncome.code, -checkout.netTotal.minor],
+      // Servicios a 4170 y productos a 4135, sin costo (inventario periódico: el costo llega con el conteo).
+      [ACCOUNTS.serviceIncome.code, -checkout.serviceNet.minor],
+      [ACCOUNTS.productIncome.code, -checkout.productNet.minor],
       [ACCOUNTS.tipsPayable.code, -(checkout.tipsTotal.minor - checkout.tipFees.minor)],
       [ACCOUNTS.commissionExpense.code, checkout.commissionTotal.minor],
       [ACCOUNTS.commissionsPayable.code, -checkout.commissionTotal.minor],

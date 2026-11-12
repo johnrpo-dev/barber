@@ -23,6 +23,7 @@ import {
   cashMovements,
   clients,
   paymentMethods,
+  products,
   saleLines,
   salePayments,
   sales,
@@ -45,6 +46,8 @@ export const APPOINTMENT_LINE_KEY = "appointment";
 
 /** "extra:<i>" sin ceros a la izquierda: una clave que no nombra exactamente una línea se rechaza. */
 const EXTRA_KEY = /^extra:(0|[1-9]\d?)$/;
+/** "product:<i>": el descuento de la i-ésima línea de producto, con la misma regla. */
+const PRODUCT_KEY = /^product:(0|[1-9]\d?)$/;
 
 export interface CheckoutActor {
   userId: string;
@@ -67,6 +70,12 @@ export interface CheckoutCommand {
    */
   newClient?: { name: string; phone: string };
   extras: readonly { serviceId: bigint; staffId: bigint }[];
+  /**
+   * Productos (sprint 6, fase C): unidades y quien los vende (recibe la comisión del producto).
+   * Un walk-in puede ser solo de productos (venta de mostrador). Sus descuentos usan la clave
+   * "product:<i>". No mueven inventario: el costo llega con el conteo del mes.
+   */
+  products?: readonly { productId: bigint; quantity: number; staffId: bigint }[];
   discounts: readonly { key: string; amount: Money; reason: string }[];
   tips: readonly { staffId: bigint; amount: Money }[];
   payments: readonly { methodId: bigint; amount: Money; tendered?: Money }[];
@@ -90,6 +99,10 @@ export function checkoutRequestHash(cmd: CheckoutCommand): string {
         }
       : {}),
     extras: cmd.extras.map((e) => ({ serviceId: e.serviceId, staffId: e.staffId })),
+    // Solo si hay productos: la huella de un cobro sin productos no cambia con la fase C.
+    ...(cmd.products?.length
+      ? { products: cmd.products.map((p) => ({ productId: p.productId, quantity: p.quantity, staffId: p.staffId })) }
+      : {}),
     discounts: cmd.discounts.map((d) => ({ key: d.key, amount: d.amount.minor, reason: d.reason.trim() })),
     tips: cmd.tips.map((t) => ({ staffId: t.staffId, amount: t.amount.minor })),
     payments: cmd.payments.map((p) => ({ methodId: p.methodId, amount: p.amount.minor, tendered: p.tendered?.minor ?? null })),
@@ -161,8 +174,9 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
     // tiene cita: sus servicios llegan en `extras` y su idempotencia es la de la venta.
     const appt = cmd.appointmentId === null ? null : await lockAppointment(tx, cmd.locationId, cmd.appointmentId);
     let clientId: bigint | null = appt?.clientId ?? null;
+    const productItems = cmd.products ?? [];
     if (!appt) {
-      if (cmd.extras.length === 0) throw new CheckoutError("Elige al menos un servicio");
+      if (cmd.extras.length === 0 && productItems.length === 0) throw new CheckoutError("Elige al menos un servicio o un producto");
       if (cmd.newClient && cmd.clientId != null) throw new CheckoutError("Elige un cliente existente o uno nuevo, no los dos");
       if (cmd.newClient) {
         // En la misma transacción SERIALIZABLE: un reintento lo vuelve a crear o lo encuentra por celular.
@@ -186,7 +200,18 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
       .from(services)
       .where(and(eq(services.locationId, cmd.locationId), inArray(services.id, serviceIds)));
     const svc = new Map(svcRows.map((s) => [s.id, s]));
-    const staffIds = [...new Set([...cmd.extras.map((e) => e.staffId), ...cmd.tips.map((t) => t.staffId)])];
+    // Productos: precio y comisión del catálogo de la sede, en este momento (se congelan en la línea).
+    const productIds = [...new Set(productItems.map((p) => p.productId))];
+    const productRows = productIds.length
+      ? await tx
+          .select({ id: products.id, name: products.name, price: products.price, commissionBps: products.commissionBps, active: products.active })
+          .from(products)
+          .where(and(eq(products.locationId, cmd.locationId), inArray(products.id, productIds)))
+      : [];
+    const productById = new Map(productRows.map((p) => [p.id, p]));
+    const staffIds = [
+      ...new Set([...cmd.extras.map((e) => e.staffId), ...productItems.map((p) => p.staffId), ...cmd.tips.map((t) => t.staffId)]),
+    ];
     const staffRows = staffIds.length
       ? await tx
           .select({ id: staffMembers.id })
@@ -201,7 +226,8 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
       // Toda clave debe nombrar exactamente una línea de esta venta; una desconocida se rechaza (L7).
       const isAppointment = d.key === APPOINTMENT_LINE_KEY && appt !== null;
       const isExtra = EXTRA_KEY.test(d.key) && Number(d.key.slice(6)) < cmd.extras.length;
-      if (!isAppointment && !isExtra) throw new CheckoutError("El descuento no corresponde a ningún servicio");
+      const isProduct = PRODUCT_KEY.test(d.key) && Number(d.key.slice(8)) < productItems.length;
+      if (!isAppointment && !isExtra && !isProduct) throw new CheckoutError("El descuento no corresponde a ninguna línea de la venta");
       if (discounts.has(d.key)) throw new CheckoutError("Hay dos descuentos para el mismo servicio");
       discounts.set(d.key, { amount: d.amount, reason: d.reason.trim() });
     }
@@ -211,14 +237,16 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
     for (const d of discounts.values()) if (d.reason.length > 200) throw new CheckoutError("El motivo del descuento es muy largo");
 
     const zero = money(0n);
-    const lineFor = (key: string, base: { serviceId: bigint; staffId: bigint; description: string; price: bigint }): CheckoutLineInput & {
-      serviceId: bigint;
-    } => {
+    type SaleLineDraft = CheckoutLineInput & { serviceId: bigint | null; productId: bigint | null };
+    const lineFor = (key: string, base: { serviceId: bigint; staffId: bigint; description: string; price: bigint }): SaleLineDraft => {
       const s = svc.get(base.serviceId);
       if (!s) throw new CheckoutError("Un servicio de la venta no existe");
       const d = discounts.get(key);
       return {
+        kind: "service",
+        quantity: 1,
         serviceId: base.serviceId,
+        productId: null,
         staffId: base.staffId,
         description: base.description,
         unitPrice: money(base.price),
@@ -235,6 +263,23 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
         const s = svc.get(e.serviceId);
         if (!s?.active) throw new CheckoutError("Un servicio adicional no existe o ya no se ofrece");
         return lineFor(`extra:${i}`, { serviceId: e.serviceId, staffId: e.staffId, description: s.name, price: s.price });
+      }),
+      ...productItems.map((item, i): SaleLineDraft => {
+        const p = productById.get(item.productId);
+        if (!p?.active) throw new CheckoutError("Un producto no existe o ya no se vende");
+        const d = discounts.get(`product:${i}`);
+        return {
+          kind: "product",
+          quantity: item.quantity,
+          serviceId: null,
+          productId: p.id,
+          staffId: item.staffId,
+          description: p.name,
+          unitPrice: money(p.price),
+          discount: d?.amount ?? zero,
+          discountReason: d?.amount.minor ? d.reason : undefined,
+          commissionBps: BigInt(p.commissionBps),
+        };
       }),
     ];
 
@@ -271,7 +316,8 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
     }
 
     const publicId = ulid(now.getTime());
-    const memo = `Venta ${publicId}: ${priced.lines.map((l) => l.description).join(", ")}`.slice(0, 300);
+    const itemsText = priced.lines.map((l) => (l.quantity > 1 ? `${l.description} ×${l.quantity}` : l.description)).join(", ");
+    const memo = `Venta ${publicId}: ${itemsText}`.slice(0, 300);
     const posted = await postEntry(tx, {
       locationId: cmd.locationId,
       createdBy: cmd.actor.userId,
@@ -301,7 +347,10 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
         locationId: cmd.locationId,
         saleId,
         position: i,
+        kind: l.kind,
+        quantity: l.quantity,
         serviceId: lines[i]!.serviceId,
+        productId: lines[i]!.productId,
         staffId: l.staffId,
         description: l.description,
         unitPrice: l.unitPrice.minor,
@@ -344,7 +393,7 @@ export async function checkout(db: Db, cmd: CheckoutCommand): Promise<{ saleId: 
         cashSessionId: session.id,
         kind: "sale",
         journalEntryId: posted.entryId,
-        description: `Venta: ${priced.lines.map((l) => l.description).join(", ")}`.slice(0, 200),
+        description: `Venta: ${itemsText}`.slice(0, 200),
         createdBy: cmd.actor.userId,
       });
     }
@@ -375,7 +424,16 @@ export interface SaleDetail {
   clientName: string | null;
   journalEntryId: bigint;
   totalPaid: bigint;
-  lines: { description: string; staffId: bigint; unitPrice: bigint; discount: bigint; net: bigint; commission: bigint }[];
+  lines: {
+    kind: "service" | "product";
+    quantity: number;
+    description: string;
+    staffId: bigint;
+    unitPrice: bigint;
+    discount: bigint;
+    net: bigint;
+    commission: bigint;
+  }[];
   tips: { staffId: bigint; staffName: string; amount: bigint; payable: bigint }[];
   payments: { kind: string; label: string; amount: bigint; tendered: bigint | null; change: bigint | null; fee: bigint }[];
 }
@@ -404,6 +462,8 @@ export async function saleDetail(db: Db, locationId: bigint, saleId: bigint): Pr
   const [lines, tips, payments] = await Promise.all([
     db
       .select({
+        kind: saleLines.kind,
+        quantity: saleLines.quantity,
         description: saleLines.description,
         staffId: saleLines.staffId,
         unitPrice: saleLines.unitPrice,
@@ -436,6 +496,15 @@ export async function saleDetail(db: Db, locationId: bigint, saleId: bigint): Pr
   return { ...sale, lines, tips, payments };
 }
 
+/** Productos activos de la sede, para la hoja de cobro (el servidor vuelve a leer precio y comisión al cobrar). */
+async function sellableProducts(db: Db, locationId: bigint) {
+  return db
+    .select({ id: products.id, name: products.name, price: products.price, commissionBps: products.commissionBps })
+    .from(products)
+    .where(and(eq(products.locationId, locationId), eq(products.active, true)))
+    .orderBy(asc(products.name));
+}
+
 /** Lo que necesita la hoja de cobro, leído de la base (el servidor vuelve a leerlo al cobrar). */
 export async function checkoutContext(db: Db, input: { locationId: bigint; appointmentId: bigint; now?: Date }) {
   const now = input.now ?? new Date();
@@ -459,7 +528,7 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
   if (!appt) return null;
   const rules = await checkoutRulesOf(db, input.locationId);
   const day = businessDate(now, rules.timeZone);
-  const [extraServices, staff, methods, session, dayClosed, paid] = await Promise.all([
+  const [extraServices, staff, methods, session, dayClosed, paid, productList] = await Promise.all([
     db
       .select({ id: services.id, name: services.name, price: services.price, commissionBps: services.commissionBps })
       .from(services)
@@ -478,6 +547,7 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
     sessionOpenOn(db, input.locationId, day),
     isDayClosed(db, input.locationId, day),
     paidSaleForAppointment(db, input.locationId, input.appointmentId),
+    sellableProducts(db, input.locationId),
   ]);
   const doing = await serviceIdsByStaff(db, input.locationId);
   return {
@@ -485,6 +555,7 @@ export async function checkoutContext(db: Db, input: { locationId: bigint; appoi
     rules,
     businessDate: day,
     extraServices,
+    products: productList,
     staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
     methods,
     cashSessionOpen: session,
@@ -498,7 +569,7 @@ export async function walkInCheckoutContext(db: Db, input: { locationId: bigint;
   const now = input.now ?? new Date();
   const rules = await checkoutRulesOf(db, input.locationId);
   const day = businessDate(now, rules.timeZone);
-  const [services_, staff, methods, session, dayClosed] = await Promise.all([
+  const [services_, staff, methods, session, dayClosed, productList] = await Promise.all([
     db
       .select({ id: services.id, name: services.name, price: services.price, commissionBps: services.commissionBps })
       .from(services)
@@ -516,12 +587,14 @@ export async function walkInCheckoutContext(db: Db, input: { locationId: bigint;
       .orderBy(asc(paymentMethods.id)),
     sessionOpenOn(db, input.locationId, day),
     isDayClosed(db, input.locationId, day),
+    sellableProducts(db, input.locationId),
   ]);
   const doing = await serviceIdsByStaff(db, input.locationId);
   return {
     rules,
     businessDate: day,
     services: services_,
+    products: productList,
     staff: staff.map((s) => ({ ...s, serviceIds: doing.get(s.id) ?? [] })),
     methods,
     cashSessionOpen: session,

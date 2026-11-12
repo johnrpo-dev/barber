@@ -137,10 +137,14 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
    - acciones en `authorization.test.ts` (matriz, IDOR, reautenticación y bitácora); productos de ejemplo en `seed-demo`.
    - La pantalla del conteo queda para la fase D (la función ya existe y está probada).
    - **Anular una compra (hecho, migración 0033):** "Compras recientes" en Productos, solo el dueño; reglas arriba. Aviso de costo alto antes de registrar.
-3. **C, vender:**
-   - migración de `sale_lines` y `sales_assert_totals`;
-   - `checkout`, anulación, hoja de cobro, recibos;
-   - informes por barbero y por servicio con `kind = 'service'` y bruto `unit_price × quantity`.
+3. **C, vender (hecho, migración 0034):**
+   - `sale_lines`: `kind` (`service` o `product`), `product_id` y `quantity`; un CHECK exige exactamente uno de servicio o producto, un servicio de a uno y un producto de 1 a 99 unidades. `unit_price` es por unidad; el bruto es `unit_price × quantity` y los CHECK de monto y comisión lo usan.
+   - `sales_assert_totals`: subtotal = Σ precio × unidades; 4170 = neto de servicios y 4135 = neto de productos. Además, el asiento de una venta solo puede tocar sus cuentas (1105, 1110, 5305, 4170, 4135, 2380, 5105, 2335).
+   - `checkout`: productos con unidades y quien vende (recibe la comisión del producto); precio y comisión salen del catálogo de la sede; descuentos con la clave `product:<i>` y las mismas reglas (tope sobre el bruto de todas las unidades, permiso y motivo). Un cobro sin cita puede ser solo de productos (mostrador). La huella de idempotencia de un cobro sin productos no cambió.
+   - Hoja de cobro: "Agregar producto" (producto, unidades, "Lo vendió"; por defecto, el barbero de la cita o quien cobra). Vender un producto no abre una fila de propina, y la propina por porcentaje se calcula sobre los servicios.
+   - La anulación no cambió: es la reversa exacta del asiento (devuelve 4135 y la comisión).
+   - Recibos, historial y movimiento de caja muestran las unidades ("Cera ×2", "2 × $25.000").
+   - Informes: por servicio, solo servicios. Por barbero, servicios, bruto, descuento y neto siguen siendo de servicios (la suma del neto es 4170), una columna "Productos" con el neto vendido por cada quien (la suma es 4135) y la comisión de todo lo que atendió o vendió (la misma que se liquida). Inicio cuenta solo servicios.
 4. **D, conteo e informes:**
    - pantalla de conteo e informe de diferencias en unidades;
    - margen del mes (4135 − 6135).

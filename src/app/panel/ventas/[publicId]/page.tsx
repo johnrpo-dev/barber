@@ -60,10 +60,10 @@ export default async function SaleReceiptPage({ params }: { params: Promise<{ pu
           ) : null}
 
           <table className="w-full border-collapse text-left">
-            <caption className="sr-only">Servicios</caption>
+            <caption className="sr-only">Servicios y productos</caption>
             <thead className="sr-only">
               <tr>
-                <th scope="col">Servicio y barbero</th>
+                <th scope="col">Concepto y quién lo hizo o vendió</th>
                 <th scope="col">Valor</th>
               </tr>
             </thead>
@@ -73,9 +73,10 @@ export default async function SaleReceiptPage({ params }: { params: Promise<{ pu
                   <td className="py-1 pr-2">
                     {l.description}
                     <span className="block text-xs text-tinta/70 print:text-[10px]">{l.staffName}</span>
-                    {l.discountLabel ? (
+                    {l.discountLabel || l.hasQuantity ? (
                       <span className="monto block text-xs text-tinta/70 print:text-[10px]">
-                        {l.unitPriceLabel} · descuento {l.discountLabel}
+                        {l.unitPriceLabel}
+                        {l.discountLabel ? ` · descuento ${l.discountLabel}` : null}
                       </span>
                     ) : null}
                   </td>

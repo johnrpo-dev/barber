@@ -33,7 +33,8 @@ export interface SaleReceipt {
   discount: bigint;
   tips: bigint;
   totalPaid: bigint;
-  lines: { description: string; staffName: string; unitPrice: bigint; discount: bigint; net: bigint }[];
+  /** unitPrice es de UNA unidad; quantity es 1 en un servicio (sprint 6: productos con unidades). */
+  lines: { description: string; quantity: number; staffName: string; unitPrice: bigint; discount: bigint; net: bigint }[];
   tipLines: { staffName: string; amount: bigint }[];
   payments: { kind: string; label: string; amount: bigint; tendered: bigint | null; change: bigint | null }[];
 }
@@ -70,6 +71,7 @@ export async function saleReceipt(db: Db, input: { locationId: bigint; publicId:
     db
       .select({
         description: saleLines.description,
+        quantity: saleLines.quantity,
         staffName: staffMembers.displayName,
         unitPrice: saleLines.unitPrice,
         discount: saleLines.discount,
@@ -253,7 +255,7 @@ export async function enqueueSaleReceipt(
       number: saleNumber(input.publicId),
       date: `${dateLabel}, ${timeLabel}`,
       items: itemsText(
-        receipt.lines.map((l) => l.description),
+        receipt.lines.map((l) => (l.quantity > 1 ? `${l.description} ×${l.quantity}` : l.description)),
         receipt.tipLines.length > 0,
       ),
       total: format(money(receipt.totalPaid)),

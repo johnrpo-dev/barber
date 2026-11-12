@@ -69,17 +69,36 @@ export async function profitAndLoss(db: Db, q: ReportQuery): Promise<{ rows: Acc
 }
 
 export async function salesByStaff(db: Db, q: ReportQuery) {
-  const rows = rowsOf<{ staff_id: string; name: string; services: string; gross: string; discount: string; net: string; commission: string; tips: string }>(
+  const rows = rowsOf<{
+    staff_id: string;
+    name: string;
+    services: string;
+    gross: string;
+    discount: string;
+    net: string;
+    products_net: string;
+    commission: string;
+    tips: string;
+  }>(
     await db.execute(sql`
-      with lines as (
-        select l.staff_id, sum(f.sign) as services, sum(f.sign * l.unit_price) as gross, sum(f.sign * l.discount) as discount,
-               sum(f.sign * l.net) as net, sum(f.sign * l.commission) as commission
+      with by_line as (
+        -- Servicios: cantidad, bruto, descuento y neto (la suma del neto es 4170). Productos (sprint 6):
+        -- su neto aparte (la suma es 4135). La comisión es la de todo lo que la persona atendió o vendió,
+        -- la misma que se liquida.
+        select l.staff_id,
+               coalesce(sum(f.sign) filter (where l.kind = 'service'), 0) as services,
+               coalesce(sum(f.sign * l.unit_price * l.quantity) filter (where l.kind = 'service'), 0) as gross,
+               coalesce(sum(f.sign * l.discount) filter (where l.kind = 'service'), 0) as discount,
+               coalesce(sum(f.sign * l.net) filter (where l.kind = 'service'), 0) as net,
+               coalesce(sum(f.sign * l.net) filter (where l.kind = 'product'), 0) as products_net,
+               sum(f.sign * l.commission) as commission
           from ${saleEffects(q)} f join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
          where l.location_id = ${loc(q)}
          group by l.staff_id
+      ), lines as (
         -- Fuera solo lo que se anula en TODAS las columnas (una venta y su anulación en el rango).
-        having sum(f.sign) <> 0 or sum(f.sign * l.unit_price) <> 0 or sum(f.sign * l.discount) <> 0
-            or sum(f.sign * l.net) <> 0 or sum(f.sign * l.commission) <> 0
+        select * from by_line
+         where services <> 0 or gross <> 0 or discount <> 0 or net <> 0 or products_net <> 0 or commission <> 0
       ), tips as (
         select t.staff_id, sum(f.sign * t.amount) as tips
           from ${saleEffects(q)} f join sale_tips t on t.location_id = f.location_id and t.sale_id = f.sale_id
@@ -89,6 +108,7 @@ export async function salesByStaff(db: Db, q: ReportQuery) {
       )
       select m.id::text as staff_id, m.display_name as name, coalesce(l.services, 0)::text as services,
              coalesce(l.gross, 0)::text as gross, coalesce(l.discount, 0)::text as discount, coalesce(l.net, 0)::text as net,
+             coalesce(l.products_net, 0)::text as products_net,
              coalesce(l.commission, 0)::text as commission, coalesce(t.tips, 0)::text as tips
         from staff_members m
         left join lines l on l.staff_id = m.id
@@ -104,6 +124,8 @@ export async function salesByStaff(db: Db, q: ReportQuery) {
     gross: BigInt(r.gross),
     discount: BigInt(r.discount),
     net: BigInt(r.net),
+    /** Neto de los productos que vendió (4135). */
+    productsNet: BigInt(r.products_net),
     commission: BigInt(r.commission),
     tips: BigInt(r.tips),
   }));
@@ -112,15 +134,16 @@ export async function salesByStaff(db: Db, q: ReportQuery) {
 export async function salesByService(db: Db, q: ReportQuery) {
   const rows = rowsOf<{ service_id: string; name: string; services: string; gross: string; discount: string; net: string; commission: string; total_net: string }>(
     await db.execute(sql`
-      select sv.id::text as service_id, sv.name, sum(f.sign)::text as services, sum(f.sign * l.unit_price)::text as gross,
+      -- Solo líneas de servicio (las de producto no tienen service_id); bruto = precio × unidades.
+      select sv.id::text as service_id, sv.name, sum(f.sign)::text as services, sum(f.sign * l.unit_price * l.quantity)::text as gross,
              sum(f.sign * l.discount)::text as discount, sum(f.sign * l.net)::text as net, sum(f.sign * l.commission)::text as commission,
              sum(sum(f.sign * l.net)) over ()::text as total_net
         from ${saleEffects(q)} f
         join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
         join services sv on sv.location_id = l.location_id and sv.id = l.service_id
-       where l.location_id = ${loc(q)}
+       where l.location_id = ${loc(q)} and l.kind = 'service'
        group by sv.id, sv.name
-      having sum(f.sign) <> 0 or sum(f.sign * l.unit_price) <> 0 or sum(f.sign * l.discount) <> 0
+      having sum(f.sign) <> 0 or sum(f.sign * l.unit_price * l.quantity) <> 0 or sum(f.sign * l.discount) <> 0
           or sum(f.sign * l.net) <> 0 or sum(f.sign * l.commission) <> 0
        order by sum(f.sign * l.net) desc, sv.name, sv.id
     `),
@@ -468,7 +491,7 @@ async function servicesOfDay(db: Db, locationId: bigint, day: string): Promise<n
       select coalesce(sum(f.sign), 0)::text as n
         from ${saleEffects({ locationId, from: day, to: day })} f
         join sale_lines l on l.location_id = f.location_id and l.sale_id = f.sale_id
-       where l.location_id = ${locationId}::bigint
+       where l.location_id = ${locationId}::bigint and l.kind = 'service'
     `),
   );
   return Number(row?.n ?? "0");

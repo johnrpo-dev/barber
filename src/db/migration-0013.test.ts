@@ -96,8 +96,10 @@ const AUDIT_STUB = `create table audit_events (id bigint generated always as ide
  * createLocation). Se agregan sobre la base en 0012 para usar las funciones de hoy, y se quitan
  * antes de migrar para que cada migración las cree como en el VPS.
  */
-const LATER_COLUMNS_STUB = `alter table locations add column tax_id text, add column receipt_footer text, add column walk_in_guard_min integer not null default 60, add column no_show_limit integer not null default 2, add column booking_requires_code boolean not null default false; alter table clients add column no_shows_cleared_at timestamptz`;
-const DROP_LATER_COLUMNS = `alter table locations drop column tax_id, drop column receipt_footer, drop column walk_in_guard_min, drop column no_show_limit, drop column booking_requires_code; alter table clients drop column no_shows_cleared_at`;
+const LATER_COLUMNS_STUB = `alter table locations add column tax_id text, add column receipt_footer text, add column walk_in_guard_min integer not null default 60, add column no_show_limit integer not null default 2, add column booking_requires_code boolean not null default false; alter table clients add column no_shows_cleared_at timestamptz;
+  alter table sale_lines add column product_id bigint, add column quantity integer not null default 1`;
+const DROP_LATER_COLUMNS = `alter table locations drop column tax_id, drop column receipt_footer, drop column walk_in_guard_min, drop column no_show_limit, drop column booking_requires_code; alter table clients drop column no_shows_cleared_at;
+  alter table sale_lines drop column product_id, drop column quantity`;
 /**
  * staff_services (0019): las funciones de hoy asignan servicios al crear personas y servicios.
  * appointment_courtesies (0026): el cobro de hoy rechaza una cita con cortesía.

@@ -1085,10 +1085,16 @@ export const saleLines = pgTable(
     locationId: locationId(),
     saleId: bigint("sale_id", { mode: "bigint" }).notNull(),
     position: smallint("position").notNull(),
-    kind: text("kind", { enum: ["service"] }).notNull().default("service"),
-    serviceId: bigint("service_id", { mode: "bigint" }).notNull(),
+    /** Servicio (4170) o producto (4135, sprint 6 fase C). Exactamente uno de service_id y product_id. */
+    kind: text("kind", { enum: ["service", "product"] }).notNull().default("service"),
+    serviceId: bigint("service_id", { mode: "bigint" }),
+    productId: bigint("product_id", { mode: "bigint" }),
+    /** Unidades: un servicio siempre 1; un producto, de 1 a 99. */
+    quantity: integer("quantity").notNull().default(1),
+    /** Quien atendió o vendió (recibe la comisión de la línea). */
     staffId: bigint("staff_id", { mode: "bigint" }).notNull(),
     description: text("description").notNull(),
+    /** Precio de UNA unidad; el bruto de la línea es unit_price × quantity. */
     unitPrice: amount("unit_price").notNull(),
     discount: amount("discount").notNull(),
     discountReason: text("discount_reason"),
@@ -1105,16 +1111,26 @@ export const saleLines = pgTable(
       columns: [t.locationId, t.staffId],
       foreignColumns: [staffMembers.locationId, staffMembers.id],
     }),
-    check("sale_lines_kind_check", sql`${t.kind} in ('service')`),
+    foreignKey({ name: "sale_lines_product_fk", columns: [t.locationId, t.productId], foreignColumns: [products.locationId, products.id] }),
+    check("sale_lines_kind_check", sql`${t.kind} in ('service', 'product')`),
+    // Exactamente uno: un servicio de a uno, o un producto de 1 a 99 unidades (0034).
+    check(
+      "sale_lines_item_check",
+      sql`(${t.kind} = 'service' and ${t.serviceId} is not null and ${t.productId} is null and ${t.quantity} = 1)
+        or (${t.kind} = 'product' and ${t.productId} is not null and ${t.serviceId} is null and ${t.quantity} between 1 and 99)`,
+    ),
     check(
       "sale_lines_amounts_check",
-      sql`${t.unitPrice} >= 0 and ${t.discount} >= 0 and ${t.discount} <= ${t.unitPrice} and ${t.net} = ${t.unitPrice} - ${t.discount}
+      sql`${t.unitPrice} >= 0 and ${t.discount} >= 0 and ${t.discount} <= ${t.unitPrice} * ${t.quantity}
+        and ${t.net} = ${t.unitPrice} * ${t.quantity} - ${t.discount}
         and ${t.commission} >= 0 and ${t.commissionBps} between 0 and 10000`,
     ),
-    // La comisión nunca supera el precio de la línea (0011).
-    check("sale_lines_commission_check", sql`${t.commission} <= ${t.unitPrice}`),
+    // La comisión nunca supera el bruto de la línea (0011; 0034 con unidades).
+    check("sale_lines_commission_check", sql`${t.commission} <= ${t.unitPrice} * ${t.quantity}`),
     check("sale_lines_discount_reason_check", sql`${t.discount} = 0 or length(trim(${t.discountReason})) > 0`),
     index("sale_lines_staff_idx").on(t.locationId, t.staffId),
+    // Unidades vendidas por producto (informe del conteo, fase D).
+    index("sale_lines_product_idx").on(t.locationId, t.productId).where(sql`${t.productId} is not null`),
     // Los saldos por persona (0013) solo miran líneas con comisión.
     index("sale_lines_staff_commission_idx").on(t.locationId, t.staffId).where(sql`${t.commission} > 0`),
     // Para las FK compuestas de las líneas de liquidación (sprint 5).

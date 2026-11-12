@@ -59,7 +59,20 @@ export type ReportView = {
     profitLabel: string;
     marginLabel: string | null;
   };
-  byStaff: { staffId: string; name: string; services: number; grossLabel: string; discountLabel: string; netMinor: string; netLabel: string; commissionLabel: string; tipsLabel: string }[];
+  /** Servicios en bruto, descuento y neto; productos (sprint 6) en su neto; la comisión es de todo. */
+  byStaff: {
+    staffId: string;
+    name: string;
+    services: number;
+    grossLabel: string;
+    discountLabel: string;
+    netMinor: string;
+    netLabel: string;
+    productsNetMinor: string;
+    productsNetLabel: string;
+    commissionLabel: string;
+    tipsLabel: string;
+  }[];
   byService: { serviceId: string; name: string; services: number; netMinor: string; netLabel: string; shareLabel: string | null }[];
   payments: { kind: "cash" | "card" | "transfer" | "wallet"; label: string; payments: number; amountMinor: string; amountLabel: string; feesLabel: string; shareLabel: string | null }[];
   tips: { rows: { staffId: string; name: string; tipsLabel: string; feeShareLabel: string; payableLabel: string; paidOutLabel: string }[]; totalLabel: string };
@@ -135,6 +148,8 @@ export async function loadReport(raw: z.input<typeof periodInput>): Promise<Acti
           discountLabel: moneyLabel(r.discount),
           netMinor: minorText(r.net),
           netLabel: moneyLabel(r.net),
+          productsNetMinor: minorText(r.productsNet),
+          productsNetLabel: moneyLabel(r.productsNet),
           commissionLabel: moneyLabel(r.commission),
           tipsLabel: moneyLabel(r.tips),
         })),
@@ -269,8 +284,17 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
     }
     case "by_staff":
       return {
-        header: ["Persona", "Servicios", "Bruto", "Descuentos", "Neto", "Comisión", "Propinas"],
-        rows: (await salesByStaff(tx, q)).map((r) => [text(r.name), count(r.services), pesos(r.gross), pesos(r.discount), pesos(r.net), pesos(r.commission), pesos(r.tips)]),
+        header: ["Persona", "Servicios", "Bruto", "Descuentos", "Neto servicios", "Neto productos", "Comisión", "Propinas"],
+        rows: (await salesByStaff(tx, q)).map((r) => [
+          text(r.name),
+          count(r.services),
+          pesos(r.gross),
+          pesos(r.discount),
+          pesos(r.net),
+          pesos(r.productsNet),
+          pesos(r.commission),
+          pesos(r.tips),
+        ]),
       };
     case "by_service":
       return {
@@ -316,7 +340,7 @@ async function csvContent(tx: Db, report: CsvReport, locationId: bigint, period:
       // anulación: la reversa va ese día). Sin datos del cliente.
       const rows = await salesDetail(tx, { ...q, limit: CSV_MAX_ROWS + 1 });
       return {
-        header: ["Fecha", "Hora", "Número", "Estado", "Anulada el (día contable)", "Servicios", "Atendió", "Servicios (bruto)", "Descuento", "Propina", "Total cobrado", "Efectivo", "Otros medios", "Medios"],
+        header: ["Fecha", "Hora", "Número", "Estado", "Anulada el (día contable)", "Servicios y productos", "Atendió o vendió", "Subtotal (bruto)", "Descuento", "Propina", "Total cobrado", "Efectivo", "Otros medios", "Medios"],
         rows: rows.map((r) => [
           date(r.businessDate),
           text(r.time),

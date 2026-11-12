@@ -3,7 +3,7 @@
 import { TZDate } from "@date-fns/tz";
 import { format as formatDate } from "date-fns";
 import { es } from "date-fns/locale";
-import { Banknote, CheckCircle2, Lock, Percent, Plus, Printer, Receipt as ReceiptIcon, Share2, Trash2, X } from "lucide-react";
+import { Banknote, CheckCircle2, Lock, Minus, Percent, Plus, Printer, Receipt as ReceiptIcon, Share2, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input, Label, Radio, RadioGroup, TextField, ToggleButton, ToggleButtonGroup } from "react-aria-components";
@@ -77,7 +77,7 @@ export function CheckoutSheet({
         }
       }}
       title={appointmentId === null ? "Cobrar sin cita" : "Cobrar"}
-      description={appointmentId === null ? "Elige los servicios y quién los hizo." : (clientName ?? undefined)}
+      description={appointmentId === null ? "Elige qué se cobra y quién lo hizo o lo vendió." : (clientName ?? undefined)}
     >
       {isOpen ? (
         <CheckoutLoader
@@ -195,16 +195,31 @@ interface PayRow {
   digits: string;
   tendered: string;
 }
+/** Un producto agregado al cobro (sprint 6, fase C). */
+interface ProductItem {
+  uid: string;
+  productId: string;
+  staffId: string;
+  quantity: number;
+}
 interface UiLine {
-  /** Clave en la interfaz: el `key` del servidor o `x:<uid>` para un extra. */
+  /** Clave en la interfaz: el `key` del servidor, `x:<uid>` para un extra o `p:<uid>` para un producto. */
   uiKey: string;
+  kind: "service" | "product";
   extraUid: string | null;
+  productUid: string | null;
   name: string;
   staffId: string;
   staffName: string;
+  /** Precio de una unidad. */
   unit: bigint;
+  /** Unidades: 1 en un servicio. */
+  quantity: number;
   commissionBps: bigint;
 }
+
+/** Bruto de la línea: precio × unidades, exacto en bigint. */
+const grossOf = (l: UiLine) => l.unit * BigInt(l.quantity);
 
 type Errors = {
   summary?: string;
@@ -218,6 +233,7 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
   const [cashOpen, setCashOpen] = useState(view.cashSessionOpen);
   const [dayClosed, setDayClosed] = useState(view.dayClosed);
   const [extras, setExtras] = useState<Extra[]>([]);
+  const [productItems, setProductItems] = useState<ProductItem[]>([]);
   const [discounts, setDiscounts] = useState<Record<string, Discount>>({});
   const [tips, setTips] = useState<Record<string, Tip>>({});
   const [extraTipStaff, setExtraTipStaff] = useState<string[]>([]);
@@ -250,16 +266,19 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
   const methodById = (id: string) => view.methods.find((m) => m.id === id);
   const staffName = (id: string) => view.staff.find((s) => s.id === id)?.name ?? "";
 
-  // Líneas: las de la cita y los extras.
+  // Líneas: las de la cita, los extras y los productos.
   const lines: UiLine[] = useMemo(
     () => [
       ...view.lines.map((l) => ({
         uiKey: l.key,
+        kind: "service" as const,
         extraUid: null,
+        productUid: null,
         name: l.serviceName,
         staffId: l.staffId,
         staffName: l.staffName,
         unit: big(l.unitPriceMinor),
+        quantity: 1,
         commissionBps: big(l.commissionBps),
       })),
       ...extras.flatMap((x) => {
@@ -268,18 +287,39 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         return [
           {
             uiKey: `x:${x.uid}`,
+            kind: "service" as const,
             extraUid: x.uid,
+            productUid: null,
             name: s.name,
             staffId: x.staffId,
             staffName: staffName(x.staffId),
             unit: big(s.unitPriceMinor),
+            quantity: 1,
             commissionBps: big(s.commissionBps),
+          },
+        ];
+      }),
+      ...productItems.flatMap((p) => {
+        const product = view.products.find((e) => e.productId === p.productId);
+        if (!product) return [];
+        return [
+          {
+            uiKey: `p:${p.uid}`,
+            kind: "product" as const,
+            extraUid: null,
+            productUid: p.uid,
+            name: product.name,
+            staffId: p.staffId,
+            staffName: staffName(p.staffId),
+            unit: big(product.unitPriceMinor),
+            quantity: p.quantity,
+            commissionBps: big(product.commissionBps),
           },
         ];
       }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [view, extras],
+    [view, extras, productItems],
   );
 
   const maxBps = big(view.rules.maxDiscountBps);
@@ -287,25 +327,27 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
     const d = discounts[l.uiKey];
     return d?.open ? unitsOf(d.digits) * PESO : 0n;
   };
-  /** Tope en pesos enteros: lo que pasa la comparación exacta descuento/precio ≤ tope. */
-  const capMinor = (l: UiLine) => ((l.unit * maxBps) / (10_000n * PESO)) * PESO;
+  /** Tope en pesos enteros: lo que pasa la comparación exacta descuento/bruto ≤ tope. */
+  const capMinor = (l: UiLine) => ((grossOf(l) * maxBps) / (10_000n * PESO)) * PESO;
   const netOf = (l: UiLine) => {
-    const n = l.unit - discountMinor(l);
+    const n = grossOf(l) - discountMinor(l);
     return n > 0n ? n : 0n;
   };
 
-  const subtotal = lines.reduce((a, l) => a + l.unit, 0n);
+  const subtotal = lines.reduce((a, l) => a + grossOf(l), 0n);
   const netTotal = lines.reduce((a, l) => a + netOf(l), 0n);
   const discountTotal = subtotal - netTotal;
 
-  // Propinas: una fila por barbero de las líneas, más las que se agreguen a mano.
-  const tipStaff = [...new Set([...lines.map((l) => l.staffId), ...extraTipStaff])];
+  // Propinas: una fila por barbero de los servicios, más las que se agreguen a mano (vender un
+  // producto no abre una fila de propina).
+  const serviceLines = lines.filter((l) => l.kind === "service");
+  const tipStaff = [...new Set([...serviceLines.map((l) => l.staffId), ...extraTipStaff])];
   const tipMinor = (staffId: string) => {
     const t = tips[staffId] ?? { mode: "0", digits: "" };
     if (t.mode === "otro") return unitsOf(t.digits) * PESO;
     const bps = TIP_CHOICES.find((c) => c.id === t.mode)?.bps ?? 0n;
     if (bps === 0n) return 0n;
-    const own = lines.filter((l) => l.staffId === staffId).reduce((a, l) => a + netOf(l), 0n);
+    const own = serviceLines.filter((l) => l.staffId === staffId).reduce((a, l) => a + netOf(l), 0n);
     // Porcentaje del neto, redondeado half-up al peso con money.ts (nunca con floats).
     return percentOf(money(own > 0n ? own : netTotal), bps, PESO).minor;
   };
@@ -354,7 +396,7 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
     const found: Errors = {};
     let focus: string | null = null;
     if (lines.length === 0) {
-      found.summary = "Elige al menos un servicio.";
+      found.summary = view.products.length > 0 ? "Elige al menos un servicio o un producto." : "Elige al menos un servicio.";
       return { errors: found, focus };
     }
     if (walkIn && client.kind === "new" && !clientIsReady(client, true)) {
@@ -402,6 +444,8 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
         priceCheckout(
           {
             lines: lines.map((l) => ({
+              kind: l.kind,
+              quantity: l.quantity,
               staffId: big(l.staffId),
               description: l.name,
               unitPrice: money(l.unit),
@@ -485,6 +529,9 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
       return;
     }
     const extraIndex = new Map(extras.map((x, i) => [x.uid, i]));
+    const productIndex = new Map(productItems.map((p, i) => [p.uid, i]));
+    const discountKey = (l: UiLine) =>
+      l.extraUid ? `extra:${extraIndex.get(l.extraUid)}` : l.productUid ? `product:${productIndex.get(l.productUid)}` : l.uiKey;
     const payload = {
       appointmentId: view.appointmentId,
       ...(walkIn
@@ -498,10 +545,11 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
           }
         : {}),
       extras: extras.map((x) => ({ serviceId: x.serviceId, staffId: x.staffId })),
+      products: productItems.map((p) => ({ productId: p.productId, quantity: p.quantity, staffId: p.staffId })),
       discounts: lines
         .filter((l) => discountMinor(l) > 0n)
         .map((l) => ({
-          key: l.extraUid ? `extra:${extraIndex.get(l.extraUid)}` : l.uiKey,
+          key: discountKey(l),
           amountUnits: (discountMinor(l) / PESO).toString(),
           reason: discounts[l.uiKey]!.reason.trim(),
         })),
@@ -563,9 +611,13 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
       {/* Servicios */}
       <section aria-labelledby="cobro-servicios" className="flex flex-col gap-3">
         <h3 id="cobro-servicios" className="text-xs font-semibold uppercase tracking-[0.16em] text-tinta/70">
-          Servicios
+          {view.products.length > 0 ? "Servicios y productos" : "Servicios"}
         </h3>
-        {lines.length === 0 ? <p className="text-sm text-tinta/70">Todavía no hay servicios: agrega el primero.</p> : null}
+        {lines.length === 0 ? (
+          <p className="text-sm text-tinta/70">
+            {view.products.length > 0 ? "Todavía no hay nada: agrega un servicio o un producto." : "Todavía no hay servicios: agrega el primero."}
+          </p>
+        ) : null}
         <ul className={cx("flex flex-col divide-y divide-tinta/10 rounded-xl border border-tinta/10 bg-papel", lines.length === 0 && "hidden")}>
           {lines.map((l) => (
             <LineRow
@@ -581,20 +633,45 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
                 setDiscounts((all) => ({ ...all, [l.uiKey]: d }));
                 clearError("discounts", l.uiKey);
               }}
-              onRemove={l.extraUid ? () => setExtras((xs) => xs.filter((x) => x.uid !== l.extraUid)) : undefined}
+              onRemove={
+                l.extraUid
+                  ? () => setExtras((xs) => xs.filter((x) => x.uid !== l.extraUid))
+                  : l.productUid
+                    ? () => {
+                        setProductItems((ps) => ps.filter((p) => p.uid !== l.productUid));
+                        // El descuento era de esa línea: se va con ella.
+                        setDiscounts(({ [l.uiKey]: _gone, ...rest }) => rest);
+                      }
+                    : undefined
+              }
             />
           ))}
         </ul>
-        {view.extraServices.length > 0 && lines.length < 20 ? (
-          <AddExtra
-            view={view}
-            initiallyOpen={walkIn && lines.length === 0}
-            defaultStaff={view.lines[0]?.staffId ?? extras[extras.length - 1]?.staffId ?? view.staff[0]?.id ?? ""}
-            onAdd={(x) => {
-              setExtras((xs) => [...xs, { ...x, uid: uid() }]);
-              clearError("summary");
-            }}
-          />
+        {lines.length < 20 && (view.extraServices.length > 0 || view.products.length > 0) ? (
+          <div className="flex flex-col gap-3 min-[400px]:flex-row min-[400px]:flex-wrap">
+            {view.extraServices.length > 0 ? (
+              <AddExtra
+                view={view}
+                initiallyOpen={walkIn && lines.length === 0 && view.products.length === 0}
+                defaultStaff={view.lines[0]?.staffId ?? extras[extras.length - 1]?.staffId ?? view.staff[0]?.id ?? ""}
+                onAdd={(x) => {
+                  setExtras((xs) => [...xs, { ...x, uid: uid() }]);
+                  clearError("summary");
+                }}
+              />
+            ) : null}
+            {view.products.length > 0 ? (
+              <AddProduct
+                view={view}
+                // Quien atendió la cita suele recomendarlo; en mostrador, quien cobra.
+                defaultStaff={view.lines[0]?.staffId ?? productItems[productItems.length - 1]?.staffId ?? view.actorStaffId}
+                onAdd={(p) => {
+                  setProductItems((ps) => [...ps, { ...p, uid: uid() }]);
+                  clearError("summary");
+                }}
+              />
+            ) : null}
+          </div>
         ) : null}
       </section>
 
@@ -727,7 +804,7 @@ function CheckoutForm({ view, onPaid, onReload }: { view: CheckoutView; onPaid: 
 
       {/* Totales */}
       <dl className="flex flex-col gap-1.5 rounded-xl border border-tinta/10 bg-hueso/40 p-4 text-sm">
-        <TotalRow label="Servicios" value={fmt(subtotal)} />
+        <TotalRow label={productItems.length > 0 ? "Subtotal" : "Servicios"} value={fmt(subtotal)} />
         {discountTotal > 0n ? <TotalRow label="Descuentos" value={`− ${fmt(discountTotal)}`} /> : null}
         {tipsTotal > 0n ? <TotalRow label="Propinas" value={fmt(tipsTotal)} /> : null}
         <div className="mt-1 flex items-baseline justify-between border-t border-tinta/10 pt-2">
@@ -820,27 +897,40 @@ function LineRow({
   onDiscount: (d: Discount) => void;
   onRemove?: () => void;
 }) {
-  const discounted = net !== line.unit;
+  const gross = grossOf(line);
+  const discounted = net !== gross;
   const reasonError = error?.startsWith("Escribe") ? error : undefined;
   const amountError = error && !reasonError ? error : undefined;
   return (
     <li className="flex flex-col gap-3 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-semibold">{line.name}</p>
-          <p className="text-sm text-tinta/70">{line.staffName}</p>
+          <p className="font-semibold">
+            {line.name}
+            {line.kind === "product" ? <span className="sr-only"> (producto)</span> : null}
+          </p>
+          {line.kind === "product" ? (
+            <p className="text-sm text-tinta/70">
+              <span className="monto">
+                {line.quantity} × {fmt(line.unit)}
+              </span>{" "}
+              · vendió {line.staffName}
+            </p>
+          ) : (
+            <p className="text-sm text-tinta/70">{line.staffName}</p>
+          )}
         </div>
         <div className="flex shrink-0 flex-col items-end">
           {discounted ? (
             <>
               <span className="monto text-xs text-tinta/70 line-through">
                 <span className="sr-only">Antes </span>
-                {fmt(line.unit)}
+                {fmt(gross)}
               </span>
               <span className="monto font-semibold">{fmt(net)}</span>
             </>
           ) : (
-            <span className="monto font-semibold">{fmt(line.unit)}</span>
+            <span className="monto font-semibold">{fmt(gross)}</span>
           )}
         </div>
       </div>
@@ -952,6 +1042,87 @@ function AddExtra({
             if (!serviceId || !staffId) return;
             onAdd({ serviceId, staffId });
             setServiceId(null);
+            setOpen(false);
+          }}
+        >
+          Agregar
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+const MAX_UNITS = 99;
+
+/** Agregar un producto: cuál, cuántas unidades y quién lo vendió (recibe la comisión del producto). */
+function AddProduct({
+  view,
+  defaultStaff,
+  onAdd,
+}: {
+  view: CheckoutView;
+  defaultStaff: string;
+  onAdd: (p: { productId: string; quantity: number; staffId: string }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [productId, setProductId] = useState<string | null>(null);
+  const [quantity, setQuantity] = useState(1);
+  const [staffId, setStaffId] = useState<string | null>(view.staff.some((s) => s.id === defaultStaff) ? defaultStaff : null);
+  const product = view.products.find((p) => p.productId === productId);
+  if (!open) {
+    return (
+      <Btn variant="secondary" onPress={() => setOpen(true)} className="self-start">
+        <Plus size={16} aria-hidden /> Agregar producto
+      </Btn>
+    );
+  }
+  return (
+    <div className="flex w-full flex-col gap-3 rounded-xl border border-dashed border-tinta/20 p-3">
+      <SelectField
+        label="Producto"
+        options={view.products.map((p) => ({ id: p.productId, label: p.name, description: p.unitPriceLabel }))}
+        value={productId}
+        onChange={setProductId}
+      />
+      <div className="flex flex-col gap-1">
+        <span id="add-product-units" className="text-sm font-semibold">
+          Unidades
+        </span>
+        <div className="flex items-center gap-3" role="group" aria-labelledby="add-product-units">
+          <Btn variant="secondary" size="sm" className="h-11 w-11" isDisabled={quantity <= 1} onPress={() => setQuantity((q) => Math.max(1, q - 1))}>
+            <Minus size={16} aria-hidden />
+            <span className="sr-only">Una unidad menos</span>
+          </Btn>
+          <output className="monto min-w-8 text-center text-lg font-semibold" aria-live="polite">
+            {quantity}
+          </output>
+          <Btn
+            variant="secondary"
+            size="sm"
+            className="h-11 w-11"
+            isDisabled={quantity >= MAX_UNITS}
+            onPress={() => setQuantity((q) => Math.min(MAX_UNITS, q + 1))}
+          >
+            <Plus size={16} aria-hidden />
+            <span className="sr-only">Una unidad más</span>
+          </Btn>
+          {product ? (
+            <span className="monto text-sm text-tinta/70">= {fmt(big(product.unitPriceMinor) * BigInt(quantity))}</span>
+          ) : null}
+        </div>
+      </div>
+      <SelectField label="Lo vendió" options={view.staff.map((s) => ({ id: s.id, label: s.name }))} value={staffId} onChange={setStaffId} />
+      <div className="flex justify-end gap-2">
+        <Btn variant="ghost" onPress={() => setOpen(false)}>
+          Cancelar
+        </Btn>
+        <Btn
+          isDisabled={!productId || !staffId}
+          onPress={() => {
+            if (!productId || !staffId) return;
+            onAdd({ productId, quantity, staffId });
+            setProductId(null);
+            setQuantity(1);
             setOpen(false);
           }}
         >

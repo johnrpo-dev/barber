@@ -82,6 +82,7 @@ export function ReportsView({ initial }: { initial: Report }) {
   );
 
   const r = report;
+  const soldProducts = r.byStaff.some((s) => s.productsNetMinor !== "0");
   const pnl = r.pnl;
 
   return (
@@ -175,12 +176,23 @@ export function ReportsView({ initial }: { initial: Report }) {
               { label: "Bruto", numeric: true },
               { label: "Descuentos", numeric: true },
               { label: "Neto", numeric: true },
+              // Productos (sprint 6): solo si alguien vendió en el periodo.
+              ...(soldProducts ? [{ label: "Productos", numeric: true }] : []),
               { label: "Comisión", numeric: true },
               { label: "Propinas", numeric: true },
             ]}
             rows={r.byStaff.map((s) => ({
               key: s.staffId,
-              cells: [s.name, String(s.services), s.grossLabel, s.discountLabel, s.netLabel, s.commissionLabel, s.tipsLabel],
+              cells: [
+                s.name,
+                String(s.services),
+                s.grossLabel,
+                s.discountLabel,
+                s.netLabel,
+                ...(soldProducts ? [s.productsNetLabel] : []),
+                s.commissionLabel,
+                s.tipsLabel,
+              ],
             }))}
             empty="No hubo ventas en el periodo."
           />
