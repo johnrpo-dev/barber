@@ -232,6 +232,13 @@
       "when": 1794410618695,
       "tag": "0032_inventory",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794450997065,
+      "tag": "0033_inventory_purchase_reverse",
+      "breakpoints": true
     }
   ]
 }

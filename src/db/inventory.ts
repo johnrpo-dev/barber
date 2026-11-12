@@ -17,9 +17,9 @@ import { assertSameRequest, requestHash } from "@/domain/security/idempotency";
 import { can, type Role } from "@/domain/staff/roles";
 import { recordAudit } from "./audit";
 import { type ActorRef, cashShortError, ledgerCash, requireOpenDay, requireOpenSession } from "./cash";
-import { accountBalance, postEntry } from "./ledger";
+import { accountBalance, postEntry, reverseEntry } from "./ledger";
 import { lastPurchases } from "./products";
-import { cashMovements, inventoryDocumentLines, inventoryDocuments, products } from "./schema";
+import { cashMovements, cashSessions, inventoryDocumentLines, inventoryDocuments, journalEntries, products } from "./schema";
 import { serializable } from "./serializable";
 import { rowsOf } from "./sql";
 import type { Db } from "./types";
@@ -302,6 +302,173 @@ export function recordCount(db: Db, input: RecordCountInput): Promise<RecordedCo
     });
     return { documentId: doc!.id, total: valued.total, bookBalance: book, adjustment, lines: valued.lines, created: true };
   });
+}
+
+// ─── Anular una compra ───────────────────────────────────────────────────────
+
+export interface ReversePurchaseInput {
+  locationId: bigint;
+  documentId: bigint;
+  actor: ActorRef & { role: Role };
+  now?: Date;
+}
+
+/** Por qué una compra no se puede anular, o null si se puede (lo mismo que exige 0033). */
+export type PurchaseLock = "reversed" | "counted" | "session_closed" | null;
+
+export const PURCHASE_LOCK_MESSAGES: Record<Exclude<PurchaseLock, null>, string> = {
+  reversed: "Esta compra ya está anulada",
+  counted: "Esta compra ya entró en un conteo de inventario: no se puede anular. La diferencia se corrige en el próximo conteo.",
+  session_closed: "Esta compra salió de un turno de caja que ya se cerró: no se puede anular (el arqueo de ese turno ya la tuvo en cuenta).",
+};
+
+/**
+ * Anula una compra mal registrada (solo el dueño, inventory.manage). No borra nada: asienta la
+ * reversa exacta de su asiento en el día contable de hoy. La de caja devuelve el efectivo a SU turno,
+ * que debe seguir abierto. No se anula si hubo un conteo después (ya fijó el inventario). Repetir sobre
+ * una compra anulada devuelve created: false. La base exige las mismas reglas al COMMIT (0033).
+ */
+export function reversePurchase(db: Db, input: ReversePurchaseInput): Promise<{ total: Money; paidFrom: PurchasePaidFrom; created: boolean }> {
+  return serializable(db, async (tx) => {
+    if (!can(input.actor.role, "inventory.manage")) throw new InventoryError("Solo el dueño anula compras de mercancía");
+    await lockInventory(tx, input.locationId);
+    const [doc] = await tx
+      .select({
+        id: inventoryDocuments.id,
+        kind: inventoryDocuments.kind,
+        paidFrom: inventoryDocuments.paidFrom,
+        total: inventoryDocuments.total,
+        entryId: inventoryDocuments.journalEntryId,
+        sessionId: inventoryDocuments.cashSessionId,
+      })
+      .from(inventoryDocuments)
+      .where(and(eq(inventoryDocuments.locationId, input.locationId), eq(inventoryDocuments.id, input.documentId)));
+    if (!doc || doc.kind !== "purchase" || !doc.paidFrom || doc.entryId === null) throw new InventoryError("La compra no existe en esta sede");
+    const paidFrom = doc.paidFrom as PurchasePaidFrom;
+    const total = money(doc.total);
+
+    const lock = await purchaseLock(tx, input.locationId, { id: doc.id, entryId: doc.entryId, paidFrom, sessionId: doc.sessionId });
+    if (lock === "reversed") return { total, paidFrom, created: false };
+    if (lock) throw new InventoryError(PURCHASE_LOCK_MESSAGES[lock]);
+
+    // El efectivo vuelve al turno de la compra: tiene que ser la caja abierta de hoy (bloqueada).
+    const session = paidFrom === "cash" ? await requireOpenSession(tx, input.locationId, PURCHASE_LOCK_MESSAGES.session_closed, input.now) : null;
+    if (session && session.id !== doc.sessionId) throw new InventoryError(PURCHASE_LOCK_MESSAGES.session_closed);
+    const day = await requireOpenDay(tx, input.locationId, input.now ?? new Date(), (m) => new InventoryError(m));
+
+    const reversal = await reverseEntry(tx, {
+      locationId: input.locationId,
+      entryId: doc.entryId,
+      businessDate: day,
+      reason: `Anulación de la compra de mercancía ${doc.id}`,
+      createdBy: input.actor.userId,
+    });
+    if (session) {
+      await tx.insert(cashMovements).values({
+        locationId: input.locationId,
+        cashSessionId: session.id,
+        kind: "reversal",
+        journalEntryId: reversal.entryId,
+        description: "Anulación de una compra de mercancía",
+        createdBy: input.actor.userId,
+      });
+    }
+    await recordAudit(tx, {
+      locationId: input.locationId,
+      actorUserId: input.actor.userId,
+      action: "inventory.purchase_reverse",
+      targetKind: "inventory_document",
+      targetRef: doc.id.toString(),
+      summary: `Anuló una compra de mercancía de ${format(total)}, pagada ${PAID_FROM_LABELS[paidFrom]}`,
+    });
+    return { total, paidFrom, created: true };
+  });
+}
+
+/** La regla de la anulación para una compra (sin tocar nada): ya anulada, contada o de un turno cerrado. */
+async function purchaseLock(
+  tx: Db,
+  locationId: bigint,
+  doc: { id: bigint; entryId: bigint; paidFrom: PurchasePaidFrom; sessionId: bigint | null },
+): Promise<PurchaseLock> {
+  const [reversed] = await tx
+    .select({ id: journalEntries.id })
+    .from(journalEntries)
+    .where(and(eq(journalEntries.locationId, locationId), eq(journalEntries.reversesEntryId, doc.entryId)));
+  if (reversed) return "reversed";
+  const [counted] = await tx
+    .select({ id: inventoryDocuments.id })
+    .from(inventoryDocuments)
+    .where(and(eq(inventoryDocuments.locationId, locationId), eq(inventoryDocuments.kind, "count"), sql`${inventoryDocuments.id} > ${doc.id}`))
+    .limit(1);
+  if (counted) return "counted";
+  if (doc.paidFrom === "cash") {
+    const [session] = await tx
+      .select({ closedAt: cashSessions.closedAt })
+      .from(cashSessions)
+      .where(and(eq(cashSessions.locationId, locationId), eq(cashSessions.id, doc.sessionId ?? -1n)));
+    if (!session || session.closedAt !== null) return "session_closed";
+  }
+  return null;
+}
+
+export interface RecentPurchase {
+  id: bigint;
+  businessDate: string;
+  paidFrom: PurchasePaidFrom;
+  total: Money;
+  note: string | null;
+  /** "Cera para peinar (6 u.) y 1 más" */
+  summary: string;
+  lock: PurchaseLock;
+}
+
+/** Las últimas compras de la sede (más nuevas primero), con si se pueden anular y por qué no. */
+export async function recentPurchases(db: Db, locationId: bigint, limit = 15): Promise<RecentPurchase[]> {
+  const rows = rowsOf<{
+    id: string;
+    business_date: string;
+    paid_from: PurchasePaidFrom;
+    total: string;
+    note: string | null;
+    entry_id: string;
+    session_id: string | null;
+    first_name: string;
+    first_qty: number;
+    lines: number;
+    reversed: boolean;
+    counted: boolean;
+    session_closed: boolean | null;
+  }>(
+    await db.execute(sql`
+      select d.id::text, d.business_date::text, d.paid_from, d.total::text, d.note, d.journal_entry_id::text as entry_id,
+             d.cash_session_id::text as session_id,
+             f.name as first_name, f.quantity as first_qty,
+             (select count(*)::int from inventory_document_lines l where l.location_id = d.location_id and l.document_id = d.id) as lines,
+             exists (select 1 from journal_entries r where r.location_id = d.location_id and r.reverses_entry_id = d.journal_entry_id) as reversed,
+             exists (select 1 from inventory_documents c where c.location_id = d.location_id and c.kind = 'count' and c.id > d.id) as counted,
+             (select s.closed_at is not null from cash_sessions s where s.location_id = d.location_id and s.id = d.cash_session_id) as session_closed
+        from inventory_documents d
+        cross join lateral (
+          select p.name, l.quantity from inventory_document_lines l
+            join products p on p.location_id = l.location_id and p.id = l.product_id
+           where l.location_id = d.location_id and l.document_id = d.id
+           order by p.name limit 1
+        ) f
+       where d.location_id = ${locationId}::bigint and d.kind = 'purchase'
+       order by d.id desc
+       limit ${limit}
+    `),
+  );
+  return rows.map((r) => ({
+    id: BigInt(r.id),
+    businessDate: r.business_date,
+    paidFrom: r.paid_from,
+    total: money(BigInt(r.total)),
+    note: r.note,
+    summary: r.lines > 1 ? `${r.first_name} (${r.first_qty} u.) y ${r.lines - 1} más` : `${r.first_name} (${r.first_qty} u.)`,
+    lock: r.reversed ? "reversed" : r.counted ? "counted" : r.paid_from === "cash" && r.session_closed !== false ? "session_closed" : null,
+  }));
 }
 
 /** Saldo de 1435 (inventario según el libro), sumado en SQL. */

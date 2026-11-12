@@ -1,22 +1,38 @@
 import type { Metadata } from "next";
 import { db } from "@/db/client";
-import { inventoryBalance } from "@/db/inventory";
+import { inventoryBalance, PURCHASE_LOCK_MESSAGES, recentPurchases } from "@/db/inventory";
+import { PAID_FROM_LABELS } from "@/domain/inventory/periodic";
+import { dayLabel } from "../_components/dates";
 import { lastPurchases, listProducts } from "@/db/products";
 import type { Db } from "@/db/types";
 import { format, money, mulDiv } from "@/domain/money";
 import { requirePermission } from "@/lib/session";
-import { type ProductRow, ProductsManager } from "./products-manager";
+import { type ProductRow, ProductsManager, type PurchaseRow } from "./products-manager";
 
 export const metadata: Metadata = { title: "Productos · Villa" };
 
 export default async function ProductosPage() {
   const staff = await requirePermission("inventory.manage");
   const conn = db() as unknown as Db;
-  const [products, last, balance] = await Promise.all([
+  const [products, last, balance, purchases] = await Promise.all([
     listProducts(conn, { locationId: staff.locationId }),
     lastPurchases(conn, staff.locationId),
     inventoryBalance(conn, staff.locationId),
+    recentPurchases(conn, staff.locationId),
   ]);
+
+  const purchaseRows: PurchaseRow[] = purchases.map((p) => ({
+    id: p.id.toString(),
+    dateLabel: dayLabel(p.businessDate),
+    paidFrom: p.paidFrom,
+    paidFromLabel: PAID_FROM_LABELS[p.paidFrom],
+    totalLabel: format(p.total),
+    summary: p.summary,
+    note: p.note,
+    reversed: p.lock === "reversed",
+    // Por qué ya no se puede anular (se muestra en lugar del botón), o null si se puede.
+    lockMessage: p.lock && p.lock !== "reversed" ? PURCHASE_LOCK_MESSAGES[p.lock] : null,
+  }));
 
   // bigint no viaja como JSON: ids y montos van como texto; las etiquetas se formatean aquí para que
   // servidor y navegador no difieran al hidratar.
@@ -37,7 +53,7 @@ export default async function ProductosPage() {
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6 md:px-8 md:py-10">
-      <ProductsManager products={rows} inventoryLabel={format(money(balance))} />
+      <ProductsManager products={rows} purchases={purchaseRows} inventoryLabel={format(money(balance))} />
     </main>
   );
 }

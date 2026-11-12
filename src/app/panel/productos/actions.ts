@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { auditActor, recordConfigChange } from "@/db/audit";
 import { db } from "@/db/client";
-import { recordPurchase } from "@/db/inventory";
+import { recordPurchase, reversePurchase } from "@/db/inventory";
 import { createProduct, productOf, productSnapshot, setProductActive, updateProduct } from "@/db/products";
 import type { Db } from "@/db/types";
 import { AUDIT_FIELDS } from "@/domain/audit/events";
@@ -147,5 +147,27 @@ export async function recordPurchaseAction(raw: unknown): Promise<ActionResult<{
     });
     refresh();
     return { documentId: documentId.toString(), totalLabel: format(total) };
+  });
+}
+
+const reverseSchema = z.object({ documentId: idSchema });
+
+/**
+ * Anula una compra mal registrada (solo el dueño, con reautenticación): asiento de reversa, nunca un
+ * borrado. La de caja devuelve el efectivo a su turno, que debe seguir abierto; ninguna se anula si
+ * hubo un conteo después (reversePurchase y la base, 0033).
+ */
+export async function reversePurchaseAction(raw: unknown): Promise<ActionResult<{ totalLabel: string; created: boolean }>> {
+  return runAction(async () => {
+    const staff = await requirePermission("inventory.manage");
+    const input = reverseSchema.parse(raw);
+    requireRecentAuth(staff);
+    const { total, created } = await reversePurchase(database(), {
+      locationId: staff.locationId,
+      documentId: input.documentId,
+      actor: { userId: staff.userId, role: staff.role },
+    });
+    refresh();
+    return { totalLabel: format(total), created };
   });
 }

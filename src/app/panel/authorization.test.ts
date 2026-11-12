@@ -15,6 +15,7 @@ import { rememberClientDevice } from "@/db/client-devices";
 import { findOrCreateClient } from "@/db/clients";
 import { recordConsents } from "@/db/consents";
 import { createLocation } from "@/db/ledger";
+import { recordPurchase } from "@/db/inventory";
 import { createProduct } from "@/db/products";
 import { saveRecurringExpense } from "@/db/recurring-expenses";
 import { auditEvents, cashSessions, expenseCategories, paymentMethods, sales, services, session, staffMembers, twoFactor, user, workerHeartbeats } from "@/db/schema";
@@ -324,6 +325,19 @@ const productDraft = (over: Record<string, unknown> = {}) => ({ name: `Cera ${un
 
 /** Una compra de una línea con ese producto (unidades y costo en texto, como la interfaz). */
 const purchaseLines = (productId: string, amountUnits = "5000") => [{ productId, quantity: "2", amountUnits }];
+
+/** Una compra del banco ya registrada (por defecto en la sede A), para anularla; su id como texto. */
+async function seedPurchase(locationId: bigint = A.location): Promise<string> {
+  const productId = BigInt(await seedProduct(locationId));
+  const { documentId } = await recordPurchase(db, {
+    locationId,
+    paidFrom: "bank",
+    lines: [{ productId, quantity: 2, amount: fromUnits(5_000n) }],
+    idempotencyKey: `seed-compra-${uniq()}`,
+    actor: { userId: "seed", role: "owner" },
+  });
+  return documentId.toString();
+}
 
 // ─── Comisiones: estado de partida para cada intento ────────────────────────
 
@@ -1517,6 +1531,15 @@ const CASES: Case[] = [
     },
   },
   {
+    name: "productos · anular una compra mal registrada",
+    action: "reversePurchaseAction",
+    allowed: ["owner"],
+    prepare: async () => {
+      const documentId = await seedPurchase();
+      return () => productos.reversePurchaseAction({ documentId });
+    },
+  },
+  {
     name: "tablero del dueño",
     action: "loadDashboard",
     allowed: ["owner"],
@@ -1591,6 +1614,13 @@ const CROSS_LOCATION: { name: string; prepare: () => Promise<Attempt> }[] = [
     prepare: async () => {
       const productId = await seedProduct();
       return () => productos.setProductActiveAction({ productId, active: false });
+    },
+  },
+  {
+    name: "anular una compra de esta sede",
+    prepare: async () => {
+      const documentId = await seedPurchase();
+      return () => productos.reversePurchaseAction({ documentId });
     },
   },
   {
@@ -1995,11 +2025,13 @@ describe("acciones críticas con una sesión vieja", () => {
     await drawerWithCash();
     const price = String(31_000 + Number(uniq()));
     const productId = await seedProduct();
+    const documentId = await seedPurchase();
     const attempts = [
       () => productos.createProductAction(productDraft()),
       () => productos.updateProductAction(productDraft({ productId, priceUnits: price })),
       () => productos.recordPurchaseAction({ paidFrom: "bank", lines: purchaseLines(productId), idempotencyKey: `compra-${uniq()}` }),
       () => productos.recordPurchaseAction({ paidFrom: "owner", lines: purchaseLines(productId), idempotencyKey: `carga-${uniq()}` }),
+      () => productos.reversePurchaseAction({ documentId }),
       () => ajustes.savePaymentMethodAction({ id: String(A.methods.card), kind: "card", label: `Tarjeta ${uniq()}`, feeBps: "150", active: true }),
       () => ajustes.saveExpenseCategoryAction({ id: String(A.category), name: `Categoría ${uniq()}`, accountCode: "5195", active: true }),
       () => ajustes.updateCheckoutRulesAction({ commissionBase: "gross", maxDiscountBps: "500", receptionCanDiscount: true, tipsBearCardFees: true }),
@@ -2835,6 +2867,7 @@ const AUDITED: Record<string, AuditAction> = {
   updateProductAction: "product.update",
   setProductActiveAction: "product.active",
   recordPurchaseAction: "inventory.purchase",
+  reversePurchaseAction: "inventory.purchase_reverse",
   recordCashPurchaseAction: "inventory.purchase",
   updateBookingSettingsAction: "settings.booking",
   updateCheckoutRulesAction: "settings.checkout_rules",

@@ -82,7 +82,18 @@ Las cuentas nuevas debe validarlas el contador:
 | Venta | lo de hoy | 4170 (servicios) + 4135 (productos) |
 | Conteo, si el valor contado es menor que el saldo de 1435 | 6135 | 1435 |
 | Conteo, si el valor contado es mayor | 1435 | 6135 |
-| Anulación | el espejo de la venta, como hoy | |
+| Anulación de una venta | el espejo de la venta, como hoy | |
+| Anulación de una compra | el espejo de la compra (1105, 1110 o 3105) | 1435 |
+
+### Anular una compra mal registrada
+
+Solo el dueño, con reautenticación, desde "Compras recientes" en Productos. No borra nada: asienta la reversa exacta de la compra en el día contable de hoy, y la compra queda anulada porque su asiento tiene reversa (una sola vez). Su costo deja de contar como "última compra". Reglas, que la base también exige al confirmar (migración 0033):
+
+- **Si hubo un conteo después, no se anula.** El conteo ya dejó 1435 en lo que había; anular bajaría el inventario por debajo de lo contado. La diferencia se corrige en el próximo conteo.
+- **Una compra de caja se anula solo con su mismo turno abierto,** y el efectivo vuelve a ese turno. Con el turno cerrado, el arqueo ya tuvo en cuenta la diferencia; devolverla otra vez la contaría doble.
+- **Un conteo no se anula:** se corrige con otro conteo.
+
+Antes de registrar, la compra avisa y pide confirmar si el costo de una línea supera precio de venta × unidades (casi siempre un error de dedo).
 
 El ajuste es `saldo de 1435 al cierre del conteo − valor contado`, y se calcula en SQL. Así 6135 del mes queda igual a inventario inicial + compras − inventario final: el costo de lo vendido **más** lo que se perdió.
 
@@ -125,6 +136,7 @@ Es un informe, no un asiento. La plata cuadra siempre; las unidades señalan dó
    - Caja: "Compra de mercancía" (recepción y dueño), varias líneas, sale del efectivo del turno y aparece en el desglose del esperado;
    - acciones en `authorization.test.ts` (matriz, IDOR, reautenticación y bitácora); productos de ejemplo en `seed-demo`.
    - La pantalla del conteo queda para la fase D (la función ya existe y está probada).
+   - **Anular una compra (hecho, migración 0033):** "Compras recientes" en Productos, solo el dueño; reglas arriba. Aviso de costo alto antes de registrar.
 3. **C, vender:**
    - migración de `sale_lines` y `sales_assert_totals`;
    - `checkout`, anulación, hoja de cobro, recibos;

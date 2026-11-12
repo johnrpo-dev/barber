@@ -110,8 +110,8 @@ export async function productSnapshot(tx: Db, locationId: bigint, productId: big
 }
 
 /**
- * La línea de la ÚLTIMA compra de cada producto de la sede (la de mayor documento): de ahí sale su
- * costo unitario (amount / quantity). Un producto sin compras no aparece.
+ * La línea de la ÚLTIMA compra vigente de cada producto de la sede (la de mayor documento, sin contar
+ * las anuladas): de ahí sale su costo unitario (amount / quantity). Un producto sin compras no aparece.
  */
 export async function lastPurchases(db: Db, locationId: bigint): Promise<Map<bigint, { quantity: number; amount: Money }>> {
   const rows = await db
@@ -125,7 +125,14 @@ export async function lastPurchases(db: Db, locationId: bigint): Promise<Map<big
       inventoryDocuments,
       and(eq(inventoryDocuments.locationId, inventoryDocumentLines.locationId), eq(inventoryDocuments.id, inventoryDocumentLines.documentId)),
     )
-    .where(and(eq(inventoryDocumentLines.locationId, locationId), eq(inventoryDocuments.kind, "purchase")))
+    .where(
+      and(
+        eq(inventoryDocumentLines.locationId, locationId),
+        eq(inventoryDocuments.kind, "purchase"),
+        // Una compra anulada (su asiento tiene reversa, 0033) no da el costo: casi siempre era un error.
+        sql`not exists (select 1 from journal_entries r where r.location_id = ${inventoryDocuments.locationId} and r.reverses_entry_id = ${inventoryDocuments.journalEntryId})`,
+      ),
+    )
     .orderBy(inventoryDocumentLines.productId, sql`${inventoryDocuments.id} desc`);
   return new Map(rows.map((r) => [r.productId, { quantity: r.quantity, amount: money(r.amount) }]));
 }

@@ -8,8 +8,8 @@ import { InventoryError } from "@/domain/inventory/product";
 import { fromUnits, type Money, money } from "@/domain/money";
 import { CashError } from "@/domain/sales/cash";
 import { IdempotencyConflictError } from "@/domain/security/idempotency";
-import { openCashSession } from "./cash";
-import { inventoryBalance, recordCount, recordPurchase } from "./inventory";
+import { closeCashSession, ledgerCash, openCashSession } from "./cash";
+import { inventoryBalance, PURCHASE_LOCK_MESSAGES, recentPurchases, recordCount, recordPurchase, reversePurchase } from "./inventory";
 import { accountBalance, closeDay, postEntry, reverseEntry, trialBalance } from "./ledger";
 import { createProduct, lastPurchases, listProducts, setProductActive, updateProduct } from "./products";
 import { key, type Shop, setupShop, TZ } from "./sales-testing";
@@ -393,6 +393,135 @@ describe("lo que la base garantiza (ataques por SQL)", () => {
     await reverseEntry(db, { locationId: shop.locationId, entryId: doc!.journalEntryId!, businessDate: today(), reason: "Compra registrada por error", createdBy: shop.owner.userId });
     expect(await inventoryBalance(db, shop.locationId)).toBe(0n);
     expect(await balance(shop, ACCOUNTS.bank.code)).toBe(0n);
+  });
+});
+
+describe("anular una compra (0033)", () => {
+  const buy = (shop: Shop, paidFrom: "cash" | "bank" | "owner", productId: bigint, quantity: number, pesos: bigint) =>
+    recordPurchase(db, {
+      locationId: shop.locationId,
+      paidFrom,
+      lines: [{ productId, quantity, amount: cop(pesos) }],
+      idempotencyKey: key("anular"),
+      actor: paidFrom === "cash" ? shop.reception : shop.owner,
+    });
+  const entryOf = async (documentId: bigint) =>
+    (await db.select({ entryId: inventoryDocuments.journalEntryId }).from(inventoryDocuments).where(eq(inventoryDocuments.id, documentId)))[0]!.entryId!;
+
+  it("del banco: la reversa devuelve 1435 y 1110, una sola vez, con bitácora; el costo vuelve a la compra anterior", async () => {
+    const shop = await setupShop(db, "Anular banco");
+    const balsamo = await product(shop, "Bálsamo", 38_000n);
+    await buy(shop, "bank", balsamo, 4, 60_000n);
+    // El error de dedo: 4 unidades a $1.500 millones cada una.
+    const wrong = await buy(shop, "bank", balsamo, 4, 6_000_060_000n);
+    expect((await lastPurchases(db, shop.locationId)).get(balsamo)?.amount).toEqual(cop(6_000_060_000n));
+
+    const r = await reversePurchase(db, { locationId: shop.locationId, documentId: wrong.documentId, actor: shop.owner });
+    expect(r).toMatchObject({ created: true, paidFrom: "bank", total: cop(6_000_060_000n) });
+    expect(await inventoryBalance(db, shop.locationId)).toBe(cop(60_000n).minor);
+    expect(await balance(shop, ACCOUNTS.bank.code)).toBe(-cop(60_000n).minor);
+    expect((await lastPurchases(db, shop.locationId)).get(balsamo)).toEqual({ quantity: 4, amount: cop(60_000n) });
+
+    // Repetir no reversa dos veces.
+    expect(await reversePurchase(db, { locationId: shop.locationId, documentId: wrong.documentId, actor: shop.owner })).toMatchObject({ created: false });
+    expect(await inventoryBalance(db, shop.locationId)).toBe(cop(60_000n).minor);
+    const audit = await db.select().from(auditEvents).where(and(eq(auditEvents.locationId, shop.locationId), eq(auditEvents.action, "inventory.purchase_reverse")));
+    expect(audit).toHaveLength(1);
+
+    const recent = await recentPurchases(db, shop.locationId);
+    expect(recent.map((p) => p.lock)).toEqual(["reversed", null]);
+    expect(recent[0]!.summary).toBe("Bálsamo (4 u.)");
+  });
+
+  it("de caja: el efectivo vuelve a su turno; con el turno cerrado ya no se anula", async () => {
+    const shop = await setupShop(db, "Anular caja");
+    const cera = await product(shop, "Cera");
+    await openDrawer(shop);
+    const cashStart = await ledgerCash(db, shop.locationId);
+    const first = await buy(shop, "cash", cera, 2, 40_000n);
+    expect(await ledgerCash(db, shop.locationId)).toBe(cashStart - cop(40_000n).minor);
+
+    await reversePurchase(db, { locationId: shop.locationId, documentId: first.documentId, actor: shop.owner });
+    expect(await ledgerCash(db, shop.locationId)).toBe(cashStart);
+    expect(await inventoryBalance(db, shop.locationId)).toBe(0n);
+    const moves = await db.select().from(cashMovements).where(and(eq(cashMovements.locationId, shop.locationId), eq(cashMovements.kind, "reversal")));
+    expect(moves).toHaveLength(1);
+
+    // Otra compra; se cierra el turno contando lo que hay: ya no se anula (ni con otro turno abierto).
+    const second = await buy(shop, "cash", cera, 1, 15_000n);
+    await closeCashSession(db, { locationId: shop.locationId, counted: money(await ledgerCash(db, shop.locationId)), idempotencyKey: key("close"), actor: shop.owner });
+    await expect(reversePurchase(db, { locationId: shop.locationId, documentId: second.documentId, actor: shop.owner })).rejects.toThrow(
+      PURCHASE_LOCK_MESSAGES.session_closed,
+    );
+    await openDrawer(shop, 50_000n);
+    await expect(reversePurchase(db, { locationId: shop.locationId, documentId: second.documentId, actor: shop.owner })).rejects.toThrow(
+      PURCHASE_LOCK_MESSAGES.session_closed,
+    );
+    expect((await recentPurchases(db, shop.locationId))[0]!.lock).toBe("session_closed");
+    expect(await inventoryBalance(db, shop.locationId)).toBe(cop(15_000n).minor);
+  });
+
+  it("después de un conteo no se anula; un conteo nunca; recepción no anula", async () => {
+    const shop = await setupShop(db, "Anular contada");
+    const cera = await product(shop, "Cera");
+    const bought = await buy(shop, "owner", cera, 5, 50_000n);
+    await expect(reversePurchase(db, { locationId: shop.locationId, documentId: bought.documentId, actor: shop.reception })).rejects.toThrow(/Solo el dueño/);
+    const count = await recordCount(db, { locationId: shop.locationId, lines: [{ productId: cera, quantity: 4 }], idempotencyKey: key("cnt"), actor: shop.owner });
+    await expect(reversePurchase(db, { locationId: shop.locationId, documentId: bought.documentId, actor: shop.owner })).rejects.toThrow(
+      PURCHASE_LOCK_MESSAGES.counted,
+    );
+    await expect(reversePurchase(db, { locationId: shop.locationId, documentId: count.documentId, actor: shop.owner })).rejects.toThrow(/no existe/);
+    expect(await inventoryBalance(db, shop.locationId)).toBe(cop(40_000n).minor);
+  });
+
+  it("la base lo exige aunque se salte TypeScript: reversa tras un conteo, de un conteo, o de caja sin su movimiento", async () => {
+    const shop = await setupShop(db, "Anular ataque");
+    const cera = await product(shop, "Cera");
+    const reverse = (entryId: bigint) =>
+      dbError(reverseEntry(db, { locationId: shop.locationId, entryId, businessDate: today(), reason: "ataque", createdBy: shop.owner.userId }));
+
+    await openDrawer(shop);
+    const cash = await buy(shop, "cash", cera, 1, 10_000n);
+    // Sin el movimiento de reversa en el turno: el efectivo no vuelve a la caja y no se confirma.
+    expect(await reverse(await entryOf(cash.documentId))).toMatch(/solo se anula con su turno abierto/);
+
+    const bank = await buy(shop, "bank", cera, 2, 20_000n);
+    const count = await recordCount(db, { locationId: shop.locationId, lines: [{ productId: cera, quantity: 3 }], idempotencyKey: key("cnt"), actor: shop.owner });
+    expect(await reverse(await entryOf(bank.documentId))).toMatch(/hay un conteo posterior/);
+    if (count.adjustment.minor !== 0n) expect(await reverse(await entryOf(count.documentId))).toMatch(/un conteo no se anula/);
+    expect(await inventoryBalance(db, shop.locationId)).toBe(count.total.minor);
+  });
+
+  it("propiedad: con compras y anulaciones cualesquiera, 1435 es la suma de las compras vigentes", { timeout: 120_000 }, async () => {
+    const shop = await setupShop(db, "Anular propiedad");
+    const ids = [await product(shop, "Q1"), await product(shop, "Q2")];
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(
+          fc.record({
+            i: fc.integer({ min: 0, max: 1 }),
+            qty: fc.integer({ min: 1, max: 20 }),
+            pesos: fc.bigInt({ min: 1n, max: 900_000n }),
+            paidFrom: fc.constantFrom("bank" as const, "owner" as const),
+            reverse: fc.boolean(),
+          }),
+          { minLength: 1, maxLength: 5 },
+        ),
+        async (ops) => {
+          const start = await inventoryBalance(db, shop.locationId);
+          let kept = 0n;
+          for (const op of ops) {
+            const p = await buy(shop, op.paidFrom, ids[op.i]!, op.qty, op.pesos);
+            if (op.reverse) await reversePurchase(db, { locationId: shop.locationId, documentId: p.documentId, actor: shop.owner });
+            else kept += cop(op.pesos).minor;
+          }
+          expect(await inventoryBalance(db, shop.locationId)).toBe(start + kept);
+          const tb = await trialBalance(db, { locationId: shop.locationId });
+          expect(tb.reduce((s, r) => s + r.debits - r.credits, 0n)).toBe(0n);
+        },
+      ),
+      { numRuns: 10 },
+    );
   });
 });
 

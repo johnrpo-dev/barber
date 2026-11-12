@@ -1,6 +1,6 @@
 "use client";
 
-import { Package, PackagePlus, Pencil, Plus } from "lucide-react";
+import { Package, PackagePlus, Pencil, Plus, Undo2 } from "lucide-react";
 import { type FormEvent, useState, useTransition } from "react";
 import { Form, Input, Label, Text, TextField } from "react-aria-components";
 import { PESO } from "@/domain/money";
@@ -8,7 +8,7 @@ import { bpsToPercentText, MoneyField, percentTextToBps, unitsOf } from "../_com
 import { useReauth } from "../_components/reauth";
 import { Btn, cx, field, PageHeader, Sheet, SheetFooter, useToast } from "../_components/ui";
 import { card, FieldMessage, FormError, Toggle, useFieldErrors } from "../_manage/controls";
-import { createProductAction, recordPurchaseAction, setProductActiveAction, updateProductAction } from "./actions";
+import { createProductAction, recordPurchaseAction, reversePurchaseAction, setProductActiveAction, updateProductAction } from "./actions";
 import { PurchaseForm } from "./purchase-form";
 
 // Productos (sprint 6, docs/sprint-6-productos-inventario.md): catálogo del dueño y compras del banco
@@ -27,9 +27,35 @@ export interface ProductRow {
   unitCostLabel: string | null;
 }
 
-type Editing = { mode: "create" } | { mode: "edit"; product: ProductRow } | { mode: "purchase" } | null;
+/** Una compra reciente (banco, carga inicial o caja), lista para mostrar. */
+export interface PurchaseRow {
+  id: string;
+  dateLabel: string;
+  paidFrom: "cash" | "bank" | "owner";
+  paidFromLabel: string;
+  totalLabel: string;
+  summary: string;
+  note: string | null;
+  reversed: boolean;
+  /** Por qué ya no se puede anular, o null si se puede. */
+  lockMessage: string | null;
+}
 
-export function ProductsManager({ products, inventoryLabel }: { products: ProductRow[]; inventoryLabel: string }) {
+type Editing =
+  | { mode: "create" }
+  | { mode: "edit"; product: ProductRow }
+  | { mode: "purchase" }
+  | { mode: "reverse"; purchase: PurchaseRow }
+  | null;
+
+/** Qué pasa con el dinero al anular, según de dónde salió. */
+const REVERSE_EFFECT: Record<PurchaseRow["paidFrom"], string> = {
+  cash: "El efectivo vuelve a la caja de este turno.",
+  bank: "El dinero vuelve a la cuenta del banco.",
+  owner: "Se retira del aporte del dueño.",
+};
+
+export function ProductsManager({ products, purchases, inventoryLabel }: { products: ProductRow[]; purchases: PurchaseRow[]; inventoryLabel: string }) {
   const toast = useToast();
   const [editing, setEditing] = useState<Editing>(null);
   const active = products.filter((p) => p.active);
@@ -108,6 +134,61 @@ export function ProductsManager({ products, inventoryLabel }: { products: Produc
         </ul>
       )}
 
+      {purchases.length > 0 ? (
+        <section aria-labelledby="compras-recientes" className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <h2 id="compras-recientes" className="font-display text-xl">
+              Compras recientes
+            </h2>
+            <p className="text-sm text-tinta/70">Si una quedó mal registrada, anúlala y regístrala de nuevo. Anular no borra: deja una reversa en las cuentas.</p>
+          </div>
+          <ul className="flex flex-col gap-2" aria-label="Compras recientes">
+            {purchases.map((p) => (
+              <li key={p.id} className={cx(card, "flex flex-col gap-2 p-4", p.reversed && "bg-papel/60")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <p className={cx("text-sm font-semibold", p.reversed && "text-tinta/70 line-through")}>{p.summary}</p>
+                    <p className="text-xs text-tinta/70">
+                      {p.dateLabel} · pagada {p.paidFromLabel}
+                      {p.note ? ` · ${p.note}` : ""}
+                    </p>
+                  </div>
+                  <span className={cx("monto shrink-0 text-base font-semibold", p.reversed && "text-tinta/70 line-through")}>{p.totalLabel}</span>
+                </div>
+                {p.reversed ? (
+                  <p className="text-xs font-semibold text-tinta/70">Anulada</p>
+                ) : p.lockMessage ? (
+                  <p className="text-xs text-tinta/70">{p.lockMessage}</p>
+                ) : (
+                  <Btn variant="danger" size="sm" className="self-start" onPress={() => setEditing({ mode: "reverse", purchase: p })}>
+                    <Undo2 size={16} aria-hidden />
+                    Anular compra
+                  </Btn>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      <Sheet
+        isOpen={editing?.mode === "reverse"}
+        onOpenChange={(open) => !open && setEditing(null)}
+        title="Anular compra"
+        description={editing?.mode === "reverse" ? `${editing.purchase.summary} · ${editing.purchase.totalLabel}` : undefined}
+      >
+        {editing?.mode === "reverse" ? (
+          <ReversePurchase
+            purchase={editing.purchase}
+            onDone={(m) => {
+              setEditing(null);
+              toast(m);
+            }}
+            onCancel={() => setEditing(null)}
+          />
+        ) : null}
+      </Sheet>
+
       <Sheet
         isOpen={editing?.mode === "create" || editing?.mode === "edit"}
         onOpenChange={(open) => !open && setEditing(null)}
@@ -145,6 +226,43 @@ export function ProductsManager({ products, inventoryLabel }: { products: Produc
         ) : null}
       </Sheet>
     </>
+  );
+}
+
+function ReversePurchase({ purchase, onDone, onCancel }: { purchase: PurchaseRow; onDone: (message: string) => void; onCancel: () => void }) {
+  const reauth = useReauth({ description: "Anular una compra devuelve el dinero y baja el inventario." });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function confirm() {
+    setPending(true);
+    setError(null);
+    const r = await reauth.run(() => reversePurchaseAction({ documentId: purchase.id }));
+    setPending(false);
+    if (r.ok) return onDone(r.data.created ? `Compra anulada: ${r.data.totalLabel}` : "Esa compra ya estaba anulada");
+    setError(r.error);
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-2 text-sm">
+        <p>
+          Se anula la compra de <span className="monto font-semibold">{purchase.totalLabel}</span> del {purchase.dateLabel}. {REVERSE_EFFECT[purchase.paidFrom]} El
+          inventario según el libro baja lo mismo.
+        </p>
+        <p className="text-tinta/70">No se puede deshacer. Si la compra era real con otro valor, regístrala de nuevo después.</p>
+      </div>
+      <FormError message={error} />
+      <SheetFooter className="flex-col-reverse min-[400px]:flex-row min-[400px]:justify-end">
+        <Btn variant="secondary" onPress={onCancel} isDisabled={pending}>
+          Cancelar
+        </Btn>
+        <Btn variant="danger" onPress={confirm} isPending={pending}>
+          <Undo2 size={18} aria-hidden /> Anular compra
+        </Btn>
+      </SheetFooter>
+      {reauth.dialog}
+    </div>
   );
 }
 
