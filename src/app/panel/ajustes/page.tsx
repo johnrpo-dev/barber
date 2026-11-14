@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { db } from "@/db/client";
+import { demoResetEnabled } from "@/db/demo-reset";
 import { locationSettings } from "@/db/locations";
 import { listStaff } from "@/db/staff";
 import type { Db } from "@/db/types";
@@ -10,6 +11,7 @@ import { requirePermission } from "@/lib/session";
 import { FormError } from "../_manage/controls";
 import { loadCheckoutSettings } from "./actions";
 import { type AccountOption, CheckoutSettings } from "./checkout-settings";
+import { DemoReset } from "./demo-reset";
 import { type BookableRow, SettingsForm } from "./settings-form";
 
 export const metadata: Metadata = { title: "Ajustes · Villa" };
@@ -42,6 +44,7 @@ export default async function AjustesPage() {
       ) : (
         <FormError message={`No se pudieron cargar los ajustes de cobro: ${checkout.error}`} />
       )}
+      {demoResetEnabled() ? <DemoReset /> : null}
     </main>
   );
 }

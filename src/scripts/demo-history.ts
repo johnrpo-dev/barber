@@ -8,12 +8,15 @@
 // session_replication_role = replica, por eso exige superusuario). Al final, docs/demo.md corre la
 // prueba de cordura del respaldo (deploy/backup/sanity.sql) sobre esta base.
 //
-// Todo lo hace la cuenta de prueba de recepción: nada queda a nombre del dueño. Lo que solo puede
-// hacer el dueño (liquidar comisiones, aprobar la anulación pendiente, revisar los turnos con
-// diferencia, compras a crédito, gastos fijos) queda para hacerlo en vivo en la presentación.
+// La operación diaria la hace la cuenta de prueba de recepción. Lo que solo puede hacer un dueño
+// (compras a crédito, pagos a proveedores desde el banco, anticipos y gastos fijos) lo hace
+// "Administración de prueba": rol de dueño, SIN contraseña (no puede ingresar) e inactiva. Así nada
+// en la bitácora queda a nombre del dueño real. Liquidar comisiones, aprobar la anulación pendiente
+// y revisar los turnos con diferencia quedan para hacerlos en vivo en la presentación.
 //
 // Se niega a correr si la base no es la de la demo: DEMO_DATABASE_URL (superusuario, localhost),
 // sin respaldos registrados y sin ventas previas.
+import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { addDays, datesBetween, isoWeekday, localMinuteToInstant } from "@/domain/booking/clock";
 import { businessDate } from "@/domain/ledger/business-date";
@@ -22,9 +25,12 @@ import { createAppointment, changeStatus } from "@/db/appointments";
 import { cashDeposit, closeBusinessDay, closeCashSession, ledgerCash, openCashSession, payTips, tipsOwed } from "@/db/cash";
 import { listExpenseCategories, listPaymentMethods } from "@/db/checkout-settings";
 import { db } from "@/db/client";
+import { giveAdvance } from "@/db/commissions";
 import { addExpense } from "@/db/expenses";
 import { recordPurchase } from "@/db/inventory";
+import { paySupplier } from "@/db/payables";
 import { listProducts } from "@/db/products";
+import { registerRecurringExpense, saveRecurringExpense } from "@/db/recurring-expenses";
 import { checkout } from "@/db/sales";
 import { backupRuns, clients, locations, sales, services, staffMembers, staffSchedules, user } from "@/db/schema";
 import { staffServiceIds } from "@/db/staff";
@@ -81,6 +87,70 @@ const EXPENSES = [
   { category: "Mantenimiento", text: "Arreglo de la manguera del lavacabezas", min: 25, max: 60 },
 ];
 
+const ADMIN_NAME = "Administración de prueba";
+
+/**
+ * Compras a crédito (cuentas por pagar), por día de la historia (0 = el primero). Proveedores
+ * inventados. Con 30 días de historia quedan: una pagada del banco, una vencida con un abono de la
+ * caja, una que vence mañana y una al día. `units`: unidades de cada producto (por nombre).
+ */
+const CREDIT_PURCHASES = [
+  {
+    day: 0,
+    supplier: "Distribuidora Capilar Antioquia",
+    termDays: 15,
+    units: { "Cera para peinar": 8, "Pomada de brillo": 6, "Gel de fijación fuerte": 10, "Shampoo anticaída": 4, "Acondicionador hidratante": 4, "Tónico capilar": 3 },
+    note: "Pedido inicial de productos capilares",
+    payment: { day: 14, percent: 100, from: "bank" as const },
+  },
+  {
+    day: 6,
+    supplier: "Insumos Barber Pro",
+    termDays: 15,
+    units: { "Aceite para barba": 6, "Bálsamo para barba": 6, "Shampoo para barba": 6 },
+    note: "Línea de barba",
+    payment: { day: 20, percent: 40, from: "cash" as const },
+  },
+  {
+    day: 16,
+    supplier: "Distribuidora Capilar Antioquia",
+    termDays: 15,
+    units: { "Cera para peinar": 6, "Gel de fijación fuerte": 8, "Pomada de brillo": 4 },
+    note: "Reposición de ceras y geles",
+    payment: null,
+  },
+  {
+    day: 25,
+    supplier: "Cosméticos Laureles",
+    termDays: 30,
+    units: { "Shampoo anticaída": 4, "Acondicionador hidratante": 4, "Tónico capilar": 3 },
+    note: "Línea de cuidado capilar",
+    payment: null,
+  },
+] as const;
+
+/**
+ * Anticipos a barberos (cuentas por cobrar a trabajadores, 1365), por día de la historia y por
+ * posición en el equipo. Se descuentan en la liquidación que el dueño hace en vivo.
+ */
+const ADVANCES = [
+  { day: 11, barber: 0, units: 50_000n, reason: "Anticipo de quincena" },
+  { day: 23, barber: 2, units: 80_000n, reason: "Anticipo pedido por el barbero para una diligencia" },
+] as const;
+
+/**
+ * Gastos fijos (sprint 8). Los del mes anterior quedan pagados del banco; los de este mes, por
+ * pagar: el dueño los ve en Inicio y en Gastos fijos. `swing`: cuánto varía el monto real (servicios).
+ */
+const RECURRING = [
+  { name: "Arriendo del local", category: "Arriendo", units: 3_200_000n, dayOfMonth: 5, swing: 0 },
+  { name: "Energía, agua y gas", category: "Servicios públicos", units: 480_000n, dayOfMonth: 20, swing: 60 },
+  { name: "Internet y teléfono", category: "Servicios públicos", units: 135_000n, dayOfMonth: 10, swing: 0 },
+] as const;
+
+/** Costo de compra de un producto: 55 % del precio de venta, en miles de pesos cerrados. */
+const unitCost = (price: Money): bigint => ((price.minor * 55n) / 100n / 100_000n) * 100_000n;
+
 async function main() {
   const url = process.env.DEMO_DATABASE_URL;
   if (!url) throw new Error("Falta DEMO_DATABASE_URL (la base de la demo; ver docs/demo.md). Nunca uses la de la barbería.");
@@ -113,6 +183,16 @@ async function main() {
   if (!reception) throw new Error("Falta la cuenta recepcion@villa.test: corre npm run db:seed-demo en esta base");
   const actor = { userId: reception.userId, role: "reception" as const, staffId: reception.staffId };
 
+  // --- lo que solo hace un dueño: una cuenta SIN contraseña (no hay fila en `account`: no puede
+  // ingresar) e inactiva desde el principio (no cuenta como dueño de la sede ni sale en la agenda) ---
+  const adminUserId = randomUUID();
+  await client.insert(user).values({ id: adminUserId, name: ADMIN_NAME, email: "admin-demo@villa.test", emailVerified: true });
+  const [adminStaff] = await client
+    .insert(staffMembers)
+    .values({ locationId, userId: adminUserId, displayName: ADMIN_NAME, role: "owner", active: false, bookableOnline: false })
+    .returning({ id: staffMembers.id });
+  const admin = { userId: adminUserId, role: "owner" as const, staffId: adminStaff!.id };
+
   // --- el equipo que sale en la vitrina (sin las cuentas de prueba) con su horario y servicios ---
   const team = await client
     .select({ id: staffMembers.id, name: staffMembers.displayName })
@@ -127,6 +207,7 @@ async function main() {
         ...b,
         services: catalog.filter((s) => offered.has(s.id)).map((s) => ({ item: s, weight: POPULARITY[s.name] ?? 1 })),
         blocks: schedule.filter((s) => s.staffId === b.id),
+        offersAddOn: catalog.some((s) => s.name === "Cejas con cuchilla" && offered.has(s.id)),
       };
     }),
   );
@@ -137,6 +218,8 @@ async function main() {
   if (!cash) throw new Error("Falta el medio de pago Efectivo");
   const categories = await listExpenseCategories(d, { locationId, activeOnly: true });
   const productList = await listProducts(d, { locationId, activeOnly: true });
+  const productByName = new Map(productList.map((p) => [p.name, p]));
+  const addOn = catalog.find((s) => s.name === "Cejas con cuchilla") ?? null;
 
   // --- clientes de la demo: nombres inventados, SIN celular ni correo (nunca se les manda nada) ---
   const names = new Set<string>();
@@ -178,7 +261,7 @@ async function main() {
   const today = businessDate(new Date(), TZ);
   const firstDay = addDays(today, -DAYS);
   const realNow = new Date();
-  const stats = { sales: 0, appointments: 0, noShows: 0, days: 0 };
+  const stats = { sales: 0, appointments: 0, noShows: 0, days: 0, recurring: 0, creditPurchases: 0, supplierPayments: 0, advances: 0 };
 
   /** Cobra con un medio al azar (efectivo la mitad de las veces); a veces mitad efectivo y mitad otro. */
   function payments(total: Money) {
@@ -199,18 +282,30 @@ async function main() {
     return [{ methodId: m.id, amount: total }];
   }
 
-  /** Cobro de un servicio (con propina y, a veces, un producto) a la hora `when`. */
-  async function charge(input: { when: Date; barberId: bigint; serviceId: bigint; price: bigint; appointmentId: bigint | null; clientId: bigint | null }) {
-    const product = productList.length > 0 && chance(0.09) ? pick(productList) : null;
+  /**
+   * Cobro de un servicio a la hora `when`: a veces con cejas de más, uno o dos productos capilares
+   * y propina. Así los recibos traen servicios y productos juntos, como en el mostrador.
+   */
+  async function charge(input: { when: Date; barberId: bigint; serviceId: bigint; price: bigint; appointmentId: bigint | null; clientId: bigint | null; offersAddOn: boolean }) {
+    const picked = productList.length > 0 && chance(0.16) ? [pick(productList)] : [];
+    if (picked.length > 0 && chance(0.2)) {
+      const second = pick(productList);
+      if (second.id !== picked[0]!.id) picked.push(second);
+    }
+    const withAddOn = addOn !== null && input.offersAddOn && addOn.id !== input.serviceId && chance(0.1);
     const tip = chance(0.28) ? fromUnits(BigInt(pick([2_000, 3_000, 5_000, 5_000, 10_000]))) : null;
-    const due = input.price + (product?.price.minor ?? 0n) + (tip?.minor ?? 0n);
+    const due = input.price + picked.reduce((s, p) => s + p.price.minor, 0n) + (withAddOn ? addOn.price : 0n) + (tip?.minor ?? 0n);
+    const extras = [
+      ...(input.appointmentId === null ? [{ serviceId: input.serviceId, staffId: input.barberId }] : []),
+      ...(withAddOn ? [{ serviceId: addOn.id, staffId: input.barberId }] : []),
+    ];
     await asOf(input.when, (now) =>
       checkout(d, {
         locationId,
         appointmentId: input.appointmentId,
         clientId: input.appointmentId === null ? input.clientId : undefined,
-        extras: input.appointmentId === null ? [{ serviceId: input.serviceId, staffId: input.barberId }] : [],
-        products: product ? [{ productId: product.id, quantity: 1, staffId: input.barberId }] : [],
+        extras,
+        products: picked.map((p) => ({ productId: p.id, quantity: 1, staffId: input.barberId })),
         discounts: [],
         tips: tip ? [{ staffId: input.barberId, amount: tip }] : [],
         payments: payments(money(due)),
@@ -251,10 +346,74 @@ async function main() {
     return ledgerCash(d, locationId);
   }
 
-  for (const date of datesBetween(firstDay, today)) {
+  // --- gastos fijos: las plantillas desde el mes en que empieza la historia ---
+  const startMonth = `${firstDay.slice(0, 7)}-01`;
+  const recurring = [];
+  for (const r of RECURRING) {
+    const category = categories.find((c) => c.name === r.category);
+    if (!category) throw new Error(`Falta la categoría de gasto "${r.category}"`);
+    const { id } = await asOf(localMinuteToInstant(firstDay, 7 * 60, TZ), (now) =>
+      saveRecurringExpense(d, {
+        locationId,
+        categoryId: category.id,
+        draft: { name: r.name, estimatedAmount: fromUnits(r.units), payMode: "bank", dayOfMonth: r.dayOfMonth, intervalMonths: 1, startMonth, active: true },
+        actor: admin,
+        now,
+      }),
+    );
+    recurring.push({ ...r, id });
+    // Lo del mes anterior que venció antes de que empiece la historia también quedó pago (el primer día).
+    if (firstDay.slice(0, 7) < today.slice(0, 7) && r.dayOfMonth < Number(firstDay.slice(8, 10))) {
+      await asOf(localMinuteToInstant(firstDay, 8 * 60, TZ), (now) =>
+        registerRecurringExpense(d, { locationId, recurringId: id, period: startMonth, amount: fromUnits(r.units), description: r.name, expectedPayMode: "bank", actor: admin, now }),
+      );
+      stats.recurring++;
+    }
+  }
+
+  const creditDocs = new Map<number, { documentId: bigint; total: Money }>();
+  let leftToCharge = false;
+
+  for (const [dayIndex, date] of datesBetween(firstDay, today).entries()) {
     const isToday = date === today;
     const at = (minute: number) => localMinuteToInstant(date, minute, TZ);
     const events = plan(date);
+
+    // Gastos fijos del mes anterior: se pagan del banco el día que vencen. Los de este mes quedan por pagar.
+    if (date.slice(0, 7) < today.slice(0, 7)) {
+      for (const r of recurring.filter((x) => x.dayOfMonth === Number(date.slice(8, 10)))) {
+        const real = r.swing === 0 ? r.units : r.units + BigInt(between(-r.swing, r.swing) * 1000);
+        await asOf(at(9 * 60), (now) =>
+          registerRecurringExpense(d, {
+            locationId,
+            recurringId: r.id,
+            period: `${date.slice(0, 7)}-01`,
+            amount: fromUnits(real),
+            description: r.name,
+            expectedPayMode: "bank",
+            actor: admin,
+            now,
+          }),
+        );
+        stats.recurring++;
+      }
+    }
+
+    // Compras a crédito: llegan en la mañana, antes de abrir (la primera surte el inventario inicial).
+    for (const [i, p] of CREDIT_PURCHASES.entries()) {
+      if (p.day !== dayIndex) continue;
+      const lines = Object.entries(p.units).map(([name, quantity]) => {
+        const product = productByName.get(name);
+        if (!product) throw new Error(`Falta el producto "${name}": corre npm run db:seed-demo en esta base`);
+        return { productId: product.id, quantity, amount: money(unitCost(product.price) * BigInt(quantity)) };
+      });
+      const doc = await asOf(at(7 * 60 + 30), (now) =>
+        recordPurchase(d, { locationId, paidFrom: "credit", credit: { supplierName: p.supplier, termDays: p.termDays }, lines, note: p.note, idempotencyKey: nextKey("credit"), actor: admin, now }),
+      );
+      creditDocs.set(i, doc);
+      stats.creditPurchases++;
+    }
+
     if (events.length === 0) continue;
     stats.days++;
 
@@ -270,7 +429,7 @@ async function main() {
       const clientId = someClient();
       if (e.walkIn) {
         if (isToday && endAt > realNow) continue;
-        await charge({ when: new Date(endAt.getTime() + 2 * 60_000), barberId: e.barber.id, serviceId: e.service.id, price: e.service.price, appointmentId: null, clientId: chance(0.4) ? clientId : null });
+        await charge({ when: new Date(endAt.getTime() + 2 * 60_000), barberId: e.barber.id, serviceId: e.service.id, price: e.service.price, appointmentId: null, clientId: chance(0.4) ? clientId : null, offersAddOn: e.barber.offersAddOn });
       } else {
         const bookedAt = new Date(startAt.getTime() - between(2, 96) * 3_600_000);
         let appt: { appointmentId: bigint };
@@ -293,7 +452,12 @@ async function main() {
         await asOf(startAt, (now) => changeStatus(d, { locationId, appointmentId: appt.appointmentId, to: "in_chair", actor, now }));
         if (isToday && endAt > realNow) continue; // está en la silla ahora mismo
         await asOf(endAt, (now) => changeStatus(d, { locationId, appointmentId: appt.appointmentId, to: "completed", actor, now }));
-        await charge({ when: new Date(endAt.getTime() + 2 * 60_000), barberId: e.barber.id, serviceId: e.service.id, price: e.service.price, appointmentId: appt.appointmentId, clientId });
+        // Hoy, una cita que terminó hace poco queda atendida y sin cobrar: sale en "Por cobrar" de Caja.
+        if (isToday && !leftToCharge && endAt.getTime() > realNow.getTime() - 50 * 60_000) {
+          leftToCharge = true;
+          continue;
+        }
+        await charge({ when: new Date(endAt.getTime() + 2 * 60_000), barberId: e.barber.id, serviceId: e.service.id, price: e.service.price, appointmentId: appt.appointmentId, clientId, offersAddOn: e.barber.offersAddOn });
       }
       lastMinute = Math.max(lastMinute, e.end);
 
@@ -309,13 +473,49 @@ async function main() {
       }
     }
 
-    // El tercer día, recepción compra mercancía de la caja (para que haya inventario y margen).
-    if (date === addDays(firstDay, 3) && productList.length > 0) {
-      const lines = productList.map((p) => ({ productId: p.id, quantity: 4, amount: money(((p.price.minor * 55n) / 100n / 100_000n) * 100_000n * 4n) }));
+    // El tercer día, recepción compra de contado, con plata de la caja, lo que se acabó primero.
+    if (dayIndex === 3) {
+      const lines = ["Gel de fijación fuerte", "Shampoo para barba"].flatMap((name) => {
+        const product = productByName.get(name);
+        return product ? [{ productId: product.id, quantity: 4, amount: money(unitCost(product.price) * 4n) }] : [];
+      });
       const total = lines.reduce((s, l) => s + l.amount.minor, 0n);
-      if ((await cashToClose()) - BASE.minor > total) {
-        await asOf(at(lastMinute + 5), (now) => recordPurchase(d, { locationId, paidFrom: "cash", lines, note: "Pedido de la distribuidora", idempotencyKey: nextKey("purchase"), actor, now }));
+      if (lines.length > 0 && (await cashToClose()) - BASE.minor > total) {
+        await asOf(at(lastMinute + 5), (now) => recordPurchase(d, { locationId, paidFrom: "cash", lines, note: "Compra de contado en el almacén", idempotencyKey: nextKey("purchase"), actor, now }));
       }
+    }
+
+    // Abonos a proveedores: de la caja los hace recepción (si alcanza el efectivo); del banco, el dueño.
+    for (const [i, p] of CREDIT_PURCHASES.entries()) {
+      if (!p.payment || p.payment.day !== dayIndex) continue;
+      const doc = creditDocs.get(i);
+      if (!doc) continue;
+      const amount = (((doc.total.minor * BigInt(p.payment.percent)) / 100n) / 100_000n) * 100_000n;
+      const fromCash = p.payment.from === "cash" && (await cashToClose()) - BASE.minor > amount;
+      await asOf(at(lastMinute + 7), (now) =>
+        paySupplier(d, {
+          locationId,
+          documentId: doc.documentId,
+          amount: money(p.payment.percent === 100 ? doc.total.minor : amount),
+          paidFrom: fromCash ? "cash" : "bank",
+          idempotencyKey: nextKey("supplier-pay"),
+          actor: fromCash ? actor : admin,
+          now,
+        }),
+      );
+      stats.supplierPayments++;
+    }
+
+    // Anticipos a barberos (por cobrar): de la caja si alcanza; si no, del banco.
+    for (const a of ADVANCES) {
+      const barber = barbers[a.barber % barbers.length];
+      if (a.day !== dayIndex || !barber) continue;
+      const amount = fromUnits(a.units);
+      const fromCash = (await cashToClose()) - BASE.minor > amount.minor;
+      await asOf(at(lastMinute + 9), (now) =>
+        giveAdvance(d, { locationId, staffId: barber.id, amount, paidFrom: fromCash ? "cash" : "bank", reason: a.reason, idempotencyKey: nextKey("advance"), actor: admin, now }),
+      );
+      stats.advances++;
     }
 
     // Hoy se queda abierto: la caja está en turno durante la presentación. Una venta repetida queda
@@ -374,6 +574,9 @@ async function main() {
 
   console.log(
     `Demo lista: ${stats.days} días (${firstDay} a ${today}), ${stats.sales} cobros, ${stats.appointments} citas (${stats.noShows} no vinieron) y ${booked} citas agendadas para hoy y mañana.`,
+  );
+  console.log(
+    `Por pagar y por cobrar: ${stats.creditPurchases} compras a crédito, ${stats.supplierPayments} abonos a proveedores, ${stats.advances} anticipos a barberos y ${stats.recurring} pagos de gastos fijos del mes anterior (los de este mes quedan por pagar).`,
   );
   await raw.end();
 }

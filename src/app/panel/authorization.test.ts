@@ -104,6 +104,7 @@ const servicios = await import("./servicios/actions");
 const personal = await import("./personal/actions");
 const bloqueos = await import("./bloqueos/actions");
 const ajustes = await import("./ajustes/actions");
+const ajustesDemo = await import("./ajustes/demo-actions");
 const cuenta = await import("../cuenta/actions");
 const cobro = await import("./cobro/actions");
 const caja = await import("./caja/actions");
@@ -635,6 +636,15 @@ interface Case {
 }
 
 const CASES: Case[] = [
+  {
+    // Fuera del modo demo responde "solo existe en la demo" (lenient: basta con que no lo frene el
+    // permiso). Que nunca borre esta base ni la de la barbería se prueba aparte, más abajo.
+    name: "ajustes · empezar de cero en la demo",
+    action: "resetDemoDataAction",
+    allowed: ["owner"],
+    lenient: true,
+    prepare: async () => () => ajustesDemo.resetDemoDataAction({ confirmation: "BORRAR" }),
+  },
   {
     name: "clientes · vista previa de la supresión",
     action: "loadClientErasePreview",
@@ -2291,6 +2301,33 @@ describe("cuenta sin terminar de configurar", () => {
 
 // ─── Conteo a ciegas (sprint 4, MEDIUM-3) ────────────────────────────────────
 
+describe("empezar de cero en la demo", () => {
+  it("fuera del modo demo no hace nada, aunque el dueño escriba BORRAR", async () => {
+    await signInAs(A.users.owner);
+    const before = await fingerprint();
+    expect(await ajustesDemo.resetDemoDataAction({ confirmation: "BORRAR" })).toMatchObject({ ok: false, error: "Esta acción solo existe en la demo" });
+    expect(await fingerprint()).toBe(before);
+  });
+
+  it("en modo demo exige BORRAR y la identidad confirmada, y aun así se niega en una base que no es la de la demo", async () => {
+    const previous = process.env.VILLA_DEMO;
+    process.env.VILLA_DEMO = "1";
+    try {
+      const before = await fingerprint();
+      await signInAs(A.users.owner);
+      expect(await ajustesDemo.resetDemoDataAction({ confirmation: "borrar" as never })).toMatchObject({ ok: false, error: "Escribe BORRAR para confirmar" });
+      await signInAs(A.users.owner, { stale: true });
+      expect(await ajustesDemo.resetDemoDataAction({ confirmation: "BORRAR" })).toMatchObject({ ok: false, code: "reauth_required" });
+      await signInAs(A.users.owner);
+      expect(await ajustesDemo.resetDemoDataAction({ confirmation: "BORRAR" })).toMatchObject({ ok: false, error: "Solo se puede borrar la base de la demo" });
+      expect(await fingerprint()).toBe(before);
+    } finally {
+      if (previous === undefined) delete process.env.VILLA_DEMO;
+      else process.env.VILLA_DEMO = previous;
+    }
+  });
+});
+
 describe("suprimir datos de un cliente", () => {
   it("con una sesión vieja pide confirmar identidad y sin escribir SUPRIMIR no hace nada", async () => {
     const clientId = await seedClient();
@@ -2638,6 +2675,7 @@ const STAFF_MODULES: Record<string, Record<string, unknown>> = {
   "panel/personal/actions.ts": personal,
   "panel/bloqueos/actions.ts": bloqueos,
   "panel/ajustes/actions.ts": ajustes,
+  "panel/ajustes/demo-actions.ts": ajustesDemo,
   "panel/cobro/actions.ts": cobro,
   "panel/caja/actions.ts": caja,
   "panel/gastos-fijos/actions.ts": gastosFijos,
@@ -3023,7 +3061,9 @@ const AUDITED: Record<string, AuditAction> = {
 };
 
 /** Los módulos con historial propio (citas y bloqueos, §8) o de la cuenta de cada quien. */
-const NOT_AUDITED_MODULES = ["panel/actions.ts", "panel/agenda/actions.ts", "panel/bloqueos/actions.ts", "cuenta/actions.ts"];
+// "panel/ajustes/demo-actions.ts": el borrado de la demo vacía la bitácora misma; su rastro queda en el
+// registro del servidor, y solo existe en la base de práctica (src/db/demo-reset.ts).
+const NOT_AUDITED_MODULES = ["panel/actions.ts", "panel/agenda/actions.ts", "panel/bloqueos/actions.ts", "cuenta/actions.ts", "panel/ajustes/demo-actions.ts"];
 const isRead = (name: string) => /^load/.test(name);
 
 describe("cada acción de escritura deja exactamente un evento", () => {

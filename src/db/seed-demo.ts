@@ -42,12 +42,20 @@ const SERVICES = [
   { name: "Barba sencilla con marcada", durationMin: 40, bufferMin: 5, priceUnits: 17_000n, commissionBps: 5000 },
 ] as const;
 
-/** Productos de ejemplo (sprint 6): sin compras ni existencias; esas las registra el dueño. */
+/**
+ * Productos capilares de ejemplo: sin compras ni existencias (esas las registra el dueño o, en la
+ * demo, src/scripts/demo-history.ts). Precios de venta al público inventados, en pesos.
+ */
 const PRODUCTS = [
   { name: "Cera para peinar", priceUnits: 35_000n },
   { name: "Aceite para barba", priceUnits: 40_000n },
   { name: "Shampoo para barba", priceUnits: 30_000n },
   { name: "Bálsamo para barba", priceUnits: 38_000n },
+  { name: "Pomada de brillo", priceUnits: 32_000n },
+  { name: "Gel de fijación fuerte", priceUnits: 18_000n },
+  { name: "Shampoo anticaída", priceUnits: 38_000n },
+  { name: "Acondicionador hidratante", priceUnits: 34_000n },
+  { name: "Tónico capilar", priceUnits: 42_000n },
 ] as const;
 
 const ADDRESS = "Calle 9Sur #53-71, Medellín";

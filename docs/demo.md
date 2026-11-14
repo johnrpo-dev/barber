@@ -34,11 +34,19 @@ La historia termina **hoy**: la caja de hoy queda abierta, con citas en la silla
    - En el celular, en la misma wifi: http://<IP del PC>:3000. Next la imprime como "Network".
 5. Abre tres ventanas: la **portada** (http://localhost:3000), el **panel como recepción** (en una ventana de incógnito) y el **panel como dueño**.
 
-Al terminar, `npm run demo:stop` apaga ese PostgreSQL. Para repetir la demo desde cero, vuelve al paso 2; tendrás que crear de nuevo la cuenta del dueño.
+Al terminar, `npm run demo:stop` apaga ese PostgreSQL.
+
+**Para practicar desde cero:** como dueño, **Ajustes → Demo: empezar de cero → Borrar todos los registros** (escribes BORRAR y te pide tu código).
+- **Borra:** la operación (citas, clientes, ventas, caja, libro, compras, proveedores, anticipos, bitácora).
+- **Conserva:** la sede, los servicios, los productos, el personal y las cuentas.
+- **Dónde existe:** solo en la demo. En la base de la barbería ese bloque no aparece, y aunque alguien llamara la acción, la base se niega: tiene que llamarse `villa_demo`, la sesión tiene que ser superusuario y no puede tener respaldos registrados.
+- **Para volver a tener el mes de datos,** vuelve al paso 2; tendrás que crear de nuevo la cuenta del dueño.
+
+Qué hace cada pantalla y desde dónde se hace cada cosa: [guia-de-estudio.md](guia-de-estudio.md).
 
 ## 2. Qué trae la demo
 
-- **El catálogo real** de la barbería (12 servicios con su precio y duración), 4 productos y el equipo:
+- **El catálogo real** de la barbería (12 servicios con su precio y duración), 9 productos capilares de prueba (ceras, pomada, gel, shampoos, acondicionador, tónico y la línea de barba) y el equipo:
   - Sin más archivos salen **10 barberos con nombres inventados**: los nombres del equipo real son datos personales (Ley 1581) y no van al repositorio.
   - Si en este computador existe `seed-demo.equipo.local.json`, salen los reales (ver `src/db/seed-demo.ts`). Ese archivo no se sube nunca.
   - Además aparece la columna **"Barbero de prueba"**, sin citas: es la cuenta `barbero@villa.test`. La historia no le asigna citas, así que su vista sale vacía. Para mostrar lo que ve un barbero en su celular, haz en vivo un walk-in con él y cóbralo. Si el dueño pregunta: es la cuenta de pruebas, y el script que la crea se niega a correr en producción.
@@ -51,9 +59,19 @@ Al terminar, `npm run demo:stop` apaga ese PostgreSQL. Para repetir la demo desd
   - gastos pequeños de la caja.
 - **Cada día de caja completo:** apertura, propinas pagadas en efectivo, consignación de lo que pasa de $200.000 y cierre del día. Tres cierres tienen diferencia (dos faltantes y un sobrante) y quedan por revisar.
 - **Hoy:** la caja abierta, citas atendidas y cobradas, alguien en la silla, citas por llegar y las de mañana. Hay una **anulación pedida** por recepción ("Se cobró dos veces el mismo corte").
-- **Una compra de mercancía** pagada de la caja, para que haya inventario y margen.
+- **Recibos con servicios y productos juntos:** a veces cejas además del corte, y uno o dos productos capilares.
+- **Por cobrar:** una cita de hoy atendida y sin cobrar (Caja → Por cobrar) y dos **anticipos a barberos** (Comisiones), que se descuentan en la liquidación.
+- **Por pagar:**
+  - **cuatro compras a crédito** a proveedores inventados (Productos → Cuentas por pagar): una pagada del banco, una vencida con un abono de la caja, una que vence en unos días y una al día;
+  - **gastos fijos:** los del mes anterior, pagados; el arriendo y el internet de este mes, por pagar (Inicio y Gastos fijos);
+  - las **comisiones** del mes.
+- **Una compra de contado** desde la caja, hecha por recepción.
 - **140 clientes inventados, sin celular ni correo.** Nunca se les envía nada. Para mostrar el recibo por WhatsApp, cobra a un cliente nuevo con tu propio número.
-- **Todo lo hizo la cuenta de recepción.** Nada en la bitácora queda a nombre del dueño. Lo que solo puede hacer el dueño se hace en vivo (ver el guion): liquidar comisiones, aprobar la anulación, revisar los cierres con diferencia, compras a crédito y gastos fijos.
+- **Quién hizo qué:**
+  - la operación diaria la hizo la cuenta de recepción;
+  - lo que solo puede hacer un dueño (compras a crédito, pagos del banco, anticipos y gastos fijos) lo hizo **"Administración de prueba"**, una cuenta sin contraseña que no puede entrar.
+  - Así nada en la bitácora queda a nombre de tu cuenta.
+  - Liquidar comisiones, aprobar la anulación y revisar los cierres con diferencia se hacen en vivo (ver el guion).
 
 **Cómo se generó:** con las mismas funciones de la app y las mismas reglas de la base (cada asiento cuadra al guardarse). Lo único que se ajusta después son las horas que pone la base, que se corren a la fecha simulada. Por eso exige su propio PostgreSQL con superusuario (`src/scripts/demo-history.ts`).
 
@@ -87,6 +105,8 @@ La idea: la portada abre la conversación, pero lo que diferencia al sistema de 
 - **Inicio** muestra solo lo que pide atención:
   - los cierres con diferencia por revisar;
   - la anulación pedida;
+  - la cuenta por pagar vencida y la que vence pronto;
+  - el arriendo y el internet vencidos sin registrar;
   - el último respaldo y lo que hace falta.
 - **Aprueba la anulación.** Nada se borra: queda un asiento de reversa con motivo, quién lo pidió y quién lo aprobó. Ábrela en la bitácora.
 - **Revisa un cierre con diferencia** en Caja → Historial: el esperado, lo contado, la diferencia y la nota de quien cerró.
@@ -103,13 +123,16 @@ Es el momento clave.
 ### 3.6. Informes (5 min, como dueño)
 
 - Ventas del mes por día, por barbero, por servicio y por medio de pago, y la tasa de "no vino".
-- **La utilidad:** ingresos menos comisiones y gastos. Advierte que la demo no tiene arriendo ni servicios, así que la utilidad sale inflada. Regístralos en vivo (3.7).
+- **La utilidad:** ingresos menos comisiones y gastos. Advierte que el arriendo de este mes todavía no está registrado, así que la utilidad sale inflada. Regístralo en vivo (3.7).
 - Exportar a Excel (CSV) para el contador.
 
 ### 3.7. Gastos, productos y proveedores (5 min, como dueño)
 
-- **Gastos fijos:** registra el arriendo y los servicios públicos. Avisan cuando toca pagarlos.
-- **Productos:** existencias, margen y la **compra a crédito** con un proveedor a 30 días. Aparece en "Cuentas por pagar" con su vencimiento; muestra un abono parcial.
+- **Gastos fijos:** el arriendo de este mes ya aparece vencido. Regístralo pagado del banco y muestra cómo baja la utilidad en Informes.
+- **Productos:** existencias, margen y las **cuentas por pagar**:
+  - la vencida con su abono, la que vence en unos días y la pagada;
+  - abona a la vencida desde el banco;
+  - registra en vivo una compra nueva a crédito, a 30 días.
 
 ### 3.8. Seguridad y continuidad (2 min)
 

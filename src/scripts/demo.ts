@@ -19,8 +19,12 @@ const USER = "villa_demo";
 const DB = "villa_demo";
 const URL = `postgres://${USER}@localhost:${PORT}/${DB}`;
 
-/** Variables para todo lo que corre contra la demo: la base de desarrollo nunca se toca. */
-const demoEnv = { ...process.env, DATABASE_URL: URL, MIGRATION_DATABASE_URL: URL, QUEUE_DATABASE_URL: URL, DEMO_DATABASE_URL: URL };
+/**
+ * Variables para todo lo que corre contra la demo: la base de desarrollo nunca se toca. VILLA_DEMO=1
+ * muestra en Ajustes el botón "Borrar todos los registros" (src/db/demo-reset.ts revisa además que
+ * la base sea villa_demo).
+ */
+const demoEnv = { ...process.env, DATABASE_URL: URL, MIGRATION_DATABASE_URL: URL, QUEUE_DATABASE_URL: URL, DEMO_DATABASE_URL: URL, VILLA_DEMO: "1" };
 
 function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; allowFail?: boolean; quiet?: boolean } = {}): number {
   const r = spawnSync(cmd, args, { stdio: opts.quiet ? "ignore" : "inherit", env: opts.env ?? process.env, shell: process.platform === "win32" });

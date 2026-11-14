@@ -14,6 +14,7 @@ import { IdempotencyConflictError } from "@/domain/security/idempotency";
 import { ReauthRequiredError } from "@/domain/security/reauth";
 import { InvalidScheduleError } from "@/domain/staff/schedule";
 import { SlotTakenError } from "@/db/appointments";
+import { DemoResetError } from "@/db/demo-reset";
 import { AccountLockedError } from "@/db/login-throttle";
 import { RateLimitError } from "@/db/rate-limit";
 import { StaffError } from "@/db/staff";
@@ -51,6 +52,7 @@ const BUSINESS_ERRORS = [
   ReportError,
   RecurringExpenseError,
   InventoryError,
+  DemoResetError,
 ];
 
 export async function runAction<T>(fn: () => Promise<T>): Promise<ActionResult<T>> {
